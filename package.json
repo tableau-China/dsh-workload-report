@@ -1,6 +1,6 @@
 {
   "name": "dsh-workload-report",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "DSH 工作量报告：按日期与工作区看清「我的付出」与「Token 消耗」，含日历热力图、时刻分析、工作区占比，并可导出自包含 HTML 报告",
   "type": "module",
   "main": "index.js",

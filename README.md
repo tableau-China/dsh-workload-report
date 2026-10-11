@@ -130,7 +130,6 @@ dsh plugin --profile web add dsh-workload-report
 | `node build.mjs` | 用 esbuild 把 `src/client/` 打成 `lib/client.js`（ModuleLoader 工厂格式） |
 | `node test/verify.mjs` | 离线验证 124 项：聚合口径、时区、时刻分摊守恒、全部档起点、日历数据源、HTML 转义、token 两种形状、冷读兜底、inject 声明、宿主路由 |
 | `./test/e2e-boot.sh 3299` | 起一个**隔离实例**（独立 DSH_HOME + 端口，复制真实投影数据），不影响正在用的 GUI |
-| `EMDASH_TOKEN=… node scripts/publish-emdash.mjs --site https://vizwise.cn` | 把 `docs/blog.md` 发布到 EmDash 博客（Markdown → Portable Text，含图片上传与发布） |
 | `node test/e2e-ui.mjs` | 真实浏览器 E2E 61 项：日历/柱状图切换、并排几何校验、周几条、环形图切换、明细折叠、导出报告 |
 
 CI 会跑 `build.mjs` + `verify.mjs`，并校验入库的 `lib/client.js` 与源码一致。

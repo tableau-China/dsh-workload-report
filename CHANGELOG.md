@@ -1,5 +1,12 @@
 # CHANGELOG — dsh-workload-report
 
+## v0.3.3（2026-10-11）— 发布脚本移出插件
+
+- `scripts/publish-emdash.mjs` **移出本仓库**：它是"发文章"的通用工具，不属于这个插件。
+  现在以用户级技能形式固化：`~/.dsh/skills/publish-blog/`（`SKILL.md` + `scripts/publish.mjs` + `references/{emdash,wordpress}.md`），
+  一份 Markdown 可发布到 **EmDash** 与 **WordPress**，跨项目复用；并在全局 `AGENTS.md` 里登记了入口与凭据约定。
+- 文章原文仍在本仓库的 [docs/blog.md](./docs/blog.md)，发布说明见技能。
+
 ## v0.3.2（2026-10-11）— 博客发布脚本
 
 - 新增 [`scripts/publish-emdash.mjs`](./scripts/publish-emdash.mjs)：把 `docs/blog.md` 发布到 EmDash 站点（Markdown → Portable Text，
