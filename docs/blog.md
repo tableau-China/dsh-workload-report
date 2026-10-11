@@ -3,7 +3,19 @@ title: 我给 DeepSeek Harness 写了个「工作量报告」：把「我的付�
 date: 2026-10-11
 tags: [DeepSeek Harness, DSH, 插件, 效率工具]
 repo: https://github.com/tableau-China/dsh-workload-report
+author: XILEJUN
 ---
+
+<table>
+<tr>
+<td width="56" valign="middle"><img src="https://avatars.githubusercontent.com/u/49810568?v=4" width="44" height="44" alt="XILEJUN" style="border-radius:50%"></td>
+<td valign="middle">
+
+**作者：[XILEJUN](https://github.com/tableau-China)** · 2026-10-11
+
+</td>
+</tr>
+</table>
 
 > 用 AI 干活的第 N 个月，我最怕两个问题：「你最近在忙什么？」和「这东西到底花了多少？」
 > 前者我答得含糊，后者我根本没有数——不是没数据，而是数据散在几百个会话里，

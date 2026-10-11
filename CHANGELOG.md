@@ -1,5 +1,13 @@
 # CHANGELOG — dsh-workload-report
 
+## v0.3.1（2026-10-11）— 文档与署名
+
+- 新增**完整英文 README**（[README.en.md](./README.en.md)），中文 README 顶部提供语言切换。
+- 博客文章更名为 [docs/blog.md](./docs/blog.md)（原 `docs/blog-introducing-dsh-workload-report.md`），文首加入作者信息与头像。
+- 署名修正：LICENSE 版权人与 `package.json` 的 `author` 统一为 **XILEJUN**（https://github.com/tableau-China）。
+- 修正 README 中过期的测试数量（离线 124 项 / E2E 61 项），并补上文章入口。
+- README 的内联英文段改为指向 `README.en.md`，避免两处英文说明不同步。
+
 ## v0.3.0（2026-10-11）— 首个公开发布
 
 **发布物料**

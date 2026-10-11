@@ -11,7 +11,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/tableau-China/dsh-workload-report/ci.yml?branch=main&style=flat-square&label=CI)](../../actions)
 [![node](https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&logo=node.js)](https://nodejs.org)
 
-中文 · [English](#english)
+中文 · [English](./README.en.md)
 
 ## 它解决什么问题
 
@@ -128,11 +128,13 @@ dsh plugin --profile web add dsh-workload-report
 | --- | --- |
 | `pnpm add -D esbuild puppeteer-core` | 安装构建与 E2E 依赖（也可用 `ESBUILD_PATH` / `WL_PUPPETEER_DIR` 指向已有安装） |
 | `node build.mjs` | 用 esbuild 把 `src/client/` 打成 `lib/client.js`（ModuleLoader 工厂格式） |
-| `node test/verify.mjs` | 离线验证 119 项：聚合口径、时区、时刻分摊守恒、全部档起点、日历数据源、HTML 转义、token 两种形状、冷读兜底、inject 声明、宿主路由 |
+| `node test/verify.mjs` | 离线验证 124 项：聚合口径、时区、时刻分摊守恒、全部档起点、日历数据源、HTML 转义、token 两种形状、冷读兜底、inject 声明、宿主路由 |
 | `./test/e2e-boot.sh 3299` | 起一个**隔离实例**（独立 DSH_HOME + 端口，复制真实投影数据），不影响正在用的 GUI |
-| `node test/e2e-ui.mjs` | 真实浏览器 E2E 56 项：日历/柱状图切换、并排几何校验、周几条、环形图切换、明细折叠、导出报告 |
+| `node test/e2e-ui.mjs` | 真实浏览器 E2E 61 项：日历/柱状图切换、并排几何校验、周几条、环形图切换、明细折叠、导出报告 |
 
 CI 会跑 `build.mjs` + `verify.mjs`，并校验入库的 `lib/client.js` 与源码一致。
+
+文章：[介绍这个插件的博客文章](./docs/blog.md)（[English README](./README.en.md)）
 
 ## 兼容性
 
@@ -148,21 +150,19 @@ CI 会跑 `build.mjs` + `verify.mjs`，并校验入库的 `lib/client.js` 与源
 
 ---
 
-<a id="english"></a>
-## English
+## 作者
 
-**Workload Report for DeepSeek Harness** — see where your time and tokens actually go, by date and by workspace.
-By the author of **TimeMirror**, a macOS time-distribution app.
+<table>
+<tr>
+<td width="40" valign="middle"><img src="https://avatars.githubusercontent.com/u/49810568?v=4" width="32" height="32" alt="XILEJUN" style="border-radius:50%"></td>
+<td valign="middle">
 
-- **Effort vs. spend per workspace**: left = active time (+ active days, turns, steps), right = token spend (+ output/cache), two bars on one shared scale.
-- **Calendar heatmap** (Mon–Sun × Year-Week, colour = active time) over the *full history*, with per-weekday totals glued to the right edge.
-- **Time-of-day analysis** (0–23, peak highlighted) and a **workspace donut** (by time or by tokens).
-- **Shareable report**: one self-contained HTML file (inline CSS + inline SVG, no scripts/links), light/dark, optional `anonymize=1`.
-- Reads **official DSH projections** (zero-I/O checkpoint reads with an official cold-read fallback and a local index); no log parsing, no outbound requests.
+**[XILEJUN](https://github.com/tableau-China)** · TimeMirror 作者 · [博客文章](./docs/blog.md) · [English README](./README.en.md)
 
-```bash
-dsh plugin --profile web add github:tableau-China/dsh-workload-report#main
-```
+</td>
+</tr>
+</table>
 
-Then restart the Web profile — a "Workload report" entry appears at the bottom of the sidebar.
-Metric definitions: [docs/metrics.md](./docs/metrics.md).
+## License
+
+[MIT](./LICENSE)
