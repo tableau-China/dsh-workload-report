@@ -16,6 +16,17 @@
 
 > ⚠️ 国内镜像（npmmirror）只读，发布**必须**显式指向官方源；本地 `.npmrc` 里的 registry 是镜像不影响 workflow。
 
+## 一·五、包归属与权限（2026-10-11 起）
+
+| 项 | 值 |
+| --- | --- |
+| 包 | `dsh-workload-report`（非 scoped，public） |
+| 归属 | npm 组织 **`vizwise`**（发布者账号需要该组织的 publish 权限） |
+| 版本发布者记录 | `xilejun`（历史版本）→ 后续以当时登录的账号为准 |
+| token | 组织/账号变更后会失效，需重新 `npm login` 或重建 Granular token；
+
+**批准暂存版本**除了 CLI，也可以在 npm 网页的包页面 → "Staged" 条目上直接 Approve。
+
 ## 二、日常发版（推荐：CI 暂存 + 一次 OTP 批准）
 
 ```bash
@@ -43,6 +54,7 @@ npm stage approve <stage-id> --registry=https://registry.npmjs.org/ --otp=<6位�
 ```
 
 其他 stage 子命令：`npm stage list`（查看待批准）、`npm stage view <id>`、`npm stage reject <id> --otp=<码>`（作废）。
+也可以在 npm 网页上操作：包页面里 `Staged` 状态的版本旁有 Approve / Reject。
 
 ### 前置：配置 NPM_TOKEN 密钥
 
