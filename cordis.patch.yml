@@ -1,0 +1,12 @@
+# 把本插件作为一行插入 profile 的 Loader：宿主侧注册「工作量报告」API 与 HTML 报告路由，
+# 客户端侧（package.json 的 dsh.client）在侧边栏底部加一个按钮并渲染统计看板。
+- insert:
+    - id: workload-report
+      name: dsh-workload-report
+      # 可选配置（省略即用默认值）：
+      # config:
+      #   apiPath: /workload-report/v1
+      #   refreshMs: 2000
+      #   workspaceAliases:
+      #     my-shop-app: 零售订单系统
+      #     data-platform: 知识图谱数据中台

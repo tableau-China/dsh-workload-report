@@ -1,0 +1,79 @@
+{
+  "name": "dsh-workload-report",
+  "version": "0.3.0",
+  "description": "DSH 工作量报告：按日期与工作区看清「我的付出」与「Token 消耗」，含日历热力图、时刻分析、工作区占比，并可导出自包含 HTML 报告",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./lib/client.js",
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "lib/client.js",
+    "src",
+    "cordis.patch.yml",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "verify": "node test/verify.mjs",
+    "test": "node test/verify.mjs",
+    "e2e:boot": "./test/e2e-boot.sh",
+    "e2e": "node test/e2e-ui.mjs"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "workload",
+    "usage",
+    "tokens",
+    "report",
+    "heatmap",
+    "dashboard",
+    "activity"
+  ],
+  "author": "tableau-China",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tableau-China/dsh-workload-report.git"
+  },
+  "homepage": "https://github.com/tableau-China/dsh-workload-report#readme",
+  "bugs": {
+    "url": "https://github.com/tableau-China/dsh-workload-report/issues"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "slots",
+        "locale"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "puppeteer-core": "^25.7.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

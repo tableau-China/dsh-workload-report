@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 安装构建依赖
+        run: npm install --no-save --no-audit --no-fund esbuild@^0.28.2
+
+      - name: 构建客户端 bundle
+        run: node build.mjs
+
+      - name: 校验入库的 lib/client.js 与源码一致
+        run: |
+          if ! git diff --quiet -- lib/client.js; then
+            echo "::error::lib/client.js 与源码不一致，请在本地跑 node build.mjs 后一并提交"
+            git diff --stat -- lib/client.js
+            exit 1
+          fi
+
+      - name: 离线验证（聚合口径 / 路由 / 报告 / i18n）
+        run: node test/verify.mjs
