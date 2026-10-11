@@ -9,7 +9,13 @@ repo: https://github.com/tableau-China/dsh-workload-report
 > 前者我答得含糊，后者我根本没有数——不是没数据，而是数据散在几百个会话里，
 > 而 Harness 只给我看**当前这一个会话**的统计行。
 
-于是我写了 [dsh-workload-report](https://github.com/tableau-China/dsh-workload-report)：一个把**「我的付出」与「Token 消耗」按日期、按工作区摊开**的 DSH 插件，并且能一键导出**一份可以直接发给客户的自包含 HTML 报告**。
+做这个插件有三个动机：
+
+1. **我想更了解自己的开发过程。** 时间到底花在哪个项目上、一天里哪几个小时在状态、哪些项目在持续推进、哪些只是偶尔碰一下——这些我都想看得见，而不是凭感觉回忆。
+2. **我要按项目给客户汇报进展。** "最近很忙"没有说服力；"这个项目占了我 46% 的投入、30 天里有 18 天在场、消耗了 3.7 B Token"才有。
+3. **我一直在用最新的 DSH**（写这篇文章时是 `@deepseek-ai/dsh@0.2.1-alpha.2`），而不少公开插件对 alpha 版本的跟进偏慢，装上要么报错、要么少半边功能。所以干脆自己写一个：**只依赖官方接口、跟着新版本走**——"能跟上"本身就是我写它的理由之一。
+
+于是我写了 [dsh-workload-report](https://github.com/tableau-China/dsh-workload-report)：把**「我的付出」与「Token 消耗」按日期、按工作区摊开**的 DSH 插件，并且能一键导出**一份可以直接发给客户的自包含 HTML 报告**。
 
 ## 它长什么样
 
@@ -58,63 +64,17 @@ DSH 已经把每个会话的统计算好了（`sessionStats`、`tokenUsage` 等�
 
 我刻意**没有**去解析 `session.jsonl.zstd`：格式会随版本演进，而投影的语义由 Harness 自己维护。代价是首次建索引要冷读历史会话（我这边 300+ 会话约 2 分钟，并发 8），换来的是后续重启亚秒级复用，以及「口径永远和 Harness 自己算的一致」。
 
-## 过程中踩的四个坑（这才是我想写下来的部分）
-
-### 坑 1：Token 全是 0——同一个投影有两种形状
-
-我最初这样读 Token：
-
-```js
-const totals = values.tokenUsage.totals;   // 只认这一种
-```
-
-结果所有走官方接口拿到的 Token 都是 0，而**时长却完全正常**——因为 `sessionStats` 的两种形状字段名刚好一致，把问题掩盖了。真相是：
-
-| 来源 | 形状 |
-| --- | --- |
-| 官方 wire view（`snapshot` / `cachedSnapshot` 的返回值） | `{ uncachedInputTokens, outputTokens, cacheReadTokens, cacheWriteTokens }`，**直接就是桶** |
-| 持久化 state（检查点文件里的 `val`） | `{ totals: {...}, last: {...} }` |
-
-`dsh-token-meter` 的投影定义写得很清楚：`wire.view = (state) => state.totals`。修法是两种形状都认（`usage.totals ?? usage`），并给"官方 wire 形状"补了一条回归断言。
-
-**教训**：读第三方内部值之前，先看它的 wire/view 定义，别照着文件结构猜。
-
-### 坑 2：历史会话读不到——检查点会被格式迁移作废
-
-装上真实 profile 后发现：300+ 个会话里，只有一部分能从检查点读到值。原因是官方按**会话生命周期身份**（formatVersion / createdAt / cwd / isSeeded）校验检查点，会话格式从 v3 迁到 v4 之后，旧检查点会被**有意拒绝**——这是设计，不是 bug。
-
-于是我加了第 4 层：官方冷读 `observeSession(id, { projectionMode: "all" })`，把整份日志折叠出投影（内部仍以检查点做捷径），并把结果落到本地索引。绝大部分历史会话这样就补齐了；**极早期 v0 格式**的一小部分，当前 Harness 版本无法迁移，冷读会失败——我把它们单列为"读取失败"并在界面写明数量，而不是静默当 0。
-
-### 坑 3：一个没声明的服务，让整条实时路径静默失效
-
-DSH 用的是 cordis 插件系统。**访问未声明的服务会抛错**：
-
-```
-cannot get property "sessionProjections" without inject
-```
-
-我把这行错误 catch 掉了，于是插件照常工作、历史数据也正常——但**活会话的实时更新一次都没跑过**（诊断里的 `live` 恒为 0）。是我在 `/health` 里看到 `lastError` 才发现的。
-
-修法是把用到的服务全写进 `inject`，并加了一条**静态断言**：扫描 `index.js` 里访问的每个 `ctx.X`，必须在 `inject` 里列明。这类"漏声明"以后跑测试就会红。
-
-### 坑 4：渐进式填充带来的数据竞态
-
-首次建索引要两分钟，所以我做成"边解析边可见"。但这个换表逻辑在**后续的增量重扫**里成了 bug：请求会读到只有部分会话的残缺数据（表现为日历格子数莫名抖动）。改成——**首次**渐变换表（避免长时间空白），**之后的增量重扫原子替换**（请求要么看到旧表，要么看到新表）。
-
-顺带把重扫间隔从 2 秒放宽到 30 秒：实时性由事件增量保证，没必要每两秒全量重扫。
-
-### 一个小细节：时刻分析的口径与守恒
-
-"我哪个时间段更活跃"并不好答：投影里只有会话级聚合值，没有逐事件时间戳。我选的近似口径是——**会话活跃窗口 = 开始时间 → 最后一次用户提问时间**（`sessionListMetadata.lastPromptAt`），把该会话的引擎时长按**墙钟重叠比例**分摊到覆盖的小时。
-
-写分摊循环时我用了 `cursor <= end` 配 `end + 1`，结果切片比例之和 = 跨度 + 1ms，总时长多出 5.5ms。改成半开区间 `[start, end)` 后严格守恒，并把"分摊总和 == 总活跃时长"写成了常驻断言。
+> 开发过程中踩过的坑（投影的两种值形状、检查点随会话格式迁移作废、cordis 漏声明导致的实时路径静默失效、增量重扫的竞态……）都记在仓库的
+> [CHANGELOG](https://github.com/tableau-China/dsh-workload-report/blob/main/CHANGELOG.md) 与
+> [PROGRESS](https://github.com/tableau-China/dsh-workload-report/blob/main/PROGRESS.md) 里。那是一份开发记录，这里就不展开了。
 
 ## 口径与已知限制（我也写在插件里）
 
 - **活跃时长是引擎累计工作时间**（模型 + 工具），并发会话与子代理各自累加，**不等于墙钟时长**；
 - **对话次数** = 至少产生 1 个步骤的会话数，零步会话（只打开没交互）单列；
 - **归属日期**按会话创建时间在所选时区计算，跨天续聊的活动记在创建那天；
-- 时刻分析是**近似**（长窗口会被摊薄），日历固定全历史不跟筛选；
+- **时刻分析**的口径：会话活跃窗口 = 开始时间 → 最后一次用户提问时间，把该会话的引擎时长按墙钟重叠比例分摊到覆盖的小时；它是**近似值**（跨天续聊的长窗口会被摊薄）；
+- 日历热力图固定展示全部历史，不跟顶部区间筛选变化；
 - 极早期格式的会话可能读不到，界面会写明数量。
 
 这些都写进了仓库的 [`docs/metrics.md`](https://github.com/tableau-China/dsh-workload-report/blob/main/docs/metrics.md)——给客户看的数字，口径必须先说清楚。
@@ -154,5 +114,3 @@ CI 每次 push 都会：安装依赖 → 构建 → **校验入库的 `lib/clien
 - 仓库：[tableau-China/dsh-workload-report](https://github.com/tableau-China/dsh-workload-report)
 - 口径文档：[docs/metrics.md](https://github.com/tableau-China/dsh-workload-report/blob/main/docs/metrics.md)
 - 许可：MIT
-
-> 附：这个插件与我之前在 Mac App Store 发布的 **TimeMirror**（macOS 时间分布应用）是同一个想法——把时间照出来。包名用描述式的 `dsh-workload-report` 是为了在 DSH 生态里能被搜到，品牌沿用 TimeMirror。

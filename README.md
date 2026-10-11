@@ -136,7 +136,9 @@ CI 会跑 `build.mjs` + `verify.mjs`，并校验入库的 `lib/client.js` 与源
 
 ## 兼容性
 
-- DSH `0.2.x`（依赖官方投影服务 `sessionProjections` / `sessionProjectionCache` / `sessionQuery`）。
+- DSH `0.2.x`，**含 `alpha` 预发布版**（开发与验证基于 `@deepseek-ai/dsh@0.2.1-alpha.2`）：
+  插件只依赖官方接口（`sessionProjections` / `sessionProjectionCache` / `sessionQuery`）与 Node 内置模块，不碰内部文件格式，
+  因此能跟着新版本走——**保持对最新 alpha 的兼容是本项目的目标之一**，遇到不兼容会在 issue/CHANGELOG 里跟进。
 - 首次启动会对投影检查点未命中的历史会话做一次冷读（本机实测约 2 分钟，并发 8），期间接口返回**逐步填充**的数据并带 `indexing: true`；结果落盘后重启即复用。
 - 极早期的 **v0 格式会话**可能无法被当前 Harness 迁移/读取，这类会话不计入统计，界面会写明数量。
 
