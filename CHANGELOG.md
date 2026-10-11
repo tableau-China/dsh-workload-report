@@ -1,5 +1,13 @@
 # CHANGELOG — dsh-workload-report
 
+## v0.3.2（2026-10-11）— 博客发布脚本
+
+- 新增 [`scripts/publish-emdash.mjs`](./scripts/publish-emdash.mjs)：把 `docs/blog.md` 发布到 EmDash 站点（Markdown → Portable Text，
+  支持标题/段落/引用/列表/**代码块/表格**/图片/加粗/行内代码/链接），自动上传图片到媒体库、设置特色图并发布。
+  用法：`EMDASH_TOKEN=… node scripts/publish-emdash.mjs --site https://vizwise.cn`（`--dry-run` 只转换不发布）。
+- 文章已在 vizwise.cn 发布：https://vizwise.cn/posts/dsh-workload-report
+- `docs/blog.md` 的作者卡片加 `<!-- publish:skip -->` 标记（站点自带署名，避免正文重复）。
+
 ## v0.3.1（2026-10-11）— 文档与署名
 
 - 新增**完整英文 README**（[README.en.md](./README.en.md)），中文 README 顶部提供语言切换。
