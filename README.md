@@ -6,7 +6,6 @@
 > **TimeMirror** 是我在 Mac App Store 发布的 macOS 时间分布应用；这个插件把同一件事带到 AI 协作场景——**你和 AI 一起干活的时间与 Token，都能被看见**。
 > 包名 / 仓库名用描述式的 `dsh-workload-report`，方便在 DSH 生态里被搜到；品牌沿用 TimeMirror。
 
-[![npm](https://img.shields.io/npm/v/dsh-workload-report?style=flat-square&logo=npm)](https://www.npmjs.com/package/dsh-workload-report)
 [![license](https://img.shields.io/github/license/tableau-China/dsh-workload-report?style=flat-square)](./LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/tableau-China/dsh-workload-report/ci.yml?branch=main&style=flat-square&label=CI)](../../actions)
 [![node](https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&logo=node.js)](https://nodejs.org)
@@ -72,11 +71,10 @@ cd /path/to/dsh-workload-report
 dsh plugin --profile web add link:$PWD     # 会让 profile 直接指向源码目录
 ```
 
-### 方式三：npm
+### 方式三：npm（**暂未发布**）
 
-```bash
-dsh plugin --profile web add dsh-workload-report
-```
+> ⚠️ `dsh-workload-report` **还没有发布到 npm**（`registry.npmjs.org` 返回 404），所以 `dsh plugin … add dsh-workload-report` 现在**会失败**。
+> 在那之前请用**方式一（GitHub 源）或方式二（本地 link）**。发布后这里会更新。
 
 卸载：`dsh plugin --profile web remove dsh-workload-report`。
 

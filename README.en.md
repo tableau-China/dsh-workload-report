@@ -6,7 +6,6 @@
 > **TimeMirror** is a macOS time-distribution app I published on the Mac App Store; this plugin brings the same idea to AI-assisted work — **the time you and your AI spend, and what it costs, made visible**.
 > The package/repo uses the descriptive name `dsh-workload-report` so it can be found in the DSH ecosystem; the brand stays TimeMirror.
 
-[![npm](https://img.shields.io/npm/v/dsh-workload-report?style=flat-square&logo=npm)](https://www.npmjs.com/package/dsh-workload-report)
 [![license](https://img.shields.io/github/license/tableau-China/dsh-workload-report?style=flat-square)](./LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/tableau-China/dsh-workload-report/ci.yml?branch=main&style=flat-square&label=CI)](../../actions)
 [![node](https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&logo=node.js)](https://nodejs.org)
@@ -72,11 +71,10 @@ cd /path/to/dsh-workload-report
 dsh plugin --profile web add link:$PWD     # points the profile at your source tree
 ```
 
-### 3. From npm
+### 3. From npm (**not published yet**)
 
-```bash
-dsh plugin --profile web add dsh-workload-report
-```
+> ⚠️ `dsh-workload-report` is **not on npm yet** (`registry.npmjs.org` returns 404), so `dsh plugin … add dsh-workload-report` **will fail** today.
+> Please use option 1 (GitHub) or 2 (local link) until then.
 
 Uninstall: `dsh plugin --profile web remove dsh-workload-report`.
 

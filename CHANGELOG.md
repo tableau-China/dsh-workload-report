@@ -1,5 +1,12 @@
 # CHANGELOG — dsh-workload-report
 
+## v0.3.4（2026-10-11）— 文档订正：npm 未发布
+
+- **订正误导信息**：README（中/英）此前把 npm 列为可用安装方式并挂 npm 徽章，但本包**从未发布到 npm**
+  （`registry.npmjs.org/dsh-workload-report` 返回 404，非同步延迟）。已移除 npm 徽章，并把该方式明确标注为**暂未发布**，
+  指向 GitHub 源 / 本地 link 两种可用方式。
+- `package.json` 的 `files` 补上 `README.en.md` 与 `docs/`，为将来真正 `npm publish` 做准备（`publishConfig.access` 已为 public）。
+
 ## v0.3.3（2026-10-11）— 发布脚本移出插件
 
 - `scripts/publish-emdash.mjs` **移出本仓库**：它是"发文章"的通用工具，不属于这个插件。
