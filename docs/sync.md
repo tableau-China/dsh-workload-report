@@ -60,7 +60,7 @@
     sync:
       enabled: false                     # ← 默认 false：只读本机
       mode: push+pull                    # push+pull | push | pull
-      repo: tableau-China/dsh-usage      # 建议私有仓库
+      repo: tableau-China/dsh_workloader_log_sync   # 已建好（私有）
       path: machines/{machineId}.json    # 每台机器只写自己的文件
       tokenFile: ~/.dsh/.github-token    # 推荐：token 不进配置
       # token: ghp_xxx                   # 备选（明文，不推荐）
@@ -150,8 +150,9 @@
 | **0.4.0** | 机器身份 + 载荷导出 + GitHub 传输 + 合并 + 按别名分组工作区 + 设备筛选 + 来源诊断 + [docs/sync.md](./sync.md) + 测试 |
 | 0.4.1+ | 按机器拆分展示、S3/COS 传输（按需） |
 
-## 十、需要确认的事项
+## 十、已确认的决定（2026-10-11）
 
-1. GitHub 镜像仓库：我用你的账号建一个**私有**仓库（建议名 `dsh-usage-mirror`）？还是你已有仓库？
-2. Push 凭据：iMac 上放 fine-grained PAT（`Contents: Read and write`，仅该仓库）→ 存 `~/.dsh/.github-token`，可以吗？
-3. 顺序：先 0.3.6（英文首页）再 0.4.0，还是 0.4.0 提前？
+1. **汇总仓库**：https://github.com/tableau-China/dsh_workloader_log_sync （**私有**，已创建，含用途与安全说明）。
+2. **凭据**：iMac 放 fine-grained PAT（Contents: Read and write，仅该仓库）→ `~/.dsh/.github-token`；本机只读。
+3. **顺序**：先 0.3.6（英文首页 + 检索元数据，本版已完成），**0.4.0 实现多机合并**。
+4. 展示：**默认合并全部机器**；设备筛选后续加入（API 参数 + UI 选择器）。

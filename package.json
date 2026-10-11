@@ -1,7 +1,7 @@
 {
   "name": "dsh-workload-report",
-  "version": "0.3.5",
-  "description": "DSH 工作量报告：按日期与工作区看清「我的付出」与「Token 消耗」，含日历热力图、时刻分析、工作区占比，并可导出自包含 HTML 报告",
+  "version": "0.3.6",
+  "description": "DeepSeek Harness (DSH) plugin — see your effort and token usage by date and workspace: calendar heatmap, time-of-day analysis, workspace share, and a shareable self-contained HTML report.",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -16,7 +16,7 @@
     "src",
     "cordis.patch.yml",
     "README.md",
-    "README.en.md",
+    "README.zh-CN.md",
     "CHANGELOG.md",
     "LICENSE",
     "docs/metrics.md"
@@ -38,7 +38,15 @@
     "report",
     "heatmap",
     "dashboard",
-    "activity"
+    "activity",
+    "dsh-plugin",
+    "deepseek",
+    "usage-stats",
+    "time-tracking",
+    "calendar-heatmap",
+    "productivity",
+    "cost-tracking",
+    "worklog"
   ],
   "author": {
     "name": "XILEJUN",

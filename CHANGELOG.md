@@ -1,5 +1,16 @@
 # CHANGELOG — dsh-workload-report
 
+## v0.3.6（2026-10-11）— 英文首页与检索元数据
+
+- **README 语言互换**：英文版升为 `README.md`（npm 首页固定渲染该文件），中文版改为 `README.zh-CN.md`，
+  两侧顶部保留语言切换。理由：npm 包页是外部搜索的主要落地页，英文可被更广的检索与读者覆盖；
+  同类 DSH 插件的实测数据也表明**语言不是 npm 站内排序因子**（排序看名称/关键词匹配、下载量、维护活跃度）。
+- `description` 改为**英文优先**（它参与检索并显示在搜索结果里），并扩充英文 keywords：
+  新增 `dsh-plugin`、`deepseek`、`usage-stats`、`time-tracking`、`calendar-heatmap`、`productivity`、`cost-tracking`、`worklog`。
+  （`dsh-plugin` 是社区插件市场检索用的约定关键词。）
+- 英文 README 首屏补充定位说明：**不只是成本，更是"付出"**——活跃天数、时段、项目归属，可直接对客户展示。
+- 记录多机合并方案（[docs/sync.md](./docs/sync.md)，目标 0.4.0）。
+
 ## v0.3.5（2026-10-11）— 发布流程自动化
 
 - 新增 [.github/workflows/release.yml](./.github/workflows/release.yml)：推送 `v*` tag 即自动**暂存**到 npm

@@ -1,168 +1,158 @@
-# TimeMirror for DSH · 工作量报告
+# TimeMirror for DSH · Workload Report
 
-> 把「我的付出」和「Token 消耗」放在同一张图上：按**日期**与**工作区**看清时间投入到哪、Token 花在哪，含日历热力图、时刻分析、工作区占比，并能一键导出**一份可以直接发给客户的自包含 HTML 报告**。
-> A DeepSeek Harness (DSH) plugin that shows your effort and token spend by date and workspace — calendar heatmap, time-of-day analysis, workspace share, and a shareable single-file HTML report.
+> Put **your effort** and **your token spend** on the same picture: see where your time went and where the tokens went, by **date** and by **workspace** — calendar heatmap, time-of-day analysis, workspace share, and a **one-click self-contained HTML report you can send straight to a client**.
+> A DeepSeek Harness (DSH) plugin for effort & token insights.
 
-> **TimeMirror** 是我在 Mac App Store 发布的 macOS 时间分布应用；这个插件把同一件事带到 AI 协作场景——**你和 AI 一起干活的时间与 Token，都能被看见**。
-> 包名 / 仓库名用描述式的 `dsh-workload-report`，方便在 DSH 生态里被搜到；品牌沿用 TimeMirror。
+> **TimeMirror** is a macOS time-distribution app I published on the Mac App Store; this plugin brings the same idea to AI-assisted work — **the time you and your AI spend, and what it costs, made visible**.
+> The package/repo uses the descriptive name `dsh-workload-report` so it can be found in the DSH ecosystem; the brand stays TimeMirror.
 
 [![npm](https://img.shields.io/npm/v/dsh-workload-report?style=flat-square&logo=npm)](https://www.npmjs.com/package/dsh-workload-report)
 [![license](https://img.shields.io/github/license/tableau-China/dsh-workload-report?style=flat-square)](./LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/tableau-China/dsh-workload-report/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/tableau-China/dsh-workload-report/actions)
 [![node](https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&logo=node.js)](https://nodejs.org)
 
-中文 · [English](./README.en.md)
+[中文](./README.zh-CN.md) · English
 
-## 它解决什么问题
+## What problem it solves
 
-你每天都在用 AI 干活，但**说不清楚干在哪、值多少**：
+You use AI every day, but you **cannot say where the work went or what it was worth**:
 
-- 自我复盘：这 30 天我把时间花在哪个项目上？几点最在状态？
-- 给客户/团队讲工作量：不是「我很忙」，而是「这个项目占了我 46.2% 的投入、3.74 B Token、30 天里有 18 天在场」。
-- 写博客/月报：日历热力图 + 时刻分析，天生适合截图。
+- **Self-review**: which project did the last 30 days actually go to? Which hours am I sharpest?
+- **Reporting to a client or your team**: not "I've been busy", but "this project took 46.2% of my effort, 3.74 B tokens, and I was on it 18 of the last 30 days."
+- **Blog posts / monthly reports**: a calendar heatmap plus time-of-day analysis is made to be screenshotted.
 
-DSH 自己只提供**单会话**的统计行；跨会话、跨项目、跨时间的视角，就是这个插件。
+DSH itself only shows a stats line for the **current session**; the cross-session, cross-project, cross-time view is what this plugin adds.
 
-## 特性
+**Not just cost — the work behind it.** Cost meters tell you what you spent; this plugin also tells you *what you did*: how many days you showed up, which hours you were sharpest, and which project your effort actually went into. That is the part you can put in front of a client.
 
-- ✅ **按工作区的工作量对照**：每行左侧「我的付出」（活跃时长 + 活跃天数 + 轮次/步骤），右侧「Token 消耗」（总量 + 输出/缓存），两条 bar 同口径可按占比直接比。
-- ✅ **日历热力图**：纵轴周一～周日、横轴 Year-Week，颜色＝活跃时长；固定展示**全部历史**，右侧紧贴 7 条「周几累计」，一眼看出周几更忙。
-- ✅ **时刻分析**：0–23 点谁更活跃，最活跃时段高亮（口径＝会话活跃窗口按墙钟比例分摊，严格守恒）。
-- ✅ **工作区占比环形图**：Top 6 + 其他，可在「按时长 / 按 Token」之间切换。
-- ✅ **可外发的 HTML 报告**：单文件、内联 CSS + 内联 SVG、无脚本无外链；支持浅/深色、自定义标题与备注、`anonymize=1` 匿名化工作区与会话标题。
-- ✅ **KPI 一览**：活跃时长 / 总 Token（完整整数，可核对）/ 活跃天数 / 对话次数 / 轮次·步骤 / 缓存读取占比。
-- ✅ **官方接口读数据**：不解析日志格式、不写业务数据、不联网；结果零 I/O 读投影检查点，冷读兜底 + 本地索引复用。
-- ✅ **主题与语言自适应**：全部使用宿主主题 token（--dsw-*），自动跟随浅/深色与中/英文。
+## Features
 
-## 界面
+- ✅ **Effort vs. spend per workspace**: each row shows "My effort" on the left (active time + active days + turns/steps) and "Token spend" on the right (total + output/cache). Both bars use the same scale, so they compare directly.
+- ✅ **Calendar heatmap**: rows Mon–Sun, columns Year-Week, colour = active time. It always shows the **full history**, with 7 per-weekday totals glued to the right edge — you can see at a glance which weekday you are busiest.
+- ✅ **Time-of-day analysis**: who is active from 0–23, with the peak hour highlighted (definition: each session's active window is spread across the covered hours by wall-clock share).
+- ✅ **Workspace donut**: Top 6 + others, switchable between time and tokens.
+- ✅ **Shareable HTML report**: a single file with inline CSS and inline SVG, no scripts and no external links; light/dark themes, custom title and note, and `anonymize=1` to hide workspace names and session titles.
+- ✅ **Six KPIs**: active time / total tokens (as a full integer you can verify) / active days / conversations / turns·steps / cache-read share.
+- ✅ **Official interfaces only**: no log-format parsing, no business data written, no outbound requests. Values come from zero-I/O projection-checkpoint reads, with an official cold-read fallback and a reusable local index.
+- ✅ **Theme and locale aware**: every colour comes from host theme tokens (`--dsw-*`), so it follows the harness's light/dark theme and Chinese/English locale.
 
-**首页**：6 张 KPI + 日历热力图（可切柱状图）+ 并排的「时刻分析 / 工作区占比」+ 折叠的按日期明细
+## Screenshots
+
+**Home**: six KPIs + calendar heatmap (switchable to a bar chart) + side-by-side time-of-day analysis and workspace share + a collapsed daily table
 
 ![dashboard](https://raw.githubusercontent.com/tableau-China/dsh-workload-report/main/assets/dashboard-calendar.png)
 
-**按工作区**：左「我的付出」右「Token 消耗」，两条 bar 同口径
+**By workspace**: effort on the left, token spend on the right, two bars on one scale
 
 ![workspace](https://raw.githubusercontent.com/tableau-China/dsh-workload-report/main/assets/dashboard-workspace.png)
 
-**导出的报告**（单文件、可直接发客户）
+**The exported report** (single file, safe to send to a client)
 
 ![report light](https://raw.githubusercontent.com/tableau-China/dsh-workload-report/main/assets/report-light.png)
 
 <details>
-<summary>深色主题报告</summary>
+<summary>Dark-theme report</summary>
 
 ![report dark](https://raw.githubusercontent.com/tableau-China/dsh-workload-report/main/assets/report-dark.png)
 
 </details>
 
-## 安装
+## Install
 
-### 方式一：从 GitHub 直接装（推荐）
+### 1. Straight from GitHub (recommended)
 
 ```bash
 dsh plugin --profile web add github:tableau-China/dsh-workload-report#main
 ```
 
-构建产物 `lib/client.js` 已入库，**不需要本地构建**。装完重启 Web profile，侧边栏底部出现「工作量报告」。
+The built client bundle (`lib/client.js`) is committed, so **no local build is needed**. Restart the Web profile afterwards — a "Workload report" entry appears at the bottom of the sidebar.
 
-### 方式二：本地源码 link
+### 2. Link a local checkout
 
 ```bash
 cd /path/to/dsh-workload-report
-dsh plugin --profile web add link:$PWD     # 会让 profile 直接指向源码目录
+dsh plugin --profile web add link:$PWD     # points the profile at your source tree
 ```
 
-### 方式三：npm
+### 3. From npm
 
 ```bash
 dsh plugin --profile web add dsh-workload-report
 ```
 
-> 已发布到 npm：<https://www.npmjs.com/package/dsh-workload-report>
-> 注：若你的 npm 配了国内镜像源，新包可能要几分钟才同步；急着装就用方式一。
+> Published on npm: <https://www.npmjs.com/package/dsh-workload-report>
+> If your npm client points at a mirror (e.g. npmmirror), a brand-new package can take a few minutes to appear — use option 1 if you are in a hurry.
 
-卸载：`dsh plugin --profile web remove dsh-workload-report`。
+Uninstall: `dsh plugin --profile web remove dsh-workload-report`.
 
-## 配置
+## Configuration
 
-在 profile 的 `cordis.patch.yml` 里覆盖（全部可选）：
+Override any of these in your profile's `cordis.patch.yml` (all optional):
 
 ```yaml
 - id: workload-report
   name: dsh-workload-report
   config:
-    apiPath: /workload-report/v1        # 只读接口前缀
-    defaultDays: 30                     # 默认区间
+    apiPath: /workload-report/v1        # read-only API prefix
+    defaultDays: 30                     # default range
     defaultScope: all                   # all | main | subagent
-    defaultTitle: 工作量报告              # 报告标题
-    workspaceAliases:                   # 工作区显示名（给客户看时非常有用）
-      my-shop-app: 零售订单系统
-      data-platform: 数据中台
+    defaultTitle: Workload Report       # report title
+    workspaceAliases:                   # display names (very handy for client-facing reports)
+      my-shop-app: Retail Order System
+      data-platform: Data Platform
 ```
 
-## 只读接口
+## Read-only API
 
-| 路由 | 说明 |
+| Route | Description |
 | --- | --- |
-| `GET {apiPath}/snapshot?days=30&tz=Asia/Shanghai&scope=all` | 聚合快照 JSON（totals / byDay / byWorkspace / byHour / bySession / calendar / diagnostics） |
-| `GET {apiPath}/export.json?...` | 同上，带 `content-disposition` 下载 |
-| `GET {apiPath}/report.html?days=90&theme=dark&anonymize=1&title=...` | 自包含 HTML 报告 |
-| `GET {apiPath}/health` | 索引诊断（会话数、检查点命中、冷读、读取失败、耗时） |
+| `GET {apiPath}/snapshot?days=30&tz=Asia/Shanghai&scope=all` | Aggregated snapshot JSON (totals / byDay / byWorkspace / byHour / bySession / calendar / diagnostics) |
+| `GET {apiPath}/export.json?...` | Same payload, sent with `content-disposition` for download |
+| `GET {apiPath}/report.html?days=90&theme=dark&anonymize=1&title=...` | Self-contained HTML report |
+| `GET {apiPath}/health` | Index diagnostics (session count, checkpoint hits, cold reads, read failures, duration) |
 
-参数：`from`/`to`（YYYY-MM-DD，优先于 `days`）、`days`、`all=1`（＝最早的活跃日 → 今天）、`tz`（IANA 时区）、`scope`。
+Parameters: `from`/`to` (YYYY-MM-DD, take precedence over `days`), `days`, `all=1` (earliest active day → today), `tz` (IANA time zone), `scope`.
 
-## 口径
+## Metric definitions
 
-完整定义见 **[docs/metrics.md](./docs/metrics.md)**；**界面里时长单位统一用 `H / M / S`**（与 Token 的 K/M/B 一样语言无关，中英文共用一份格式）。最容易误读的三条：
+The full definitions live in **[docs/metrics.md](./docs/metrics.md)**. Durations are always shown in **`H / M / S`** (language-neutral, like K/M/B for tokens, so one format serves every locale). The three most misunderstood:
 
-- **活跃时长** = 模型推理时间 + 工具执行时间，是**引擎累计工作时间**；并发会话与子代理各自累加，不等于墙钟时长。
-- **对话次数** = 至少产生 1 个步骤的会话数；零步会话（只打开没交互）单列。
-- **归属日期** = 会话创建时间在所选时区的自然日；跨天续聊的活动记在创建那天。
+- **Active time** = model time + tool time. It is **cumulative engine work**, not wall-clock time; concurrent sessions and subagents each add up.
+- **Conversations** = sessions with at least one step. Zero-step sessions (opened but unused) are listed separately.
+- **Attribution date** = the session's creation day in the selected time zone; a session resumed across midnight still counts on its creation day.
 
-## 隐私
+## Privacy
 
-统计数据全部留在本机；插件只注册**只读** HTTP 路由，不联网、不采集任何用户内容。
-唯一写入的是自己的索引缓存 `<DSH_HOME>/workload-report/index-v*.json`（删掉即回到冷读重建，不影响任何 Harness 数据）。
-导出的 HTML 报告是否包含会话标题由你决定（`anonymize=1` 可隐藏）。
+All statistics stay on your machine. The plugin registers **read-only** HTTP routes only: no outbound requests, no telemetry, no user content collected.
+The single file it writes is its own index cache at `<DSH_HOME>/workload-report/index-v*.json` — delete it and the plugin rebuilds by cold-reading; nothing else in your harness data is touched.
+Whether the exported HTML report contains session titles is your call (`anonymize=1` hides them).
 
-## 开发
+## Development
 
-| 命令 | 作用 |
+| Command | Purpose |
 | --- | --- |
-| `pnpm add -D esbuild puppeteer-core` | 安装构建与 E2E 依赖（也可用 `ESBUILD_PATH` / `WL_PUPPETEER_DIR` 指向已有安装） |
-| `node build.mjs` | 用 esbuild 把 `src/client/` 打成 `lib/client.js`（ModuleLoader 工厂格式） |
-| `node test/verify.mjs` | 离线验证 124 项：聚合口径、时区、时刻分摊守恒、全部档起点、日历数据源、HTML 转义、token 两种形状、冷读兜底、inject 声明、宿主路由 |
-| `./test/e2e-boot.sh 3299` | 起一个**隔离实例**（独立 DSH_HOME + 端口，复制真实投影数据），不影响正在用的 GUI |
-| `node test/e2e-ui.mjs` | 真实浏览器 E2E 61 项：日历/柱状图切换、并排几何校验、周几条、环形图切换、明细折叠、导出报告 |
+| `pnpm add -D esbuild puppeteer-core` | Install build and E2E dependencies (or point `ESBUILD_PATH` / `WL_PUPPETEER_DIR` at existing installs) |
+| `node build.mjs` | Bundle `src/client/` into `lib/client.js` (ModuleLoader factory format) with esbuild |
+| `node test/verify.mjs` | 124 offline assertions: aggregation semantics, time zones, hour-spread conservation, "all-time" start, calendar data source, HTML escaping, both token shapes, cold-read fallback, `inject` declaration check, host routes |
+| `./test/e2e-boot.sh 3299` | Boot an **isolated instance** (own DSH_HOME and port, copied projection data) without touching your running GUI |
+| `node test/e2e-ui.mjs` | 61 real-browser assertions: calendar/bar switching, side-by-side geometry, weekday bars, donut switching, collapsed detail, report export |
 
-CI 会跑 `build.mjs` + `verify.mjs`，并校验入库的 `lib/client.js` 与源码一致。
+CI runs `build.mjs` + `verify.mjs`, and fails if the committed `lib/client.js` differs from a fresh build.
 
-发布流程（推 tag 自动发 npm，含 2FA / Trusted Publishing / 发后校验清单）见 **[docs/release.md](https://github.com/tableau-China/dsh-workload-report/blob/main/docs/release.md)**。
+## Compatibility
 
-文章：[介绍这个插件的博客文章](https://github.com/tableau-China/dsh-workload-report/blob/main/docs/blog.md)（[English README](./README.en.md)）
+- DSH `0.2.x`, **including `alpha` prereleases** (developed and verified against `@deepseek-ai/dsh@0.2.1-alpha.2`): the plugin only depends on official interfaces (`sessionProjections` / `sessionProjectionCache` / `sessionQuery`) and Node built-ins, never on internal file formats — so it can follow new releases. **Staying compatible with the latest alpha is one of this project's goals**; breakages will be tracked in issues and the CHANGELOG.
+- The first launch cold-reads historical sessions whose projection checkpoints are missing (about 2 minutes for 300+ sessions on my machine, concurrency 8). During that pass the API returns progressively filled data with `indexing: true`; once the index is persisted, restarts reuse it.
+- Very early **v0-format sessions** may not be migratable/readable by the current harness. They are excluded from the statistics and the UI reports how many.
 
-## 兼容性
-
-- DSH `0.2.x`，**含 `alpha` 预发布版**（开发与验证基于 `@deepseek-ai/dsh@0.2.1-alpha.2`）：
-  插件只依赖官方接口（`sessionProjections` / `sessionProjectionCache` / `sessionQuery`）与 Node 内置模块，不碰内部文件格式，
-  因此能跟着新版本走——**保持对最新 alpha 的兼容是本项目的目标之一**，遇到不兼容会在 issue/CHANGELOG 里跟进。
-- 首次启动会对投影检查点未命中的历史会话做一次冷读（本机实测约 2 分钟，并发 8），期间接口返回**逐步填充**的数据并带 `indexing: true`；结果落盘后重启即复用。
-- 极早期的 **v0 格式会话**可能无法被当前 Harness 迁移/读取，这类会话不计入统计，界面会写明数量。
-
-## License
-
-[MIT](./LICENSE)
-
----
-
-## 作者
+## Author
 
 <table>
 <tr>
 <td width="40" valign="middle"><img src="https://avatars.githubusercontent.com/u/49810568?v=4" width="32" height="32" alt="XILEJUN" style="border-radius:50%"></td>
 <td valign="middle">
 
-**[XILEJUN](https://github.com/tableau-China)** · TimeMirror 作者 · [博客文章](https://github.com/tableau-China/dsh-workload-report/blob/main/docs/blog.md) · [English README](./README.en.md)
+**[XILEJUN](https://github.com/tableau-China)** — author of TimeMirror · [Blog post (中文)](https://github.com/tableau-China/dsh-workload-report/blob/main/docs/blog.md)
 
 </td>
 </tr>
