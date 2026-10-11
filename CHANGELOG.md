@@ -1,5 +1,15 @@
 # CHANGELOG — dsh-workload-report
 
+## v0.3.5（2026-10-11）— 发布流程自动化
+
+- 新增 [.github/workflows/release.yml](./.github/workflows/release.yml)：推送 `v*` tag 即自动发布到 npm，
+  使用 **OIDC Trusted Publishing**（无需任何 token、本地无需输 OTP），并带 `--provenance` 签名。
+  workflow 内置四道闸：tag ↔ package.json 版本一致、入库 `lib/client.js` 与源码一致、124 项离线断言、版本未被发布过。
+- 新增 [docs/release.md](./docs/release.md)：一次性配置（2FA + Trusted Publisher）、日常发版步骤、本地应急发布、
+  发布后校验清单，以及本次踩过的坑（403 / 0.0.0-stage 占位 / 镜像源 / README 坏图）。
+- 背景：0.3.4 首次发布时因账号未开 2FA 报 `E403`，开启后经浏览器授权以 202 异步受理完成发布；
+  此版本把该流程固化，避免重复踩坑。
+
 ## v0.3.4（2026-10-11）— npm 首发
 
 - **发布到 npm**（本版本为 npm 首发，`dsh plugin --profile web add dsh-workload-report` 从此可用）。

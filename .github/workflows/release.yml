@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # OIDC：npm trusted publishing 必需
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      # trusted publishing 需要 npm CLI ≥ 11.5.1
+      - name: 升级 npm
+        run: npm install -g npm@latest
+
+      - name: 校验 tag 与 package.json 版本一致
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::tag v$TAG 与 package.json $PKG 不一致"
+            exit 1
+          fi
+          echo "版本校验通过：$PKG"
+
+      - name: 安装构建依赖并构建
+        run: |
+          npm install --no-save --no-audit --no-fund esbuild@^0.28.2
+          node build.mjs
+
+      - name: 校验入库的 lib/client.js 与源码一致
+        run: |
+          if ! git diff --quiet -- lib/client.js; then
+            echo "::error::lib/client.js 与源码不一致，请本地 node build.mjs 后提交"
+            git diff --stat -- lib/client.js
+            exit 1
+          fi
+
+      - name: 离线验证（聚合口径 / 路由 / 报告 / i18n）
+        run: node test/verify.mjs
+
+      - name: 检查该版本是否已发布
+        run: |
+          V="$(node -p "require('./package.json').version")"
+          if npm view "dsh-workload-report@$V" version >/dev/null 2>&1; then
+            echo "::error::dsh-workload-report@$V 已存在于 npm，不能重复发布"
+            exit 1
+          fi
+
+      - name: 发布（OIDC + provenance，无需 token）
+        run: npm publish --provenance --access public

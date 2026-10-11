@@ -137,6 +137,8 @@ dsh plugin --profile web add dsh-workload-report
 
 CI 会跑 `build.mjs` + `verify.mjs`，并校验入库的 `lib/client.js` 与源码一致。
 
+发布流程（推 tag 自动发 npm，含 2FA / Trusted Publishing / 发后校验清单）见 **[docs/release.md](./docs/release.md)**。
+
 文章：[介绍这个插件的博客文章](./docs/blog.md)（[English README](./README.en.md)）
 
 ## 兼容性
