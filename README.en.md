@@ -8,7 +8,7 @@
 
 [![npm](https://img.shields.io/npm/v/dsh-workload-report?style=flat-square&logo=npm)](https://www.npmjs.com/package/dsh-workload-report)
 [![license](https://img.shields.io/github/license/tableau-China/dsh-workload-report?style=flat-square)](./LICENSE)
-[![CI](https://img.shields.io/github/actions/workflow/status/tableau-China/dsh-workload-report/ci.yml?branch=main&style=flat-square&label=CI)](../../actions)
+[![CI](https://img.shields.io/github/actions/workflow/status/tableau-China/dsh-workload-report/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/tableau-China/dsh-workload-report/actions)
 [![node](https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&logo=node.js)](https://nodejs.org)
 
 [中文](./README.md) · English
@@ -150,7 +150,7 @@ CI runs `build.mjs` + `verify.mjs`, and fails if the committed `lib/client.js` d
 <td width="40" valign="middle"><img src="https://avatars.githubusercontent.com/u/49810568?v=4" width="32" height="32" alt="XILEJUN" style="border-radius:50%"></td>
 <td valign="middle">
 
-**[XILEJUN](https://github.com/tableau-China)** — author of TimeMirror · [Blog post (中文)](./docs/blog.md)
+**[XILEJUN](https://github.com/tableau-China)** — author of TimeMirror · [Blog post (中文)](https://github.com/tableau-China/dsh-workload-report/blob/main/docs/blog.md)
 
 </td>
 </tr>

@@ -8,7 +8,7 @@
 
 [![npm](https://img.shields.io/npm/v/dsh-workload-report?style=flat-square&logo=npm)](https://www.npmjs.com/package/dsh-workload-report)
 [![license](https://img.shields.io/github/license/tableau-China/dsh-workload-report?style=flat-square)](./LICENSE)
-[![CI](https://img.shields.io/github/actions/workflow/status/tableau-China/dsh-workload-report/ci.yml?branch=main&style=flat-square&label=CI)](../../actions)
+[![CI](https://img.shields.io/github/actions/workflow/status/tableau-China/dsh-workload-report/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/tableau-China/dsh-workload-report/actions)
 [![node](https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&logo=node.js)](https://nodejs.org)
 
 中文 · [English](./README.en.md)
@@ -137,9 +137,9 @@ dsh plugin --profile web add dsh-workload-report
 
 CI 会跑 `build.mjs` + `verify.mjs`，并校验入库的 `lib/client.js` 与源码一致。
 
-发布流程（推 tag 自动发 npm，含 2FA / Trusted Publishing / 发后校验清单）见 **[docs/release.md](./docs/release.md)**。
+发布流程（推 tag 自动发 npm，含 2FA / Trusted Publishing / 发后校验清单）见 **[docs/release.md](https://github.com/tableau-China/dsh-workload-report/blob/main/docs/release.md)**。
 
-文章：[介绍这个插件的博客文章](./docs/blog.md)（[English README](./README.en.md)）
+文章：[介绍这个插件的博客文章](https://github.com/tableau-China/dsh-workload-report/blob/main/docs/blog.md)（[English README](./README.en.md)）
 
 ## 兼容性
 
@@ -162,7 +162,7 @@ CI 会跑 `build.mjs` + `verify.mjs`，并校验入库的 `lib/client.js` 与源
 <td width="40" valign="middle"><img src="https://avatars.githubusercontent.com/u/49810568?v=4" width="32" height="32" alt="XILEJUN" style="border-radius:50%"></td>
 <td valign="middle">
 
-**[XILEJUN](https://github.com/tableau-China)** · TimeMirror 作者 · [博客文章](./docs/blog.md) · [English README](./README.en.md)
+**[XILEJUN](https://github.com/tableau-China)** · TimeMirror 作者 · [博客文章](https://github.com/tableau-China/dsh-workload-report/blob/main/docs/blog.md) · [English README](./README.en.md)
 
 </td>
 </tr>
