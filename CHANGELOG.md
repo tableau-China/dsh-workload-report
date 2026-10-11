@@ -2,8 +2,11 @@
 
 ## v0.3.5（2026-10-11）— 发布流程自动化
 
-- 新增 [.github/workflows/release.yml](./.github/workflows/release.yml)：推送 `v*` tag 即自动发布到 npm，
-  使用 **OIDC Trusted Publishing**（无需任何 token、本地无需输 OTP），并带 `--provenance` 签名。
+- 新增 [.github/workflows/release.yml](./.github/workflows/release.yml)：推送 `v*` tag 即自动**暂存**到 npm
+  （`npm stage publish`，用 `NPM_TOKEN` 密钥，无需 OTP），再由本人在本地用一次 OTP 批准发布
+  （`npm stage approve <id> --otp=…`）。
+  说明：npm 现要求每次发布都有交互式 2FA —— 直连 `npm publish` 即使带 token 也会报 `EOTP`；
+  账号级 Trusted Publisher 设置页当时无法打开，故未采用 OIDC。
   workflow 内置四道闸：tag ↔ package.json 版本一致、入库 `lib/client.js` 与源码一致、124 项离线断言、版本未被发布过。
 - 新增 [docs/release.md](./docs/release.md)：一次性配置（2FA + Trusted Publisher）、日常发版步骤、本地应急发布、
   发布后校验清单，以及本次踩过的坑（403 / 0.0.0-stage 占位 / 镜像源 / README 坏图）。
