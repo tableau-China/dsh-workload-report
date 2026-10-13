@@ -107,9 +107,26 @@ try {
       const button = [...document.querySelectorAll("button")].find((node) => (node.textContent || "").includes("Choose workspace"));
       button?.click();
     });
-    const box = await page.waitForSelector('textarea[placeholder="Choose a workspace to start"]', { timeout: 20000 });
-    await box.type(WORKSPACE_PATH);
-    await page.keyboard.press("Enter");
+    // 两种情况都要兼容：首次是"路径输入框"，测试 home 复用后是"最近工作区列表"
+    const box = await page.waitForSelector('textarea[placeholder="Choose a workspace to start"]', { timeout: 15000 }).catch(() => null);
+    if (box !== null) {
+      await box.type(WORKSPACE_PATH);
+      await page.keyboard.press("Enter");
+    } else {
+      const picked = await page.evaluate((ws) => {
+        const nodes = [...document.querySelectorAll("button, li, [role='button'], a, div")];
+        const hit = nodes.find((n) => (n.textContent || "").includes(ws) && (n.textContent || "").length < 200);
+        hit?.click();
+        return hit !== undefined;
+      }, WORKSPACE_PATH);
+      ok(picked, "在工作区列表里选中测试工作区", WORKSPACE_PATH);
+      // 列表可能还需要一次 Open/打开
+      await sleep(1500);
+      await page.evaluate(() => {
+        const open = [...document.querySelectorAll("button")].find((n) => /^(Open|打开)$/.test((n.textContent || "").trim()));
+        open?.click();
+      });
+    }
     await sleep(2000);
     await page.evaluate(() => {
       const button = [...document.querySelectorAll("button")].find((node) => (node.textContent || "").trim() === "Open");

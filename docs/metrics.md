@@ -34,3 +34,26 @@
 
 - 极早期的 v0 格式会话，当前 Harness 版本可能无法迁移/读取（冷读会失败）；这类会话不计入统计，界面会写明数量。
 - 首次建索引需要冷读历史会话（本机实测约 2 分钟，并发 8），期间接口返回逐步填充的数据并带 `indexing: true`。
+
+## 模型维度（0.4.0）
+
+| 指标 | 口径 |
+| --- | --- |
+| 模型归属 | 事件 `assistant/message` 的 `data.message.source.{provider, model}`；同会话可含多个模型 |
+| **归并** | `deepseek-flash`、`deepseek-v4-flash`、`deepseek-v4-flash-vision-exp` 合并显示为 **`deepseek-v4-flash`**（官方定价页注 1：前者的 legacy 名）；明细可展开看原始组成；可用 `modelGroups` 自定义 |
+| 请求数 | 一条 `assistant/message` = 一次请求 = 一个 step |
+| Token | 事件 `data.usage.{inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens}`；缺 usage 的请求只计请求、不计 token（不猜） |
+| 缓存命中率 | `cacheRead / (cacheRead + input)`；两者皆 0 时显示 `—` |
+| 模型耗时 | 各模型 `stream` 时间窗口占比 → 分摊会话 `sessionStats.llmMs`；**各模型之和 = 会话模型时间（守恒）** |
+| 思考强度 | `request/header` 的 `data.header.config.reasoningEffort` 分布 |
+| 未标注模型 | 缺 provider/model 的请求归入 `(未标注模型)` 桶 |
+
+### 费用估算（可选，默认显示）
+
+- **单价来源**：内置官方公开价（**as-of 2026-10-13**），DeepSeek 分**峰/谷**两档：
+  峰时 = **01:00–04:00 与 06:00–10:00 UTC，周一至周五**；其余时间（含周末）为谷时，谷价 = 峰价一半。
+  中国法定节假日无法离线判定 → 按峰价计入（**略微高估**）。
+- 每条 `assistant/message` 按其 `time` 判定峰/谷 → 逐请求计费，非近似。
+- 官方单价（每 100 万 tokens，CNY）：flash 缓存命中 0.02/0.04、未命中 1/2、输出 4/8；pro 0.15/0.30、4.5/9、13.5/27（谷/峰）。
+- **没有官方价的模型显示 `—`，不编造数字**（Kimi 价格页为前端渲染、Claude 定价页区域受限，均无法可靠获取）。
+- 页面与报告底部固定给出官方计费链接；**插件运行时不联网**，单价为内置常量 + 用户可覆盖（`pricing.overrides`）。
