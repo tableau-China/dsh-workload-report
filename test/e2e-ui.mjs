@@ -165,6 +165,8 @@ try {
   await page.click(".wl-footer-item");
   await page.waitForSelector(".wl-panel", { timeout: 30000 });
   await page.waitForFunction(() => document.querySelectorAll(".wl-kpi-value").length >= 6, { timeout: 30000 });
+  // 骨架屏会先渲染（数值位是「加载中…」）：等真实快照到位、骨架被替换后再断言数值
+  await page.waitForFunction(() => document.querySelector("[data-kind=skeleton]") === null, { timeout: 60000 });
   // 首次建索引会冷读历史会话：等"正在补齐"提示消失（面板会每 5 秒自动重拉）
   await page.waitForFunction(() => document.querySelector('[data-kind="indexing"]') === null, { timeout: 120000 }).catch(() => {});
   await sleep(1500);

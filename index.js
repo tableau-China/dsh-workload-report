@@ -40,7 +40,7 @@ export const inject = ["sessionQuery", "sessionProjectionCache", "sessionProject
 const DEFAULTS = {
   apiPath: "/workload-report/v1",
   refreshMs: 30000,
-  defaultDays: 30,
+  defaultDays: 7,
   defaultScope: "all",
   workspaceAliases: {},
   defaultTitle: "工作量报告",

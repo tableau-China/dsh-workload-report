@@ -6,7 +6,7 @@
  * 图表是手写 SVG，不引第三方图表库；样式全部用宿主主题 token，自动适配浅色/深色。
  */
 
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { STYLES } from "./styles.js";
 import { NS, en, languageOf, translate, zh } from "./locales.js";
 import { formatDuration, formatInt, formatKpiDuration, formatPercent, formatTokens } from "../format.js";
@@ -26,6 +26,12 @@ const RANGES = [
 
 /** 统计范围。 */
 const SCOPES = ["all", "main", "subagent"];
+
+/** 「按日期明细」的列（骨架屏与真实表格共用，列顺序不会漂）。 */
+const DETAIL_COLUMNS = ["table.date", "table.conversations", "table.turns", "table.steps", "table.active", "table.input", "table.output", "table.cache"];
+
+/** KPI 卡片顺序（骨架屏与真实卡片共用，卡片数量/顺序不会漂）。 */
+const KPI_KEYS = ["kpi.active", "kpi.tokens", "kpi.modelCost", "kpi.activeDays", "kpi.conversations", "kpi.turns", "kpi.cache", "kpi.topModel"];
 
 /** 需要 inject 的服务：插槽注册表 + 国际化。 */
 export const inject = ["slots", "locale"];
@@ -441,70 +447,104 @@ export function dailyAxisTickIndices(count, step, minGap = 46) {
   return [...picked].sort((a, b) => a - b);
 }
 
-/** 每日「Token 堆叠柱 + 活跃时长折线」。 */
+/**
+ * 观测容器的真实像素尺寸：viewBox 直接用 CSS 像素，SVG 因而正好铺满容器
+ * —— 不会再出现"等比缩放后在图形上下留出空白带"的问题，字号也是屏幕上的真实字号。
+ */
+function useChartSize(ref) {
+  const [size, setSize] = useState({ width: 0, height: 0 });
+  useLayoutEffect(() => {
+    const node = ref.current;
+    if (node === null) return undefined;
+    const measure = () => {
+      const width = Math.round(node.clientWidth);
+      const height = Math.round(node.clientHeight);
+      if (width <= 0 || height <= 0) return; // 未布局 / 隐藏时保留上一次尺寸
+      setSize((previous) => (previous.width === width && previous.height === height ? previous : { width, height }));
+    };
+    measure();
+    if (typeof ResizeObserver !== "function") return undefined;
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [ref]);
+  return size;
+}
+
+/**
+ * 每日趋势：柱高与折线点都取 day.activeMs（**单一序列**：活跃时长）。
+ * 折线点上用小字号标数值（h/m/s），点数多时隔点标注，避免叠字。
+ */
 function DailyChart({ days, t }) {
+  const box = useRef(null);
+  const { width, height } = useChartSize(box);
   const geometry = useMemo(() => {
-    const width = 1080;
-    const height = 240;
-    const pad = { top: 12, right: 8, bottom: 30, left: 8 };
+    if (days.length === 0 || width <= 0 || height <= 0) return null;
+    // 日期轴 9px、基线离底 6px：下边距压到 20px 就够，其余高度全给图形（图与图例之间不留空白带）
+    const pad = { top: 20, right: 8, bottom: 20, left: 8 };
     const innerW = width - pad.left - pad.right;
-    const innerH = height - pad.top - pad.bottom;
-    if (days.length === 0) return null;
-    const maxTokens = Math.max(1, ...days.map((day) => day.tokensTotal));
+    const innerH = Math.max(1, height - pad.top - pad.bottom);
     const maxActive = Math.max(1, ...days.map((day) => day.activeMs));
     const step = innerW / days.length;
     const barWidth = Math.max(1.5, Math.min(24, step * 0.62));
+    // 隔点标注：每个数值至少占 30px，相邻数值才不会叠在一起
+    const labelStep = Math.max(1, Math.ceil(30 / step));
     const bars = [];
+    const values = [];
     const points = [];
     days.forEach((day, index) => {
       const centerX = pad.left + step * index + step / 2;
-      const scale = (value, max) => (value / max) * innerH;
-      const heights = [
-        [day.tokens.cacheRead, "var(--dsw-static-neutral-300, #c7cbd1)"],
-        [day.tokens.input, "var(--dsw-static-blue-500, #3b82f6)"],
-        [day.tokens.output, "var(--dsw-static-green-500, #10b981)"],
-      ];
-      let y = pad.top + innerH;
-      const rects = [];
-      heights.forEach(([value, fill], series) => {
-        const h = scale(value, maxTokens);
-        if (h <= 0.4) return;
-        y -= h;
-        rects.push(<rect key={series} x={centerX - barWidth / 2} y={y} width={barWidth} height={h} rx="2" fill={fill} />);
-      });
+      const y = pad.top + innerH - (day.activeMs / maxActive) * innerH;
+      points.push(`${centerX.toFixed(2)},${y.toFixed(2)}`);
+      // 每天都画柱（0 也留 1px）：悬停提示覆盖全部日期，柱 rect 数 = 天数
       bars.push(
-        <g key={day.date}>
-          <title>{`${day.date}\nToken ${formatInt(day.tokensTotal)}\n活跃 ${formatDuration(day.activeMs)}\n对话 ${day.conversations} · 轮次 ${day.turns}`}</title>
-          {rects}
-        </g>,
+        <rect key={day.date} data-kind="active-bar" x={centerX - barWidth / 2} y={y} width={barWidth} height={Math.max(pad.top + innerH - y, 1)} rx="2" fill="var(--dsw-static-deepseek-500, #4d6bfe)">
+          <title>{`${day.date}\n活跃 ${formatDuration(day.activeMs)}\n对话 ${day.conversations} · 轮次 ${day.turns}\nToken ${formatInt(day.tokensTotal)}`}</title>
+        </rect>,
       );
-      points.push(`${centerX.toFixed(2)},${(pad.top + innerH - scale(day.activeMs, maxActive) * 0.92).toFixed(2)}`);
+      // 0 不标：点就落在轴上，标 "0" 只会和日期挤在一起
+      if (day.activeMs > 0 && index % labelStep === 0) {
+        values.push(
+          <text key={day.date} data-kind="point-label" x={centerX} y={y - 5} textAnchor="middle" fontSize="9" fill="var(--dsw-alias-label-secondary, #4b5563)">
+            {formatDuration(day.activeMs)}
+          </text>,
+        );
+      }
     });
     // 刻度数量自适应 + 首尾必显；贴边的标签向内收，避免被 viewBox 裁掉
     const tickIndices = new Set(dailyAxisTickIndices(days.length, step));
-    const labels = days.map((day, index) => {
+    const axis = days.map((day, index) => {
       if (!tickIndices.has(index)) return null;
       const text = day.date.slice(5);
-      const half = text.length * 3.1; // 字号 10：日期字符宽约 6.2
+      const half = text.length * 2.8; // 字号 9：日期字符宽约 5.6
       const centerX = pad.left + step * index + step / 2;
       return (
-        <text key={day.date} x={Math.min(Math.max(centerX, half), width - half)} y={height - 10} textAnchor="middle" fontSize="10" fill="var(--dsw-alias-label-tertiary, #6b7280)">
+        <text key={day.date} x={Math.min(Math.max(centerX, half), width - half)} y={height - 6} textAnchor="middle" fontSize="9" fill="var(--dsw-alias-label-tertiary, #6b7280)">
           {text}
         </text>
       );
     });
-    return { width, height, pad, innerH, innerW, bars, points, labels };
-  }, [days]);
+    return { width, height, pad, innerH, innerW, bars, values, points, axis };
+  }, [days, width, height]);
 
-  if (geometry === null) return <p className="wl-state">{t("state.empty")}</p>;
-  const { width, height, pad, innerH, innerW, bars, points, labels } = geometry;
+  if (geometry === null) {
+    return (
+      <div className="wl-chart-fill" ref={box} data-kind="daily-chart">
+        {days.length === 0 ? <p className="wl-state">{t("state.empty")}</p> : null}
+      </div>
+    );
+  }
+  const { pad, innerH, innerW, bars, values, points, axis } = geometry;
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} width="100%" height={height} role="img" aria-label={t("chart.daily")}>
-      <line x1={pad.left} y1={pad.top + innerH} x2={pad.left + innerW} y2={pad.top + innerH} stroke="var(--dsw-alias-border-l2, #e5e7eb)" />
-      {bars}
-      <polyline points={points.join(" ")} fill="none" stroke="var(--dsw-static-deepseek-500, #4d6bfe)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" opacity="0.85" />
-      {labels}
-    </svg>
+    <div className="wl-chart-fill" ref={box} data-kind="daily-chart">
+      <svg viewBox={`0 0 ${width} ${height}`} width={width} height={height} role="img" aria-label={t("chart.daily")}>
+        <line x1={pad.left} y1={pad.top + innerH} x2={pad.left + innerW} y2={pad.top + innerH} stroke="var(--dsw-alias-border-l2, #e5e7eb)" />
+        {bars}
+        <polyline points={points.join(" ")} fill="none" stroke="var(--dsw-static-deepseek-500, #4d6bfe)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" opacity="0.85" />
+        {values}
+        {axis}
+      </svg>
+    </div>
   );
 }
 
@@ -792,8 +832,21 @@ function layoutTreemap(items, x, y, w, h, out = []) {
 /** 未标注模型的 key（与宿主 src/models.js 保持一致）。 */
 const UNKNOWN_KEY = "(\u672a\u6807\u6ce8\u6a21\u578b)";
 
-/** KPI 卡片组。 */
+/** KPI 卡片组；data 为 null 时渲染骨架（标签先就位，只有数值位显示「加载中…」）。 */
 function Kpis({ data, t }) {
+  if (data === null || data === undefined) {
+    return (
+      <div className="wl-kpis" data-kind="kpi-skeleton">
+        {KPI_KEYS.map((key) => (
+          <div className="wl-kpi" key={key} data-kpi={key}>
+            <div className="wl-kpi-label">{t(key)}</div>
+            <div className="wl-kpi-value wl-pending">{t("state.loading")}</div>
+            <div className="wl-kpi-sub" />
+          </div>
+        ))}
+      </div>
+    );
+  }
   const totals = data.totals;
   const derived = data.derived;
   // 模型费用：只统计有官方单价的模型；一个都没有时显示 —（不编数字），副标题给出覆盖度与价目日期
@@ -856,6 +909,70 @@ function Kpis({ data, t }) {
 }
 
 /**
+ * 骨架屏：内存缓存未命中时**立即**把整块卡片布局摆出来（KPI / 图表容器 / 表格框），
+ * 只有数值位显示「加载中…」；数据到达后由真实视图原地替换（不整屏转圈、不跳版）。
+ */
+function SkeletonBody({ t }) {
+  return (
+    <div className="wl-skeleton" data-kind="skeleton" aria-busy="true">
+      <Kpis data={null} t={t} />
+      <div className="wl-tabs" aria-hidden="true">
+        {["byDay", "byWorkspace", "bySession"].map((key, index) => (
+          <span key={key} className="wl-tab" data-active={index === 0}>{t(`tab.${key}`)}</span>
+        ))}
+      </div>
+      <div className="wl-grid-daily-model">
+        <div className="wl-card">
+          <div className="wl-card-head">
+            <div>
+              <h3>{t("chart.daily")}</h3>
+              <p className="wl-hint">{t("chart.hint")}</p>
+            </div>
+          </div>
+          <div className="wl-daily-body"><div className="wl-chart-fill wl-skeleton-area" /></div>
+          <div className="wl-legend">
+            <span><i className="wl-dot" style={{ background: "var(--dsw-static-deepseek-500, #4d6bfe)" }} />{t("legend.active")}</span>
+          </div>
+        </div>
+        <div className="wl-card">
+          <div className="wl-card-head">
+            <div>
+              <h3>{t("model.title")}</h3>
+              <p className="wl-hint">{t("model.hint")}</p>
+            </div>
+          </div>
+          <div className="wl-skeleton-area wl-skeleton-treemap" />
+          <h4 className="wl-model-subtitle">{t("model.trend")}</h4>
+          <div className="wl-skeleton-area wl-skeleton-trend" />
+        </div>
+      </div>
+      <div className="wl-grid-2">
+        <div className="wl-card">
+          <h3>{t("hour.title")}</h3>
+          <p className="wl-hint">{t("hour.sub")}</p>
+          <div className="wl-skeleton-area wl-skeleton-mid" />
+        </div>
+        <div className="wl-card">
+          <h3>{t("pie.title")}</h3>
+          <p className="wl-hint">{t("pie.byTime")}</p>
+          <div className="wl-skeleton-area wl-skeleton-mid" />
+        </div>
+      </div>
+      <div className="wl-card">
+        <table className="wl-table">
+          <thead>
+            <tr>{DETAIL_COLUMNS.map((key) => <th key={key}>{t(key)}</th>)}</tr>
+          </thead>
+          <tbody>
+            <tr><td colSpan={DETAIL_COLUMNS.length} className="wl-state">{t("state.loading")}</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/**
  * 按日期视图（首页主视图）：
  *   1) 每日用量：默认「日历热力图」（周一~周日 × Year-Week，颜色＝活跃时长），可切「柱状图」
  *   2) 并排两图：左「时刻分析」（0–23 点谁更活跃） 右「工作区占比」（环形图，时长/Token 可切）
@@ -907,12 +1024,7 @@ function ByDayView({ data, t }) {
               </span>
             </>
           ) : (
-            <>
-              <span><i className="wl-dot" style={{ background: "var(--dsw-static-neutral-300, #c7cbd1)" }} />{t("legend.cache")}</span>
-              <span><i className="wl-dot" style={{ background: "var(--dsw-static-blue-500, #3b82f6)" }} />{t("legend.input")}</span>
-              <span><i className="wl-dot" style={{ background: "var(--dsw-static-green-500, #10b981)" }} />{t("legend.output")}</span>
-              <span><i className="wl-dot" style={{ background: "var(--dsw-static-deepseek-500, #4d6bfe)" }} />{t("legend.active")}</span>
-            </>
+            <span><i className="wl-dot" style={{ background: "var(--dsw-static-deepseek-500, #4d6bfe)" }} />{t("legend.active")}</span>
           )}
         </div>
       </div>
@@ -937,8 +1049,7 @@ function ByDayView({ data, t }) {
         <table className="wl-table">
           <thead>
             <tr>
-              <th>{t("table.date")}</th><th>{t("table.conversations")}</th><th>{t("table.turns")}</th><th>{t("table.steps")}</th>
-              <th>{t("table.active")}</th><th>{t("table.input")}</th><th>{t("table.output")}</th><th>{t("table.cache")}</th>
+              {DETAIL_COLUMNS.map((key) => <th key={key}>{t(key)}</th>)}
             </tr>
           </thead>
           <tbody>
@@ -1156,8 +1267,9 @@ function BySessionView({ data, t }) {
 function Overlay({ control }) {
   const { t, lang } = useLocale();
   const open = useSyncExternalStore(control.subscribe, control.isOpen);
-  const [rangeKey, setRangeKey] = useState("range.30");
-  const activeRange = RANGES.find((range) => range.key === rangeKey) ?? RANGES[1];
+  // 默认近 7 天：打开即见"最近一周"，与宿主 DEFAULTS.defaultDays 保持一致
+  const [rangeKey, setRangeKey] = useState("range.7");
+  const activeRange = RANGES.find((range) => range.key === rangeKey) ?? RANGES[0];
   const days = activeRange.days;
   const allTime = activeRange.all === true;
   const [scope, setScope] = useState("all");
@@ -1241,7 +1353,8 @@ function Overlay({ control }) {
         <div className="wl-body">
           {state.status === "error" ? <p className="wl-state">{t("state.failed", { message: state.error ?? "" })}</p> : null}
           {state.data === null ? (
-            state.status === "error" ? null : <p className="wl-state">{t("state.loading")}</p>
+            // 缓存未命中：先渲染完整骨架（卡片/图表容器/表格框都在），数据到了原地填充
+            state.status === "error" ? null : <SkeletonBody t={t} />
           ) : (
             <>
               {indexing ? (

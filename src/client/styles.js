@@ -187,6 +187,9 @@ export const STYLES = `
 .wl-grid-daily-model > .wl-card { display: flex; flex-direction: column; min-height: 0; margin-bottom: 0; overflow: hidden; }
 /* 日历与柱状图共用同一个容器：首选 244px，随行高伸展/收缩（min-height:0 是 flex 溢出的关键） */
 .wl-daily-body { flex: 1 1 244px; min-height: 0; display: flex; flex-direction: column; justify-content: center; }
+/* 柱状图铺满容器剩余高度：viewBox 用容器像素，图形到底边即图例上沿（不留底部空白带） */
+.wl-chart-fill { flex: 1 1 auto; min-height: 0; height: 100%; overflow: hidden; }
+.wl-chart-fill > svg { display: block; }
 /* 右列较窄：模型卡内部改为上下堆叠（treemap 在上、趋势在下） */
 .wl-model-grid { grid-template-columns: 1fr; gap: 10px; }
 @media (max-width: 1080px) { .wl-grid-daily-model { grid-template-columns: 1fr; } .wl-model-grid { grid-template-columns: 1fr; } }
@@ -200,7 +203,16 @@ export const STYLES = `
 .wl-model-name { display: inline-flex; align-items: center; gap: 6px; background: none; border: 0; padding: 0; cursor: pointer; color: inherit; font: inherit; }
 .wl-model-name i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
 .wl-model-raw { display: block; margin-top: 2px; }
-.wl-legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; line-height: 1.5; }
+/* 骨架屏：卡片框架先就位，只有数值位显示「加载中…」；灰色块只是"位置占位" */
+.wl-skeleton-area { border-radius: 8px; background: var(--dsw-alias-bg-layer-2, #f2f3f5); }
+.wl-chart-fill.wl-skeleton-area { min-height: 200px; }
+.wl-skeleton-treemap { height: 210px; }
+.wl-skeleton-trend { height: 150px; margin-bottom: 8px; }
+.wl-skeleton-mid { height: 160px; }
+.wl-skeleton .wl-state { padding: 18px; }
+.wl-pending { font-size: 14px; font-weight: 500; color: var(--dsw-alias-label-tertiary, #6b7280); }
+/* 图例上边距压到 4px：柱状图的图形底边到图例 ≤ 8px，视觉上"图吃满容器" */
+.wl-legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 4px; line-height: 1.5; }
 /* legend 里的说明文字不再带 margin-top：日历/柱状图两种 legend 必须一样高，否则图表容器高度会随模式变化 */
 .wl-legend .wl-metric-sub { margin-top: 0; }
 .wl-legend-item { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); }
