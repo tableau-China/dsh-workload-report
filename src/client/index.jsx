@@ -1056,7 +1056,8 @@ function ByDayView({ data, t }) {
         </div>
       </div>
 
-      <div className="wl-card">
+      {/* 本卡会被左卡等高拉伸：图形区在卡内垂直居中（见 styles.js 的 .wl-pie-card） */}
+      <div className="wl-card wl-pie-card">
         <h3>{t("pie.model")}</h3>
         <p className="wl-hint">{t("pie.modelHint")}</p>
         {models.length === 0 ? (

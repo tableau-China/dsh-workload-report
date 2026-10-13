@@ -416,7 +416,28 @@ try {
     const tab = [...document.querySelectorAll(".wl-tab")].find((node) => /按日期|By date/.test(node.textContent || ""));
     tab?.click();
   });
-  await sleep(800);
+  await sleep(900);
+  // —— 问题 1：环形图卡被上一行等高拉伸时，图形区必须在卡内上下居中（上下留白差 ≤ 2px）——
+  const pieGeometry = await page.evaluate(() => {
+    const card = document.querySelector(".wl-pie-card");
+    if (card === null) return null;
+    const svg = card.querySelector(".wl-pie-wrap svg");
+    const hint = card.querySelector(".wl-hint");
+    if (svg === null) return null;
+    const style = getComputedStyle(card);
+    const contentBottom = card.getBoundingClientRect().bottom - parseFloat(style.paddingBottom) - parseFloat(style.borderBottomWidth);
+    const rect = svg.getBoundingClientRect();
+    // 上留白从说明文字下沿算起；hint 的下边距已归零，两端口径一致
+    const above = hint === null ? rect.top - card.getBoundingClientRect().top : rect.top - hint.getBoundingClientRect().bottom;
+    const below = contentBottom - rect.bottom;
+    const round = (v) => Math.round(v * 10) / 10;
+    return { above: round(above), below: round(below), diff: round(Math.abs(above - below)), cardH: Math.round(card.getBoundingClientRect().height) };
+  });
+  ok(
+    pieGeometry !== null && pieGeometry.diff <= 2,
+    "首页「模型 Token 占比」环形图在卡内上下居中（上下留白差 ≤ 2px）",
+    JSON.stringify(pieGeometry),
+  );
   await page.screenshot({ path: join(ARTIFACTS, "02-dashboard-by-day.png") });
 
   // 切到「按工作区」

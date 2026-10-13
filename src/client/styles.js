@@ -193,6 +193,11 @@ export const STYLES = `
 /* 右列较窄：模型卡内部改为上下堆叠（treemap 在上、趋势在下） */
 .wl-model-grid { grid-template-columns: 1fr; gap: 10px; }
 @media (max-width: 1080px) { .wl-grid-daily-model { grid-template-columns: 1fr; } .wl-model-grid { grid-template-columns: 1fr; } }
+/* 首页「模型 Token 占比」卡：卡片被上一行等高拉伸时，把环形图在**卡内垂直居中**
+   （量测口径：图形上留白 vs 下留白，差 ≤ 2px）。hint 的下边距归零，
+   于是"图形上方的空白"就是 hint 之后到图形的那段，与下方空白可直接比较。 */
+.wl-pie-card .wl-hint { margin-bottom: 0; }
+.wl-pie-card .wl-pie-wrap { flex: 1 1 auto; min-height: 0; align-items: center; }
 /* ── 模型区块（0.4.0） ── */
 .wl-model-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 18px; align-items: start; }
 .wl-model-subtitle { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-secondary, #4b5563); }
