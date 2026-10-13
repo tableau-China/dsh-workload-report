@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { STYLES } from "./styles.js";
 import { NS, en, languageOf, translate, zh } from "./locales.js";
-import { formatDuration, formatInt, formatPercent, formatTokens } from "../format.js";
+import { formatDuration, formatInt, formatKpiDuration, formatPercent, formatTokens } from "../format.js";
 
 /** 宿主半部注册的只读接口前缀（与 index.js 的默认 apiPath 一致）。 */
 const API_PATH = "/workload-report/v1";
@@ -764,13 +764,23 @@ function Kpis({ data, t }) {
     tokens: "kpi.topModel.metric.tokens",
     llmMs: "kpi.topModel.metric.llmMs",
   };
+  // KPI 里的时长统一走「一位小数的小时 / 整数分钟 / 整数秒」（223.2 h），比明细表更短更好扫
   const cards = [
-    ["kpi.active", formatDuration(totals.activeMs), t("kpi.active.sub", { llm: formatDuration(totals.llmMs), tool: formatDuration(totals.toolMs) })],
+    ["kpi.active", formatKpiDuration(totals.activeMs), t("kpi.active.sub", { llm: formatKpiDuration(totals.llmMs), tool: formatKpiDuration(totals.toolMs) })],
     // 总 Token 直接给完整整数（可核对的真实值），小字里才用 K/M/B 缩写
     ["kpi.tokens", formatInt(totals.tokensTotal), t("kpi.tokens.sub", { input: formatTokens(totals.tokens.input), output: formatTokens(totals.tokens.output), cache: formatTokens(totals.tokens.cacheRead) })],
     ["kpi.activeDays", `${formatInt(totals.activeDays)} / ${formatInt(data.range.days)}`, t("kpi.activeDays.sub", { workspaces: formatInt(totals.workspaces) })],
     ["kpi.conversations", formatInt(totals.conversations), t("kpi.conversations.sub", { sessions: formatInt(totals.sessions), empty: formatInt(totals.emptySessions) })],
-    ["kpi.turns", `${formatInt(totals.turns)} / ${formatInt(totals.steps)}`, t("kpi.turns.sub", { main: formatInt(totals.mainSessions), subagent: formatInt(totals.subagentSessions) })],
+    // 步骤数字比轮次小 2px，整行不换行（与 Tokens 卡一样靠栅格给足宽度）
+    [
+      "kpi.turns",
+      (
+        <>
+          {formatInt(totals.turns)} / <span className="wl-kpi-steps">{formatInt(totals.steps)}</span>
+        </>
+      ),
+      t("kpi.turns.sub", { main: formatInt(totals.mainSessions), subagent: formatInt(totals.subagentSessions) }),
+    ],
     ["kpi.cache", formatPercent(derived.cacheHitRate), t("kpi.cache.sub", { output: formatTokens(derived.outputPerActiveHour) })],
     // 第 7 张：最活跃模型（默认按请求数口径，可在配置里切换 tokens / activeMs）
     data.topModel === null || data.topModel === undefined
@@ -787,7 +797,7 @@ function Kpis({ data, t }) {
   return (
     <div className="wl-kpis">
       {cards.map(([key, value, sub]) => (
-        <div className="wl-kpi" key={key}>
+        <div className="wl-kpi" key={key} data-kpi={key}>
           <div className="wl-kpi-label">{t(key)}</div>
           <div className="wl-kpi-value">{value}</div>
           <div className="wl-kpi-sub">{sub}</div>

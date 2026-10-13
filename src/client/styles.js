@@ -64,10 +64,16 @@ export const STYLES = `
 }
 .wl-btn[data-kind="primary"]:hover { filter: brightness(1.05); color: #fff; }
 .wl-body { padding: 18px 20px 24px; overflow: auto; }
-.wl-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 18px; }
-.wl-kpi { background: var(--dsw-alias-bg-layer-2, #f7f8fa); border: 1px solid var(--dsw-alias-border-l2, #eceef1); border-radius: 12px; padding: 12px 14px; }
+/* KPI：4 列等宽栅格；Tokens 卡跨 2 列（11,819,500,252 这类完整整数很长），不换行、不溢出 */
+.wl-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
+.wl-kpi { background: var(--dsw-alias-bg-layer-2, #f7f8fa); border: 1px solid var(--dsw-alias-border-l2, #eceef1); border-radius: 12px; padding: 12px 14px; min-width: 0; }
+.wl-kpi[data-kpi="kpi.tokens"] { grid-column: span 2; }
 .wl-kpi-label { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); margin-bottom: 6px; }
-.wl-kpi-value { font-size: 20px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.wl-kpi-value { font-size: 20px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* 模型名可能很长，只有这张卡允许换行 */
+.wl-kpi[data-kpi="kpi.topModel"] .wl-kpi-value { white-space: normal; overflow-wrap: anywhere; }
+/* 步骤数字比轮次小 2px，整行更紧凑 */
+.wl-kpi-steps { font-size: 18px; }
 .wl-kpi-sub { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); margin-top: 6px; line-height: 1.45; }
 .wl-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--dsw-alias-border-l2, #e5e7eb); margin-bottom: 14px; }
 .wl-tab {
@@ -156,8 +162,8 @@ export const STYLES = `
 .wl-details summary::before { content: "▸ "; color: var(--dsw-alias-label-tertiary, #6b7280); }
 .wl-details[open] summary::before { content: "▾ "; }
 .wl-details[open] summary { margin-bottom: 10px; }
-@media (max-width: 1080px) { .wl-kpis { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); } .wl-grid-2 { grid-template-columns: 1fr; } }
-@media (max-width: 720px) { .wl-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .wl-name { max-width: 160px; } }
+@media (max-width: 1080px) { .wl-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } .wl-grid-2 { grid-template-columns: 1fr; } }
+@media (max-width: 720px) { .wl-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .wl-kpi[data-kpi="kpi.tokens"] { grid-column: auto; } .wl-name { max-width: 160px; } }
 
 
 /* ── 每日用量趋势（左）与模型用量（右）并排 ── */

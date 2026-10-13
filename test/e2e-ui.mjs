@@ -194,8 +194,8 @@ try {
     hints: [...document.querySelectorAll(".wl-hint, .wl-metric-sub, .wl-note")].map((n) => n.textContent ?? ""),
     bodyHasChineseHour: document.body.innerText.includes("小时"),
   }));
-  ok(/\d+(\.\d+)?\s*[HMS]\b|^0$/.test(copyCheck.kpiActive.trim()), "活跃时长 KPI 用 H/M/S 单位", copyCheck.kpiActive);
-  ok(/[HMS]\b/.test(copyCheck.weekdayTip), "周几条 tooltip 用 H/M/S 单位", copyCheck.weekdayTip);
+  ok(/\d+(\.\d+)?\s*[hms]\b|^0$/i.test(copyCheck.kpiActive.trim()), "活跃时长 KPI 用小写 h/m/s 单位", copyCheck.kpiActive);
+  ok(/[hms]\b/i.test(copyCheck.weekdayTip), "周几条 tooltip 用小写 h/m/s 单位", copyCheck.weekdayTip);
   ok(copyCheck.bodyHasChineseHour === false, "界面上不再出现「小时」字样");
   const longestHint = copyCheck.hints.reduce((max, text) => Math.max(max, text.length), 0);
   ok(longestHint <= 90, "备注文案已压短（最长 ≤ 90 字）", `最长 ${longestHint} 字`);
@@ -406,7 +406,7 @@ try {
   ok(/\d+\s*\/\s*\d+/.test(effortSub) && /(天|days)/i.test(effortSub), "左块小字含「活跃 N/M 天」", effortSub);
   ok(/输出|output/i.test(metrics?.subs[1] ?? ""), "右块小字含「输出 Token」", metrics?.subs[1]);
   ok((metrics?.widths[0] ?? 0) > 0 || (metrics?.widths[1] ?? 0) > 0, "两条 bar 实际渲染出宽度", JSON.stringify(metrics?.widths));
-  ok((metrics?.values ?? []).every((value) => /\d\s*[HMS]/.test(value ?? "")), "工作区两栏数值都用 H/M/S 单位", JSON.stringify(metrics?.values));
+  ok((metrics?.values ?? []).every((value) => /\d\s*[hms]/i.test(value ?? "")), "工作区两栏数值都用小写 h/m/s 单位", JSON.stringify(metrics?.values));
   const headers = await page.evaluate(() => [...document.querySelectorAll(".wl-card table th")].map((n) => n.textContent));
   ok(headers.some((text) => /活跃天数|Active days/.test(text ?? "")) && headers.some((text) => /Token 占比|Token share/.test(text ?? "")), "表格含活跃天数与 Token 占比列", JSON.stringify(headers.slice(0, 12)));
   await page.screenshot({ path: join(ARTIFACTS, "03-dashboard-by-workspace.png") });

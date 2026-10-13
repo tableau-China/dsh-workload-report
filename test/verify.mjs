@@ -142,8 +142,8 @@ console.log("\n—— 区间与别名 ——");
 eq(JSON.stringify(resolveRange({ days: 7, now: Date.parse("2026-10-10T03:00:00Z"), timeZone: "UTC" })), JSON.stringify({ from: "2026-10-04", to: "2026-10-10" }), "近 7 天区间含今天");
 eq(workspaceLabel("/Users/me/proj-a", { "proj-a": "零售订单系统" }), "零售订单系统", "别名优先");
 eq(workspaceLabel("", {}), "(未知工作区)", "空 cwd 显示未知工作区");
-eq(formatDuration(5400000), "1.5 H", "时长格式化（单位 H，去掉多余尾零）");
-eq(formatDuration(10800000), "3 H", "整点时长不带小数");
+eq(formatDuration(5400000), "1.5 h", "时长格式化（单位小写 h，去掉多余尾零）");
+eq(formatDuration(10800000), "3 h", "整点时长不带小数");
 eq(formatDuration(0), "0", "零时长");
 eq(formatTokens(1500), "1.50 K", "Token 紧凑格式");
 
