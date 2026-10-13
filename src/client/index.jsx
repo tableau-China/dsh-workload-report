@@ -1068,9 +1068,47 @@ function ByWorkspaceView({ data, t }) {
   );
 }
 
-/** 主要会话视图。 */
+/** 主要会话表格里带条形图的列（顺序 = 表格列顺序）。 */
+const SESSION_METRICS = [
+  { key: "turns", labelKey: "table.turns", format: (value) => formatInt(value) },
+  { key: "steps", labelKey: "table.steps", format: (value) => formatInt(value) },
+  { key: "activeMs", labelKey: "table.active", format: (value) => formatDuration(value) },
+  { key: "output", labelKey: "table.output", format: (value) => formatTokens(value) },
+];
+
+/** 取会话行在某个可排序指标上的原始数值。 */
+function sessionMetric(row, key) {
+  if (key === "turns") return row.turns ?? 0;
+  if (key === "steps") return row.steps ?? 0;
+  if (key === "activeMs") return row.activeMs ?? 0;
+  return row.tokens?.output ?? 0;
+}
+
+/**
+ * 主要会话视图：
+ *   轮次 / 步骤 / 活跃时长 / 输出 四列带浅色条形图（宽度 ＝ 该行数值占本列最大值的比例），
+ *   数字显示在条形图内；这四列的表头可点击排序（降序 → 升序 → 恢复默认），排序只是视图内状态。
+ */
 function BySessionView({ data, t }) {
-  const rows = data.bySession.slice(0, 40);
+  const [sort, setSort] = useState(null);
+  const rows = useMemo(() => {
+    const list = [...(data.bySession ?? [])];
+    if (sort !== null) {
+      const direction = sort.dir === "asc" ? 1 : -1;
+      list.sort((a, b) => direction * (sessionMetric(a, sort.key) - sessionMetric(b, sort.key)));
+    }
+    return list.slice(0, 40);
+  }, [data.bySession, sort]);
+  const maxima = useMemo(
+    () => Object.fromEntries(SESSION_METRICS.map(({ key }) => [key, Math.max(1, ...rows.map((row) => sessionMetric(row, key)))])),
+    [rows],
+  );
+  const toggleSort = (key) =>
+    setSort((previous) => {
+      if (previous === null || previous.key !== key) return { key, dir: "desc" };
+      return previous.dir === "desc" ? { key, dir: "asc" } : null;
+    });
+
   return (
     <div className="wl-card">
       <h3>{t("tab.bySession")}</h3>
@@ -1078,7 +1116,14 @@ function BySessionView({ data, t }) {
         <thead>
           <tr>
             <th>{t("table.session")}</th><th>{t("table.workspace")}</th><th>{t("table.date")}</th>
-            <th>{t("table.turns")}</th><th>{t("table.steps")}</th><th>{t("table.active")}</th><th>{t("table.output")}</th>
+            {SESSION_METRICS.map(({ key, labelKey }) => (
+              <th key={key} aria-sort={sort?.key === key ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}>
+                <button type="button" className="wl-th-sort" data-active={sort?.key === key || undefined} title={t("table.sortHint")} onClick={() => toggleSort(key)}>
+                  {t(labelKey)}
+                  <span className="wl-sort-mark" aria-hidden="true">{sort?.key === key ? (sort.dir === "asc" ? "▲" : "▼") : "↕"}</span>
+                </button>
+              </th>
+            ))}
           </tr>
         </thead>
         <tbody>
@@ -1089,8 +1134,18 @@ function BySessionView({ data, t }) {
               <tr key={row.id}>
                 <td className="wl-name" title={row.title}>{row.title || "(无标题)"}</td>
                 <td className="wl-name">{row.workspaceLabel}</td>
-                <td>{row.date}</td><td>{formatInt(row.turns)}</td><td>{formatInt(row.steps)}</td>
-                <td>{formatDuration(row.activeMs)}</td><td>{formatTokens(row.tokens.output)}</td>
+                <td>{row.date}</td>
+                {SESSION_METRICS.map(({ key, format }) => {
+                  const value = sessionMetric(row, key);
+                  return (
+                    <td key={key}>
+                      <span className="wl-bar-cell">
+                        <span className="wl-bar-cell-fill" data-kind={key} style={{ width: `${((value / maxima[key]) * 100).toFixed(1)}%` }} />
+                        <span className="wl-bar-cell-value">{format(value)}</span>
+                      </span>
+                    </td>
+                  );
+                })}
               </tr>
             ))
           )}

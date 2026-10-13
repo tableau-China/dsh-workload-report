@@ -92,6 +92,19 @@ export const STYLES = `
 .wl-table th { color: var(--dsw-alias-label-tertiary, #6b7280); font-weight: 500; font-size: 11px; }
 .wl-table tbody tr:hover { background: var(--dsw-alias-interactive-bg-hover, #f7f8fa); }
 .wl-name { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 主要会话：列内浅色条形图（宽度＝该行数值占本列最大值的比例，数字压在条上） */
+.wl-bar-cell { position: relative; display: block; min-width: 56px; height: 20px; border-radius: 5px; background: var(--dsw-alias-bg-layer-2, #f2f3f5); overflow: hidden; }
+.wl-bar-cell-fill { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 5px; background: color-mix(in srgb, var(--dsw-static-deepseek-500, #4d6bfe) 20%, transparent); }
+.wl-bar-cell-fill[data-kind="steps"] { background: color-mix(in srgb, var(--dsw-static-blue-400, #60a5fa) 22%, transparent); }
+.wl-bar-cell-fill[data-kind="activeMs"] { background: color-mix(in srgb, var(--dsw-static-amber-400, #f7ad31) 26%, transparent); }
+.wl-bar-cell-fill[data-kind="output"] { background: color-mix(in srgb, var(--dsw-static-green-400, #34d399) 22%, transparent); }
+.wl-bar-cell-value { position: relative; z-index: 1; display: block; padding: 0 7px; line-height: 20px; text-align: right; font-variant-numeric: tabular-nums; }
+/* 可排序表头：当前排序列用主色加粗 + 箭头指示 */
+.wl-th-sort { display: inline-flex; align-items: center; gap: 4px; background: none; border: 0; padding: 0; font: inherit; font-size: 11px; font-weight: 500; color: var(--dsw-alias-label-tertiary, #6b7280); cursor: pointer; }
+.wl-th-sort:hover { color: var(--dsw-alias-label-primary, #111827); }
+.wl-th-sort[data-active] { color: var(--dsw-static-deepseek-500, #4d6bfe); font-weight: 650; }
+.wl-sort-mark { font-size: 9px; opacity: 0.5; }
+.wl-th-sort[data-active] .wl-sort-mark { opacity: 1; }
 .wl-bars { list-style: none; margin: 0 0 14px; padding: 0; display: grid; gap: 12px; }
 .wl-bar-head { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px; gap: 12px; }
 .wl-bar-value { color: var(--dsw-alias-label-tertiary, #6b7280); font-variant-numeric: tabular-nums; }
