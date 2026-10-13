@@ -131,6 +131,20 @@
   把测试文件写坏过一次；另外同一条正则连用两次去改中英两段，第二次把中文覆盖成了英文。**改 i18n 用函数式替换或 split/join**。
 - 新增 i18n 常驻断言（键集一致 / 引用存在 / 无死键 / 无超长），字体单位与文案长度也进了 E2E。
 
+## 2026-10-13 第三轮：每日趋势单序列 / 图表铺满 / 骨架屏（v0.4.0 内）
+
+| 需求 | 实现要点 |
+| --- | --- |
+| 柱状图只保留活跃时长 | 柱高 = `day.activeMs`（0 值日留 1px：柱 rect 数恒等于天数，且悬停提示覆盖每一天）；折线同系列同值，点上标 `formatDuration`（9px，`ceil(30 / 步长)` 隔点标注） |
+| 去掉底部空白带 | 旧实现 viewBox 固定 1080×240，容器更高时等比缩放 → 图形上下留白。改为 ResizeObserver 量容器像素、viewBox = 容器尺寸（实测 xStretch = 1），字号即屏幕真实字号 |
+| 打开即见布局 | 内存缓存未命中渲染 `SkeletonBody`（KPI 卡 / 图表容器 / 表格框），数值位「加载中…」；缓存命中仍走"旧值 + 后台刷新" |
+| 默认近 7 天 | 客户端 `RANGES` 默认 `range.7` + 宿主 `DEFAULTS.defaultDays: 7`；README 配置示例同步 |
+| 快照缓存竞态 | `patchLive()` 写行后 `snapshotCache = undefined`，与 sync / 模型回填后的失效处理一致 |
+
+**踩坑**：同构量测的假 locale 若 `getSnapshot: () => ({ ... })` 每次返回新对象，React `useSyncExternalStore` 判定快照不稳定 → 无限重渲染（`Maximum update depth exceeded`）；假 ctx 必须返回同一个快照对象。
+**量测**：`.tmp/iso-harness.mjs`（临时、已 gitignore）用假 ctx + 假 fetch 把**真实客户端组件**交给无头 Chrome，无需 DSH 实例；
+读数：7 天 7 柱 / 30 天 30 柱、`otherRects = 0`（单序列）、数值标签两两 0 重叠、图底到图例 3.5px、日历与柱状容器高度差 0。
+
 ## 待办
 
 - [x] 安装进真实 web profile（2026-10-10 由用户执行 `dsh plugin --profile web add link:$PWD`）。

@@ -92,7 +92,7 @@ dsh plugin --profile web add dsh-workload-report
   name: dsh-workload-report
   config:
     apiPath: /workload-report/v1        # 只读接口前缀
-    defaultDays: 30                     # 默认区间
+    defaultDays: 7                      # 默认区间
     defaultScope: all                   # all | main | subagent
     defaultTitle: 工作量报告              # 报告标题
     workspaceAliases:                   # 工作区显示名（给客户看时非常有用）

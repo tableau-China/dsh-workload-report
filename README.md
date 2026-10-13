@@ -94,7 +94,7 @@ Override any of these in your profile's `cordis.patch.yml` (all optional):
   name: dsh-workload-report
   config:
     apiPath: /workload-report/v1        # read-only API prefix
-    defaultDays: 30                     # default range
+    defaultDays: 7                      # default range
     defaultScope: all                   # all | main | subagent
     defaultTitle: Workload Report       # report title
     workspaceAliases:                   # display names (very handy for client-facing reports)
