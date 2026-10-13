@@ -349,7 +349,7 @@ export function renderReport(snapshot, options = {}) {
     ["对话次数", formatInt(totals.conversations), `会话总数 ${formatInt(totals.sessions)}（含空会话 ${formatInt(totals.emptySessions)}）`],
     ["轮次 / 步骤", `${formatInt(totals.turns)} / ${formatInt(totals.steps)}`, `主会话 ${formatInt(totals.mainSessions)} · 子代理 ${formatInt(totals.subagentSessions)}`],
     ["活跃天数", `${formatInt(totals.activeDays)} / ${formatInt(range.days)}`, `覆盖 ${formatInt(totals.workspaces)} 个工作区`],
-    ["缓存读取占比", formatPercent(derived.cacheHitRate), `输出 ${formatTokens(derived.outputPerActiveHour)}/H`],
+    ["缓存读取占比", formatPercent(derived.cacheHitRate), `输出 ${formatTokens(derived.outputPerActiveHour)}/h`],
   ];
 
   const activeDays = snapshot.byDay.filter((day) => day.sessions > 0);

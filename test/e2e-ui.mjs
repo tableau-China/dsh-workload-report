@@ -186,7 +186,7 @@ try {
   ok(/^[\d,]+$/.test(kpis[1] ?? "") && (kpis[1] ?? "").length >= 6, "总 Token 是完整整数（非 K/M/B 缩写）", kpis[1]);
   ok(/模型|model/i.test(kpiLabels[6] ?? ""), "第 7 张 KPI 是「最活跃模型」", JSON.stringify(kpiLabels[6]));
 
-  // ---- 单位统一 H/M/S + 备注足够短（降低多语言工作量）----
+  // ---- 单位统一小写 h/m/s + 备注足够短（降低多语言工作量）----
   const copyCheck = await page.evaluate(() => ({
     kpiActive: document.querySelectorAll(".wl-kpi-value")[0]?.textContent ?? "",
     workspaceValue: document.querySelector(".wl-metrics .wl-metric-value")?.textContent ?? "",
