@@ -487,7 +487,11 @@ function metricOf(bucket, metric) {
 function buildByModel(modelMap, pricing, modelAliases, totals, metric) {
   const metricKey = normalizeMetric(metric);
   const totalTokens = modelTokens({ inOff: totals.tokens.input, inPeak: 0, crOff: totals.tokens.cacheRead, crPeak: 0, outOff: totals.tokens.output, outPeak: 0, cwOff: totals.tokens.cacheWrite, cwPeak: 0 }) || 1;
-  const list = [...modelMap.values()].map((bucket) => {
+  const list = [...modelMap.values()]
+    // request/header 会为"只出现在请求头、没有任何 assistant/message"的模型建桶；
+    // 这类桶请求与 token 皆为 0，展示出来只会干扰阅读，直接过滤。
+    .filter((bucket) => num(bucket.requests) > 0 || modelTokens(bucket) > 0)
+    .map((bucket) => {
     const tokens = modelTokens(bucket);
     const input = bucket.inOff + bucket.inPeak;
     const cacheRead = bucket.crOff + bucket.crPeak;

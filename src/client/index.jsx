@@ -534,6 +534,7 @@ function ModelSection({ data, t }) {
           <p className="wl-hint">{t("model.hint")}</p>
         </div>
         <div className="wl-chips wl-chips-inline">
+          {folding ? <span className="wl-hint" data-kind="model-folding">{t("model.foldingShort", { done: foldInfo?.done ?? 0, total: foldInfo?.total ?? 0 })}</span> : null}
           {[["tokens", "model.metric.tokens"], ["requests", "model.metric.requests"], ["llmMs", "model.metric.llmMs"]].map(([value, key]) => (
             <button key={value} type="button" className={`wl-chip${metric === value ? " wl-chip-active" : ""}`} onClick={() => setMetric(value)}>
               {t(key)}
