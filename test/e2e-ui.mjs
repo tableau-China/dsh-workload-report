@@ -363,7 +363,10 @@ try {
   // 模型维度是后台渐进回填的（要读事件日志），所以先等模型表出现
   await page.waitForFunction(() => document.querySelectorAll(".wl-model-table tbody tr").length > 0, { timeout: 900000 });
   const modelBlock = await page.evaluate(() => ({
-    hasSection: [...document.querySelectorAll(".wl-card h3")].some((n) => /模型用量|Model usage/.test(n.textContent || "")),
+    // 卡片里不再重复「模型用量」标题（页签已表达）：同一个卡片里不应再有这个 h3
+    duplicatedTitle: [...document.querySelectorAll(".wl-card h3")].some((n) => /模型用量|Model usage/.test(n.textContent || "")),
+    // 界面语言可能是中文或英文，两种都要认
+    treemapTitle: [...document.querySelectorAll(".wl-card h4")].map((n) => n.textContent || "").some((text) => /模型占比|Model share/.test(text)),
     tiles: document.querySelectorAll('rect[data-kind="model"]').length,
     others: document.querySelectorAll('rect[data-kind="others"]').length,
     rows: document.querySelectorAll(".wl-model-table tbody tr").length,
@@ -373,7 +376,8 @@ try {
     trendBars: document.querySelectorAll(".wl-model-grid svg rect").length,
     trendLabels: [...document.querySelectorAll(".wl-model-grid svg text")].map((n) => n.textContent ?? "").filter((x) => /\d\d-\d\d/.test(x)).length,
   }));
-  ok(modelBlock.hasSection, "看板含「模型用量」区块");
+  ok(!modelBlock.duplicatedTitle, "模型卡片里不再重复「模型用量」标题（页签已表达）");
+  ok(modelBlock.treemapTitle, "treemap 带小标题「模型占比 · 面积 = Token」");
   ok(modelBlock.tiles > 0, "模型 treemap 渲染出矩形", String(modelBlock.tiles));
   ok(modelBlock.rows > 0, "模型明细表有数据行", String(modelBlock.rows));
   ok(modelBlock.trendBars > 0, "按日模型趋势有柱子", String(modelBlock.trendBars));
@@ -382,6 +386,37 @@ try {
   ok(modelBlock.links.some((href) => /kimi|moonshot/i.test(href)), "给出 Kimi 官方计费链接（无官方价也保留链接）", JSON.stringify(modelBlock.links));
   ok(modelBlock.costs.some((text) => /[\u00a5$]/.test(text)), "DeepSeek 模型显示费用估算", JSON.stringify(modelBlock.costs));
   ok(modelBlock.hits.some((text) => /%/.test(text)), "模型明细含缓存命中率", JSON.stringify(modelBlock.hits));
+
+  // —— 问题 2：回填完成后「正在回填」提示必须消失，模型数据留在页面上 ——
+  await page.waitForFunction(() => document.querySelector('[data-kind="model-folding"]') === null, { timeout: 300000 }).catch(() => {});
+  const foldGone = await page.evaluate(() => ({
+    folding: document.querySelector('[data-kind="model-folding"]') === null,
+    rows: document.querySelectorAll(".wl-model-table tbody tr").length,
+    emptyNotice: [...document.querySelectorAll(".wl-card p")].some((n) => /正在回填|Filling in model/.test(n.textContent || "")),
+  }));
+  ok(foldGone.folding && !foldGone.emptyNotice && foldGone.rows > 0, "回填提示已消失且模型区有数据（不再常驻）", JSON.stringify(foldGone));
+
+  // —— 问题 3：treemap 必须铺满容器（左右留白 ≤ 8px）——
+  const treemapGeometry = await page.evaluate(() => {
+    const box = document.querySelector('[data-kind="model-treemap"]');
+    const rects = [...document.querySelectorAll('rect[data-kind="model"], rect[data-kind="others"]')];
+    if (box === null || rects.length === 0) return null;
+    const b = box.getBoundingClientRect();
+    const lefts = rects.map((r) => r.getBoundingClientRect().left);
+    const rights = rects.map((r) => r.getBoundingClientRect().right);
+    const round = (v) => Math.round(v * 10) / 10;
+    return {
+      gapLeft: round(Math.min(...lefts) - b.left),
+      gapRight: round(b.right - Math.max(...rights)),
+      boxW: Math.round(b.width),
+      boxH: Math.round(b.height),
+    };
+  });
+  ok(
+    treemapGeometry !== null && treemapGeometry.gapLeft <= 8 && treemapGeometry.gapRight <= 8,
+    "treemap 矩形铺满容器（左右留白 ≤ 8px）",
+    JSON.stringify(treemapGeometry),
+  );
   // 点击第一个模型 → 右侧趋势被筛选（出现清除按钮 + 选中态）
   const trendBefore = await page.evaluate(() => ({
     segments: document.querySelectorAll(".wl-model-grid > div:nth-child(2) svg rect").length,

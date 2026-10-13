@@ -200,6 +200,14 @@ export const STYLES = `
 .wl-pie-card .wl-pie-wrap { flex: 1 1 auto; min-height: 0; align-items: center; }
 /* ── 模型区块（0.4.0） ── */
 .wl-model-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+/* treemap 容器：固定高度 + 真实像素 viewBox（矩形铺满，最左/最右到边缘 0px，目标 ≤ 8px） */
+.wl-treemap-fill { height: 210px; }
+.wl-treemap-fill > svg { display: block; }
+/* 模型回填失败提示：短句 + title 全文；用宿主 token，不新增色值 */
+.wl-fold-error {
+  margin: 0 0 10px; font-size: 11px; line-height: 1.5; color: var(--dsw-alias-label-error, #f25a5a);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .wl-model-subtitle { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-secondary, #4b5563); }
 .wl-model-note { margin: 8px 0 0; }
 .wl-model-links a { color: var(--dsw-static-deepseek-500, #4d6bfe); text-decoration: none; }

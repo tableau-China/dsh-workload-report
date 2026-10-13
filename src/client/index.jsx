@@ -565,10 +565,28 @@ function DailyChart({ days, t }) {
   );
 }
 
-/** 模型维度是否仍在后台回填（首次要读事件日志，回填完自动出数）。 */
+/**
+ * 模型折叠状态。**「回填中」只看 pending（从未折过的行数）**：活会话的 asOfSeq
+ * 每来一个事件就 +1，若把"已折过的行"也算进 pending，提示就会永远挂着（0.4.0 的缺陷）。
+ * refold（旧数据按新水位重算）与 failedRows（读日志失败的会话）都不该打扰界面。
+ */
+function modelFoldState(data) {
+  const fold = data?.diagnostics?.modelFold ?? {};
+  const lastError = typeof fold.lastError === "string" && fold.lastError !== "" ? fold.lastError : null;
+  return {
+    pending: typeof fold.pending === "number" ? fold.pending : 0,
+    refold: typeof fold.refold === "number" ? fold.refold : 0,
+    failedRows: typeof fold.failedRows === "number" ? fold.failedRows : 0,
+    done: typeof fold.done === "number" ? fold.done : 0,
+    total: typeof fold.total === "number" ? fold.total : 0,
+    running: fold.running === true,
+    lastError,
+  };
+}
+
+/** 是否还有"从未折过"的会话在等回填——界面提示与 pending 同步，折完即消失。 */
 function isModelFolding(data) {
-  const fold = data?.diagnostics?.modelFold;
-  return fold !== undefined && (fold.running === true || (fold.pending ?? 0) > 0);
+  return modelFoldState(data).pending > 0;
 }
 
 /**
@@ -610,7 +628,14 @@ function ModelSection({ data, t }) {
     return list;
   }, [ranked, metric, t]);
 
-  const rects = useMemo(() => layoutTreemap(cells, 0, 0, 100, 62), [cells]);
+  // treemap 的 viewBox 用容器的**真实像素**：默认 preserveAspectRatio="xMidYMid meet"
+  // 会等比缩放并在左右留出大片空白（矩形没铺满容器）；量测口径是最左/最右矩形到容器边缘 ≤ 8px。
+  const treemapBox = useRef(null);
+  const treemapSize = useChartSize(treemapBox);
+  const rects = useMemo(
+    () => layoutTreemap(cells, 0, 0, Math.max(1, treemapSize.width), Math.max(1, treemapSize.height)),
+    [cells, treemapSize.width, treemapSize.height],
+  );
 
   // 按日趋势：默认全部模型堆叠；选中后只显示选中的
   const active = selected.length > 0 ? selected : null;
@@ -636,27 +661,30 @@ function ModelSection({ data, t }) {
 
   const pricing = data.pricing ?? { currency: "CNY", links: [], costed: { covered: 0, total: 0 }, totalCost: null };
   const fmtCost = (value) => formatCost(value, pricing.currency);
-  const foldInfo = data.diagnostics?.modelFold;
-  const folding = isModelFolding(data);
+  const fold = modelFoldState(data);
+  // 失败原因可能很长：界面只给一眼能看懂的短句，完整原文放 title（同时 /health 有全量）
+  const foldError = fold.lastError === null ? null : `${fold.lastError.slice(0, 96)}${fold.lastError.length > 96 ? "…" : ""}`;
 
   if (models.length === 0) {
     return (
       <div className="wl-card">
-        <div className="wl-card-head"><div><h3>{t("model.title")}</h3></div></div>
-        <p className="wl-state">{folding ? t("model.folding") : t("model.empty")}</p>
+        <p className="wl-state">{fold.pending > 0 ? t("model.folding") : t("model.empty")}</p>
+        {foldError === null ? null : (
+          <p className="wl-fold-error" data-kind="model-fold-error" title={fold.lastError}>
+            {t("model.foldError", { count: formatInt(fold.failedRows), message: foldError })}
+          </p>
+        )}
       </div>
     );
   }
 
   return (
     <div className="wl-card">
+      {/* 卡片里不再重复「模型用量」标题：上面的页签已经表达了 */}
       <div className="wl-card-head">
-        <div>
-          <h3>{t("model.title")}</h3>
-          <p className="wl-hint">{t("model.hint")}</p>
-        </div>
+        <p className="wl-hint">{t("model.hint")}</p>
         <div className="wl-chips wl-chips-inline">
-          {folding ? <span className="wl-hint" data-kind="model-folding">{t("model.foldingShort", { done: foldInfo?.done ?? 0, total: foldInfo?.total ?? 0 })}</span> : null}
+          {fold.pending > 0 ? <span className="wl-hint" data-kind="model-folding">{t("model.foldingShort", { done: fold.done, total: fold.total })}</span> : null}
           {[["tokens", "model.metric.tokens"], ["requests", "model.metric.requests"], ["llmMs", "model.metric.llmMs"]].map(([value, key]) => (
             <button key={value} type="button" className={`wl-chip${metric === value ? " wl-chip-active" : ""}`} onClick={() => setMetric(value)}>
               {t(key)}
@@ -668,38 +696,50 @@ function ModelSection({ data, t }) {
         </div>
       </div>
 
+      {/* 读日志失败的会话不进 pending（否则提示常驻），但原因要摆在界面上：短句 + title 全文 */}
+      {foldError === null ? null : (
+        <p className="wl-fold-error" data-kind="model-fold-error" title={fold.lastError}>
+          {t("model.foldError", { count: formatInt(fold.failedRows), message: foldError })}
+        </p>
+      )}
+
       <div className="wl-model-grid">
         <div>
-          <svg viewBox="0 0 100 62" width="100%" height={210} role="img" aria-label={t("model.treemap")}>
-            {rects.map((rect) => {
-              const isSelected = selected.includes(rect.key);
-              const dimmed = selected.length > 0 && !isSelected;
-              const share = totalMetric > 0 ? rect.value / totalMetric : 0;
-              return (
-                <g key={rect.key} onClick={() => toggle(rect.key)} style={{ cursor: rect.key === "__others" ? "default" : "pointer", opacity: dimmed ? 0.35 : 1 }}>
-                  <rect
-                    x={rect.x} y={rect.y} width={Math.max(0.5, rect.w)} height={Math.max(0.5, rect.h)}
-                    fill={rect.key === "__others" ? "var(--dsw-static-neutral-300, #c7cbd1)" : colorOf(rect.key)}
-                    stroke={isSelected ? "var(--dsw-alias-label-primary, #111827)" : "var(--dsw-alias-bg-base, #fff)"}
-                    strokeWidth={isSelected ? 1.4 : 0.5}
-                    data-model={rect.key}
-                    data-kind={rect.item === null ? "others" : "model"}
-                  />
-                  {rect.w > 14 && rect.h > 8 ? (
-                    <text x={rect.x + 2} y={rect.y + 6} fontSize="3.4" fill="#fff" style={{ pointerEvents: "none" }}>
-                      {rect.label.length > 18 ? `${rect.label.slice(0, 17)}\u2026` : rect.label}
-                    </text>
-                  ) : null}
-                  {rect.w > 14 && rect.h > 14 ? (
-                    <text x={rect.x + 2} y={rect.y + 10.4} fontSize="3.1" fill="#fff" opacity="0.92" style={{ pointerEvents: "none" }}>
-                      {formatPercent(share)}
-                    </text>
-                  ) : null}
-                  <title>{`${rect.label}\n${t("model.requests")} ${formatInt(rect.item?.requests ?? 0)}\nToken ${formatInt(rect.item?.tokensTotal ?? rect.value)}\n${t("model.share")} ${formatPercent(share)}`}</title>
-                </g>
-              );
-            })}
-          </svg>
+          <h4 className="wl-model-subtitle">{t("model.treemapTitle")}</h4>
+          <div className="wl-treemap-fill" ref={treemapBox} data-kind="model-treemap">
+            {treemapSize.width > 0 && treemapSize.height > 0 ? (
+              <svg viewBox={`0 0 ${treemapSize.width} ${treemapSize.height}`} width={treemapSize.width} height={treemapSize.height} role="img" aria-label={t("model.treemap")}>
+                {rects.map((rect) => {
+                  const isSelected = selected.includes(rect.key);
+                  const dimmed = selected.length > 0 && !isSelected;
+                  const share = totalMetric > 0 ? rect.value / totalMetric : 0;
+                  return (
+                    <g key={rect.key} onClick={() => toggle(rect.key)} style={{ cursor: rect.key === "__others" ? "default" : "pointer", opacity: dimmed ? 0.35 : 1 }}>
+                      <rect
+                        x={rect.x} y={rect.y} width={Math.max(0.5, rect.w)} height={Math.max(0.5, rect.h)}
+                        fill={rect.key === "__others" ? "var(--dsw-static-neutral-300, #c7cbd1)" : colorOf(rect.key)}
+                        stroke={isSelected ? "var(--dsw-alias-label-primary, #111827)" : "var(--dsw-alias-bg-base, #fff)"}
+                        strokeWidth={isSelected ? 1.4 : 0.5}
+                        data-model={rect.key}
+                        data-kind={rect.item === null ? "others" : "model"}
+                      />
+                      {rect.w > 56 && rect.h > 26 ? (
+                        <text x={rect.x + 8} y={rect.y + 18} fontSize="12" fill="var(--dsw-alias-label-primary-inverted, #fff)" style={{ pointerEvents: "none" }}>
+                          {rect.label.length > 22 ? `${rect.label.slice(0, 21)}\u2026` : rect.label}
+                        </text>
+                      ) : null}
+                      {rect.w > 56 && rect.h > 52 ? (
+                        <text x={rect.x + 8} y={rect.y + 34} fontSize="11" fill="var(--dsw-alias-label-primary-inverted, #fff)" opacity="0.92" style={{ pointerEvents: "none" }}>
+                          {formatPercent(share)}
+                        </text>
+                      ) : null}
+                      <title>{`${rect.label}\n${t("model.requests")} ${formatInt(rect.item?.requests ?? 0)}\nToken ${formatInt(rect.item?.tokensTotal ?? rect.value)}\n${t("model.share")} ${formatPercent(share)}`}</title>
+                    </g>
+                  );
+                })}
+              </svg>
+            ) : null}
+          </div>
           <p className="wl-hint wl-model-note">{t("model.clickHint")}</p>
         </div>
 
@@ -1326,12 +1366,14 @@ function Overlay({ control }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [open, control]);
 
-  // 首次建索引要冷读历史会话（可能几分钟）：还在补齐时每 5 秒自动重拉一次
+  // 首次建索引要冷读历史会话（可能几分钟）、模型回填要读事件日志：
+  // 两者还在进行时每 5 秒自动重拉一次，回填完成（pending=0）后自动停下。
+  const modelPending = modelFoldState(state.data).pending;
   useEffect(() => {
-    if (!open || !indexing) return undefined;
+    if (!open || (!indexing && modelPending === 0)) return undefined;
     const timer = setTimeout(() => setRefreshKey((value) => value + 1), 5000);
     return () => clearTimeout(timer);
-  }, [open, indexing, refreshKey]);
+  }, [open, indexing, modelPending, refreshKey]);
 
   const exportReport = useCallback(() => {
     const query = new URLSearchParams({
