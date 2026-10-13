@@ -1351,7 +1351,6 @@ function Overlay({ control }) {
   const [scope, setScope] = useState("all");
   const [refreshKey, setRefreshKey] = useState(0);
   const [tab, setTab] = useState("byDay");
-  const [copied, setCopied] = useState(false);
   // 关闭时不请求，避免白跑一次接口
   const state = useSnapshot({ days, scope, refreshKey, enabled: open, all: allTime });
   const indexing = state.data?.diagnostics?.indexing === true;
@@ -1387,17 +1386,6 @@ function Overlay({ control }) {
     window.open(`${API_PATH}/report.html?${query.toString()}`, "_blank", "noopener");
   }, [days, scope, lang, allTime]);
 
-  const copyJson = useCallback(async () => {
-    if (state.data === null) return;
-    try {
-      await navigator.clipboard.writeText(JSON.stringify(state.data, null, 2));
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1600);
-    } catch {
-      setCopied(false);
-    }
-  }, [state.data]);
-
   if (!open) return null;
 
   return (
@@ -1424,7 +1412,6 @@ function Overlay({ control }) {
             ))}
           </select>
           <button type="button" className="wl-btn" onClick={() => setRefreshKey((value) => value + 1)}>{t("action.refresh")}</button>
-          <button type="button" className="wl-btn" onClick={copyJson}>{copied ? t("action.copied") : t("action.copy")}</button>
           <button type="button" className="wl-btn" data-kind="primary" onClick={exportReport}>{t("action.export")}</button>
           <button type="button" className="wl-btn" onClick={close} aria-label={t("action.close")}>✕</button>
         </header>

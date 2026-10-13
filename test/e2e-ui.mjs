@@ -202,6 +202,14 @@ try {
   });
   ok(kpiLayout.rows === 2 && kpiLayout.spans.includes("kpi.tokens") && kpiLayout.spans.includes("kpi.modelCost") && !kpiLayout.overflow, "KPI 8 张卡 2 行排满（Tokens / 模型费用跨 2 列）且值不溢出", JSON.stringify(kpiLayout));
 
+  // —— 问题 5：「复制 JSON」按钮已删除（工具栏只剩 刷新 / 导出 / 关闭）——
+  const headerButtons = await page.evaluate(() => [...document.querySelectorAll(".wl-head .wl-btn")].map((node) => (node.textContent || "").trim()));
+  ok(
+    headerButtons.length === 3 && !headerButtons.some((text) => /复制|copied|copy json/i.test(text)),
+    "工具栏不再有「复制 JSON」按钮",
+    JSON.stringify(headerButtons),
+  );
+
   // ---- 单位统一小写 h/m/s + 备注足够短（降低多语言工作量）----
   const copyCheck = await page.evaluate(() => ({
     kpiActive: document.querySelectorAll(".wl-kpi-value")[0]?.textContent ?? "",
