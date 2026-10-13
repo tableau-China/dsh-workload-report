@@ -192,7 +192,8 @@ try {
     const cards = [...document.querySelectorAll(".wl-kpis .wl-kpi")];
     return {
       rows: new Set(cards.map((card) => Math.round(card.getBoundingClientRect().top))).size,
-      spans: cards.filter((card) => getComputedStyle(card).gridColumnEnd === "span 2").map((card) => card.dataset.kpi),
+      // grid-column: span 2 的计算值落在 grid-column-start（end 是 auto）
+      spans: cards.filter((card) => getComputedStyle(card).gridColumnStart === "span 2").map((card) => card.dataset.kpi),
       overflow: cards.some((card) => {
         const value = card.querySelector(".wl-kpi-value");
         return value === null || value.scrollWidth > value.clientWidth + 1;
@@ -268,16 +269,23 @@ try {
   });
   await sleep(1800);
 
+  // 换区间会先出骨架屏：等骨架结束、柱状图 chip 出现再点（否则 chip?.click() 会静默落空）
+  await page.waitForFunction(() => document.querySelector("[data-kind=skeleton]") === null, { timeout: 60000 }).catch(() => {});
+  await page.waitForFunction(() => [...document.querySelectorAll(".wl-card-head .wl-chip")].some((node) => /柱状图|Bar chart/i.test(node.textContent || "")), { timeout: 15000 }).catch(() => {});
   await page.evaluate(() => {
     const chip = [...document.querySelectorAll(".wl-card-head .wl-chip")].find((node) => /柱状图|Bar chart/i.test(node.textContent || ""));
     chip?.click();
   });
-  await sleep(900);
+  await page.waitForFunction(() => document.querySelector('[data-kind="daily-chart"] svg') !== null, { timeout: 15000 }).catch(() => {});
+  await sleep(600);
   const barMode = await page.evaluate(() => ({
     polylines: document.querySelectorAll(".wl-card svg polyline").length,
     calendar: document.querySelector(".wl-cal-scroll") !== null,
+    bars: document.querySelectorAll('[data-kind="active-bar"]').length,
+    fills: [...new Set([...document.querySelectorAll('[data-kind="active-bar"]')].map((n) => n.getAttribute("fill")))].length,
   }));
-  ok(barMode.polylines === 0 && !barMode.calendar, "切到柱状图后只有柱（折线已删）且日历消失", JSON.stringify(barMode));
+  ok(barMode.polylines === 0 && !barMode.calendar && barMode.bars > 0, "切到柱状图后只有柱（折线已删）且日历消失", JSON.stringify(barMode));
+  ok(barMode.fills === 2, "柱状图工作日 / 周末两种颜色", JSON.stringify(barMode));
   await page.evaluate(() => {
     const chip = [...document.querySelectorAll(".wl-card-head .wl-chip")].find((node) => /日历|Calendar/i.test(node.textContent || ""));
     chip?.click();
@@ -449,7 +457,13 @@ try {
   ok(/\d+\s*\/\s*\d+/.test(effortSub) && /(天|days)/i.test(effortSub), "左块小字含「活跃 N/M 天」", effortSub);
   ok(/输出|output/i.test(metrics?.subs[1] ?? ""), "右块小字含「输出 Token」", metrics?.subs[1]);
   ok((metrics?.widths[0] ?? 0) > 0 || (metrics?.widths[1] ?? 0) > 0, "两条 bar 实际渲染出宽度", JSON.stringify(metrics?.widths));
-  ok((metrics?.values ?? []).every((value) => /\d\s*[hms]/i.test(value ?? "")), "工作区两栏数值都用小写 h/m/s 单位", JSON.stringify(metrics?.values));
+  // 左栏是时长（小写 h/m/s），右栏是 Token（K/M/B 缩写或整数）——两栏口径不同，不能都按 h/m/s 断言
+  ok(
+    // 值文本是「数值 + 占比」直接拼接（如 "77.12 h40.9%"），单位后面没有词边界，不能用 \b
+    /\d\s*[hms]/i.test(metrics?.values?.[0] ?? "") && (/[KMB]/i.test(metrics?.values?.[1] ?? "") || /\d{4,}/.test(metrics?.values?.[1] ?? "")),
+    "工作区数值：左栏时长用小写 h/m/s、右栏 Token 用 K/M/B",
+    JSON.stringify(metrics?.values),
+  );
   const headers = await page.evaluate(() => [...document.querySelectorAll(".wl-card table th")].map((n) => n.textContent));
   ok(headers.some((text) => /活跃天数|Active days/.test(text ?? "")) && headers.some((text) => /Token 占比|Token share/.test(text ?? "")), "表格含活跃天数与 Token 占比列", JSON.stringify(headers.slice(0, 12)));
   await page.screenshot({ path: join(ARTIFACTS, "03-dashboard-by-workspace.png") });
@@ -469,7 +483,9 @@ try {
     const chip = [...document.querySelectorAll(".wl-chip")].find((node) => /近 90 天|Last 90/.test(node.textContent || ""));
     chip?.click();
   });
-  await sleep(1800);
+  // 换区间会先出骨架屏：等骨架消失再读标题（固定 sleep 在慢快照下会读到「加载中」的副标题）
+  await page.waitForFunction(() => document.querySelector("[data-kind=skeleton]") === null, { timeout: 60000 }).catch(() => {});
+  await sleep(600);
   const rangeText = await page.evaluate(() => document.querySelector(".wl-subtitle")?.textContent ?? "");
   ok(rangeText.includes("~"), "切换范围后标题显示区间", rangeText);
 
@@ -478,7 +494,8 @@ try {
     const chip = [...document.querySelectorAll(".wl-head .wl-chip")].find((node) => /全部|All time/i.test(node.textContent || ""));
     chip?.click();
   });
-  await sleep(2500);
+  await page.waitForFunction(() => document.querySelector("[data-kind=skeleton]") === null, { timeout: 60000 }).catch(() => {});
+  await sleep(1000);
   const allTime = await page.evaluate(() => ({
     kpis: [...document.querySelectorAll(".wl-kpi-value")].map((n) => n.textContent),
     subtitle: document.querySelector(".wl-subtitle")?.textContent ?? "",

@@ -157,9 +157,16 @@
 23 项断言全过：页签顺序、7/30 天柱数 = 天数且 `polyline=0`、周末 / 工作日各 1 种 fill、首页环形图扇区 ≥1 且无 `circle`、
 描边 = `--dsw-alias-bg-base` 1.6、首页无 treemap / 模型明细表、模型页签内容齐全。
 
-**踩坑（重要）**：DSH 的 client-modules 扫描是**增量**的，插件 bundle 只在 Loader 扫描（启动 / 装插件）或 HMR `rebuilt()` 时读盘
-（源码注释："Versioned code is immutable"）；`node build.mjs` 改了 `lib/client.js` 后，**已在运行的实例仍发旧 bundle**。
-所以：① 验证新 UI 用同构量测（直接 bundle src，不经过实例）；② 对运行中实例跑 E2E 前必须重启，否则测的是旧代码。
+**E2E 复核（真实实例，1560×1000）**：77 项通过，唯一失败是宿主 `conversation.session` 插槽自身的
+`TypeError: text.replace is not a function`（本插件只注册 `sidebar.footer.action` 与 `shell.overlay`，与它无关）。
+顺带修掉三个**测试自身**的老毛病：① KPI 跨列的断言查了 `gridColumnEnd`，而 `grid-column: span 2` 的计算值落在
+`gridColumnStart`（end 是 `auto`）→ 一直误报；② 工作区右栏是 Token，却按 `h/m/s` 断言 → 永远不可能通过；
+③ 换区间会先出骨架屏，固定 `sleep` 后点「柱状图」chip 会静默落空 → 改为等骨架结束 + 等 chip / 等 SVG。
+
+**踩坑（重要）**：DSH 的 client-modules 扫描是**增量**的，bundle 字节在 Loader 扫描或 HMR `rebuilt()` 时读盘
+（源码注释："Versioned code is immutable"）。实测本机那个运行中的 e2e 实例（`dsh web` + link 本插件）在我
+`node build.mjs` 之后**能**取到新 bundle（`window.__DSH_BOOT__` 的 rev 对应新文件，取回的 bundle 含新文案、无 `polyline`），
+所以对运行实例跑 E2E 可信；但没有 HMR 监听 / rev 未变时仍需重启。要做与实例无关的 UI 回归，用同构量测更稳。
 
 ## 待办
 
