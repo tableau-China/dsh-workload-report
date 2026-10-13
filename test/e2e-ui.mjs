@@ -570,6 +570,34 @@ try {
   ok(/工作量报告/.test(reportText), "报告页渲染标题");
   ok(!/总 Token\s*\n?\s*0\b/.test(reportText) && /[KMB]/.test(reportText), "报告页 Token 非零", reportText.replace(/\n/g, " ").slice(0, 160));
   ok(!/加载失败|Failed/.test(reportText), "报告页无错误");
+
+  // —— 问题 4：导出报告与看板对齐（模型用量一节 + 模型费用 KPI + 去折线 / 周末异色）——
+  const reportDom = await reportPage.evaluate(() => {
+    const treemap = document.querySelector("svg.treemap");
+    const parent = treemap?.parentElement ?? null;
+    const round = (v) => Math.round(v * 10) / 10;
+    return {
+      text: document.body.innerText,
+      kpis: [...document.querySelectorAll(".kpi .label")].map((n) => n.textContent || ""),
+      hasTreemap: treemap !== null,
+      treemapGap: treemap === null || parent === null ? null : {
+        left: round(treemap.getBoundingClientRect().left - parent.getBoundingClientRect().left),
+        right: round(parent.getBoundingClientRect().right - treemap.getBoundingClientRect().right),
+      },
+      polylines: document.querySelectorAll("polyline").length,
+      scripts: document.querySelectorAll("script").length,
+      styles: document.querySelectorAll("style").length,
+      links: [...document.querySelectorAll("a")].map((n) => n.getAttribute("href") ?? "").filter((href) => /^https?:/.test(href)),
+      weekendBars: [...document.querySelectorAll("svg rect")].filter((r) => (r.getAttribute("fill") ?? "").toLowerCase() === "#f59e0b").length,
+      modelRows: [...document.querySelectorAll("table tbody tr")].length,
+    };
+  });
+  ok(/模型用量/.test(reportDom.text), "报告含「模型用量」一节（模型区不再为空）");
+  ok(reportDom.kpis.some((text) => /模型费用/.test(text)), "报告 KPI 含「模型费用」", JSON.stringify(reportDom.kpis));
+  ok(reportDom.hasTreemap && reportDom.treemapGap !== null && reportDom.treemapGap.left <= 8 && reportDom.treemapGap.right <= 8, "报告含铺满容器的 treemap", JSON.stringify(reportDom.treemapGap));
+  ok(reportDom.polylines === 0, "报告每日趋势无折线（与看板一致）", String(reportDom.polylines));
+  ok(reportDom.weekendBars > 0, "报告每日趋势有周末异色柱", String(reportDom.weekendBars));
+  ok(reportDom.scripts === 0 && reportDom.links.every((href) => /deepseek|kimi|moonshot|claude/.test(href)), "报告保持自包含（无脚本；外链仅官方计费页）", JSON.stringify(reportDom.links));
   await reportPage.screenshot({ path: join(ARTIFACTS, "05-report-light.png"), fullPage: true });
 
   const darkResponse = await reportPage.goto(reportUrl.replace("theme=light", "theme=dark"), { waitUntil: "networkidle2", timeout: 60000 });

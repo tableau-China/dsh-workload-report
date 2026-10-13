@@ -520,10 +520,25 @@ console.log("\n—— 报告与路由中的模型维度 ——");
 const reportWithModels = renderReport(modelSnap, { theme: "light", title: "测试报告" });
 ok(reportWithModels.includes("模型用量"), "报告含「模型用量」一节");
 ok(reportWithModels.includes('class="treemap"'), "报告含 treemap 图");
-ok(reportWithModels.includes("模型占比") === false || reportWithModels.includes("面积 = Token 占比"), "treemap 带口径说明");
+ok(reportWithModels.includes("模型占比 · 面积 = Token 占比"), "treemap 带口径小标题（模型占比 · 面积 = Token）");
 ok(reportWithModels.includes("api-docs.deepseek.com"), "报告 footer 给出官方计费链接");
 ok(reportWithModels.includes("官方计费标准"), "报告 footer 标注官方计费标准");
 ok(reportWithModels.includes("deepseek-v4-flash"), "报告列出模型名");
+ok(reportWithModels.includes("模型费用(估算)"), "报告 KPI 增加「模型费用」");
+ok(reportWithModels.includes("个模型有官方价"), "模型费用 KPI 副标题给出价目覆盖度");
+ok(reportWithModels.includes('aria-label="每日活跃时长"'), "报告每日趋势＝单序列活跃时长（与看板柱状图一致）");
+ok(!reportWithModels.includes("<polyline"), "报告每日趋势去掉了折线");
+ok(reportWithModels.includes("（周末）"), "报告每日趋势周末柱异色（tooltip 标出周末）");
+ok(reportWithModels.includes(">周末<") && reportWithModels.includes("#f59e0b"), "报告图例给出周末色");
+{
+  const hrefs = [...reportWithModels.matchAll(/href="([^"]+)"/g)].map((match) => match[1]);
+  ok(
+    hrefs.length >= 3 && hrefs.every((href) => /^https:\/\/(api-docs\.deepseek\.com|platform\.kimi\.com|platform\.claude\.com)\//.test(href)),
+    "报告的外链只有官方计费页（其余全部内联）",
+    hrefs.join(" · "),
+  );
+  ok(!/<script|src=|<link /i.test(reportWithModels), "报告仍然无脚本 / 无外链资源（自包含）");
+}
 const snapRes = await call("/workload-report/v1/snapshot?days=30&tz=UTC");
 const snapJson = JSON.parse(snapRes.body);
 ok(Array.isArray(snapJson.byModel), "/snapshot 返回 byModel 数组");

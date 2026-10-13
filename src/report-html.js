@@ -8,20 +8,30 @@
 import { escapeHtml, formatDuration, formatInt, formatPercent, formatTokens } from "./format.js";
 import { sectorPath } from "./sector-path.js";
 
-/** 主题色板（浅色/深色）。 */
+/** 主题色板（浅色/深色）。报告是独立文件，用不了宿主 token，因此自带一套与看板一致的色板。 */
 const PALETTES = {
   light: {
     bg: "#f5f6f8", surface: "#ffffff", text: "#1a1d21", muted: "#6b7280", border: "#e5e7eb",
     input: "#3b82f6", output: "#10b981", cache: "#c7cbd1", accent: "#4f46e5", barBg: "#eef0f3",
+    /** 周末柱：与看板同一个强调色（--dsw-static-amber-500 的浅色值）。 */
+    weekend: "#f59e0b",
   },
   dark: {
     bg: "#15171c", surface: "#1d2026", text: "#e8eaed", muted: "#9aa1ac", border: "#2b2f37",
     input: "#60a5fa", output: "#34d399", cache: "#4b5563", accent: "#818cf8", barBg: "#282c34",
+    weekend: "#f59e0b",
   },
 };
 
+/** 日期是否周末（与看板同口径：按该日历日的本地星期判定）。 */
+function isWeekend(dateKey) {
+  const weekday = new Date(`${dateKey}T00:00:00`).getDay();
+  return weekday === 0 || weekday === 6;
+}
+
 /**
- * 渲染每日「Token 堆叠柱 + 活跃时长折线」SVG。
+ * 渲染每日「活跃时长柱」SVG —— 与看板「柱状图」模式同构：
+ * **单序列、无折线**，柱高＝活跃时长（day.activeMs），周六 / 周日换强调色，数值标在柱顶。
  * @param days - byDay 数组。
  * @param palette - 色板。
  * @returns SVG 字符串。
@@ -29,56 +39,46 @@ const PALETTES = {
 function dailyChart(days, palette) {
   const width = 1040;
   const height = 260;
-  const pad = { top: 16, right: 16, bottom: 34, left: 16 };
+  const pad = { top: 20, right: 16, bottom: 30, left: 16 };
   const innerW = width - pad.left - pad.right;
   const innerH = height - pad.top - pad.bottom;
   if (days.length === 0) return `<p class="empty">该区间没有数据</p>`;
 
-  const maxTokens = Math.max(1, ...days.map((d) => d.tokensTotal));
   const maxActive = Math.max(1, ...days.map((d) => d.activeMs));
   const step = innerW / days.length;
   const barW = Math.max(1.5, Math.min(26, step * 0.62));
+  // 数值标签：至少占 46px 才画，避免天数多时叠字（与看板同策略）
+  const valueEvery = Math.max(1, Math.ceil(46 / step));
 
-  const bars = [];
-  const linePoints = [];
-  days.forEach((day, index) => {
-    const x = pad.left + step * index + step / 2;
-    const scale = (value, max) => (value / max) * innerH;
-    const hCache = scale(day.tokens.cacheRead, maxTokens);
-    const hInput = scale(day.tokens.input, maxTokens);
-    const hOutput = scale(day.tokens.output, maxTokens);
-    let y = pad.top + innerH;
-    const title = `${day.date}\nToken ${formatInt(day.tokensTotal)}\n活跃 ${formatDuration(day.activeMs)}\n对话 ${day.conversations} · 轮次 ${day.turns}`;
-    const stack = [
-      ["cacheRead", hCache, palette.cache],
-      ["input", hInput, palette.input],
-      ["output", hOutput, palette.output],
-    ];
-    const rects = stack
-      .filter(([, h]) => h > 0.4)
-      .map(([, h, fill]) => {
-        y -= h;
-        return `<rect x="${(x - barW / 2).toFixed(2)}" y="${y.toFixed(2)}" width="${barW.toFixed(2)}" height="${h.toFixed(2)}" rx="2" fill="${fill}" />`;
-      })
-      .join("");
-    bars.push(`<g><title>${escapeHtml(title)}</title>${rects}</g>`);
-    const ly = pad.top + innerH - scale(day.activeMs, maxActive) * 0.92;
-    linePoints.push(`${x.toFixed(2)},${ly.toFixed(2)}`);
-  });
+  const bars = days
+    .map((day, index) => {
+      const x = pad.left + step * index + step / 2;
+      const h = (day.activeMs / maxActive) * innerH;
+      const y = pad.top + innerH - h;
+      const weekend = isWeekend(day.date);
+      const fill = weekend ? palette.weekend : palette.input;
+      const title = `${day.date}${weekend ? "（周末）" : ""}\n活跃 ${formatDuration(day.activeMs)}\nToken ${formatInt(day.tokensTotal)}\n对话 ${day.conversations} · 轮次 ${day.turns}`;
+      const bar = `<rect x="${(x - barW / 2).toFixed(2)}" y="${y.toFixed(2)}" width="${barW.toFixed(2)}" height="${Math.max(h, 1).toFixed(2)}" rx="2" fill="${fill}" />`;
+      const value =
+        day.activeMs > 0 && index % valueEvery === 0
+          ? `<text x="${x.toFixed(1)}" y="${(y - 5).toFixed(1)}" text-anchor="middle" font-size="10" fill="${palette.muted}">${escapeHtml(formatDuration(day.activeMs))}</text>`
+          : "";
+      return `<g><title>${escapeHtml(title)}</title>${bar}${value}</g>`;
+    })
+    .join("");
 
   const labelEvery = Math.max(1, Math.ceil(days.length / 10));
   const labels = days
     .map((day, index) =>
       index % labelEvery === 0 || index === days.length - 1
-        ? `<text x="${(pad.left + step * index + step / 2).toFixed(1)}" y="${height - 12}" text-anchor="middle" font-size="11" fill="${palette.muted}">${escapeHtml(day.date.slice(5))}</text>`
+        ? `<text x="${(pad.left + step * index + step / 2).toFixed(1)}" y="${height - 10}" text-anchor="middle" font-size="11" fill="${palette.muted}">${escapeHtml(day.date.slice(5))}</text>`
         : "",
     )
     .join("");
 
-  return `<svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" role="img" aria-label="每日 Token 与活跃时长">
+  return `<svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" role="img" aria-label="每日活跃时长">
   <line x1="${pad.left}" y1="${pad.top + innerH}" x2="${width - pad.right}" y2="${pad.top + innerH}" stroke="${palette.border}" stroke-width="1" />
-  ${bars.join("")}
-  <polyline points="${linePoints.join(" ")}" fill="none" stroke="${palette.accent}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.9" />
+  ${bars}
   ${labels}
 </svg>`;
 }
@@ -275,7 +275,8 @@ function modelTreemap(models, palette, metric = "tokens") {
     const pct = rect.w > 16 && rect.h > 15 ? '<text x="' + (rect.x + 1.6).toFixed(2) + '" y="' + (rect.y + 9.4).toFixed(2) + '" font-size="2.8" fill="#fff" opacity="0.9">' + formatPercent(share) + "</text>" : "";
     return '<g><title>' + escapeHtml(rect.label) + " · " + formatPercent(share) + '</title><rect x="' + rect.x.toFixed(2) + '" y="' + rect.y.toFixed(2) + '" width="' + Math.max(0.4, rect.w).toFixed(2) + '" height="' + Math.max(0.4, rect.h).toFixed(2) + '" fill="' + rect.color + '" stroke="' + palette.surface + '" stroke-width="0.4"/>' + name + pct + "</g>";
   });
-  return '<svg class="treemap" viewBox="0 0 100 56" width="100%" height="200" role="img" aria-label="模型占比">' + parts.join("") + "</svg>";
+  // height:auto + viewBox 固有比例 → SVG 铺满容器宽度，不再等比缩放后在左右留空白带
+  return '<svg class="treemap" viewBox="0 0 100 56" width="100%" style="height:auto" role="img" aria-label="模型占比">' + parts.join("") + "</svg>";
 }
 
 /** 按日模型趋势（堆叠柱，取前 6 个模型）。 */
@@ -329,7 +330,7 @@ function modelSection(snapshot, palette) {
     .join("");
   const links = (pricing.links ?? []).map((link) => '<a href="' + escapeHtml(link.url) + '">' + escapeHtml(link.label ?? link.provider) + "</a>").join(" · ");
   const totalText = pricing.totalCost === null || pricing.totalCost === undefined ? "" : " · 合计 " + cost(pricing.totalCost);
-  return '<section class="card">\n  <h2>模型用量</h2>\n  <div class="two-col">\n    <div>' + modelTreemap(models, palette, "tokens") + '<p class="note">面积 = Token 占比</p></div>\n    <div>' + modelTrend(snapshot.modelDaily, models, palette) + "</div>\n  </div>\n  <table>\n    <thead><tr><th>模型</th><th>占比</th><th>请求</th><th>输入</th><th>输出</th><th>缓存读</th><th>缓存命中</th><th>费用(估算)</th></tr></thead>\n    <tbody>" + rows + "</tbody>\n  </table>\n  <p class=\"note\">费用按官方公开单价估算（as-of " + escapeHtml(String(pricing.asOf ?? "")) + "，" + (pricing.costed?.covered ?? 0) + "/" + (pricing.costed?.total ?? 0) + " 个模型有官方价" + totalText + "）。官方计费标准：" + links + "</p>\n</section>";
+  return '<section class="card">\n  <h2>模型用量</h2>\n  <p class="hint">模型占比 · 面积 = Token 占比 ｜ 右：按日 Token 趋势</p>\n  <div class="two-col">\n    <div>' + modelTreemap(models, palette, "tokens") + "</div>\n    <div>" + modelTrend(snapshot.modelDaily, models, palette) + "</div>\n  </div>\n  <table>\n    <thead><tr><th>模型</th><th>占比</th><th>请求</th><th>输入</th><th>输出</th><th>缓存读</th><th>缓存命中</th><th>费用(估算)</th></tr></thead>\n    <tbody>" + rows + "</tbody>\n  </table>\n  <p class=\"note\">费用按官方公开单价估算（as-of " + escapeHtml(String(pricing.asOf ?? "")) + "，" + (pricing.costed?.covered ?? 0) + "/" + (pricing.costed?.total ?? 0) + " 个模型有官方价" + totalText + "）。官方计费标准：" + links + "</p>\n</section>";
 }
 
 /** 报告生成。 */
@@ -347,9 +348,16 @@ export function renderReport(snapshot, options = {}) {
   const derived = snapshot.derived;
   const range = snapshot.range;
 
+  // 模型费用 KPI：与看板同口径 —— 只统计有官方单价的模型；一个都没有时显示 —（不编数字）
+  const pricing = snapshot.pricing ?? { currency: "CNY", asOf: "", links: [], costed: { covered: 0, total: 0 }, totalCost: null };
+  const symbol = pricing.currency === "USD" ? "$" : "¥";
+  const money = (value) => (value === null || value === undefined ? "—" : symbol + (value < 1 ? value.toFixed(4) : value.toFixed(2)));
+  const costed = pricing.costed ?? { covered: 0, total: 0 };
+
   const kpis = [
     ["累计活跃时长", formatDuration(totals.activeMs), `模型 ${formatDuration(totals.llmMs)} · 工具 ${formatDuration(totals.toolMs)}`],
     ["总 Token", formatTokens(totals.tokensTotal), `输入 ${formatTokens(totals.tokens.input)} · 输出 ${formatTokens(totals.tokens.output)} · 缓存 ${formatTokens(totals.tokens.cacheRead)}`],
+    ["模型费用(估算)", money(pricing.totalCost), costed.total > 0 ? `${formatInt(costed.covered)}/${formatInt(costed.total)} 个模型有官方价 · as-of ${pricing.asOf ?? "—"}` : "无带官方价的模型"],
     ["对话次数", formatInt(totals.conversations), `会话总数 ${formatInt(totals.sessions)}（含空会话 ${formatInt(totals.emptySessions)}）`],
     ["轮次 / 步骤", `${formatInt(totals.turns)} / ${formatInt(totals.steps)}`, `主会话 ${formatInt(totals.mainSessions)} · 子代理 ${formatInt(totals.subagentSessions)}`],
     ["活跃天数", `${formatInt(totals.activeDays)} / ${formatInt(range.days)}`, `覆盖 ${formatInt(totals.workspaces)} 个工作区`],
@@ -475,13 +483,11 @@ export function renderReport(snapshot, options = {}) {
 
   <section class="card">
     <h2>每日用量趋势</h2>
-    <p class="hint">柱＝Token，折线＝活跃时长</p>
+    <p class="hint">柱＝活跃时长，周六 / 周日用强调色；数值标在柱顶</p>
     ${dailyChart(snapshot.byDay, palette)}
     <div class="legend">
-      <span><i style="background:${palette.cache}"></i>缓存读取</span>
-      <span><i style="background:${palette.input}"></i>输入</span>
-      <span><i style="background:${palette.output}"></i>输出</span>
-      <span><i style="background:${palette.accent}"></i>活跃时长</span>
+      <span><i style="background:${palette.input}"></i>工作日</span>
+      <span><i style="background:${palette.weekend}"></i>周末</span>
     </div>
   </section>
 
