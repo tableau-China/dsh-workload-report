@@ -407,6 +407,29 @@ function WorkspacePie({ items, range, t }) {
   );
 }
 
+/**
+ * 日期轴刻度：数量随可用宽度自适应，首尾刻度必选，相邻刻度保持最小间距（不叠字）。
+ * @param count - 数据点个数。
+ * @param step - 每个数据点的横向步长（viewBox 单位）。
+ * @param minGap - 相邻刻度最小间距（viewBox 单位，约等于一个日期标签的宽度）。
+ * @returns 需要显示标签的下标（升序）。
+ */
+export function dailyAxisTickIndices(count, step, minGap = 46) {
+  if (!(count > 0)) return [];
+  if (count === 1) return [0];
+  const maxTicks = Math.max(2, Math.floor((count * step) / minGap));
+  const every = Math.max(1, Math.ceil((count - 1) / (maxTicks - 1)));
+  const picked = new Set();
+  for (let index = 0; index < count; index += every) picked.add(index);
+  picked.add(count - 1); // 末尾（最近一天）始终显示
+  const sorted = [...picked].sort((a, b) => a - b);
+  const last = sorted[sorted.length - 1];
+  const previous = sorted[sorted.length - 2];
+  // 末尾与倒数第二个刻度挨得太近时，去掉左边那个
+  if (previous !== undefined && (last - previous) * step < minGap) picked.delete(previous);
+  return [...picked].sort((a, b) => a - b);
+}
+
 /** 每日「Token 堆叠柱 + 活跃时长折线」。 */
 function DailyChart({ days, t }) {
   const geometry = useMemo(() => {
@@ -446,14 +469,19 @@ function DailyChart({ days, t }) {
       );
       points.push(`${centerX.toFixed(2)},${(pad.top + innerH - scale(day.activeMs, maxActive) * 0.92).toFixed(2)}`);
     });
-    const labelEvery = Math.max(1, Math.ceil(days.length / 12));
-    const labels = days.map((day, index) =>
-      index % labelEvery === 0 || index === days.length - 1 ? (
-        <text key={day.date} x={pad.left + step * index + step / 2} y={height - 10} textAnchor="middle" fontSize="10" fill="var(--dsw-alias-label-tertiary, #6b7280)">
-          {day.date.slice(5)}
+    // 刻度数量自适应 + 首尾必显；贴边的标签向内收，避免被 viewBox 裁掉
+    const tickIndices = new Set(dailyAxisTickIndices(days.length, step));
+    const labels = days.map((day, index) => {
+      if (!tickIndices.has(index)) return null;
+      const text = day.date.slice(5);
+      const half = text.length * 3.1; // 字号 10：日期字符宽约 6.2
+      const centerX = pad.left + step * index + step / 2;
+      return (
+        <text key={day.date} x={Math.min(Math.max(centerX, half), width - half)} y={height - 10} textAnchor="middle" fontSize="10" fill="var(--dsw-alias-label-tertiary, #6b7280)">
+          {text}
         </text>
-      ) : null,
-    );
+      );
+    });
     return { width, height, pad, innerH, innerW, bars, points, labels };
   }, [days]);
 
@@ -831,10 +859,13 @@ function ByDayView({ data, t }) {
             <button type="button" className="wl-chip" data-active={dailyMode === "bar"} onClick={() => setDailyMode("bar")}>{t("daily.bar")}</button>
           </div>
         </div>
-        {dailyMode === "calendar" ? (
-          <>
-            <CalendarHeatmap calendar={data.calendar} t={t} />
-            <div className="wl-legend">
+        {/* 图表容器固定高度：日历与柱状图切换时卡片高度不跳 */}
+        <div className="wl-daily-body">
+          {dailyMode === "calendar" ? <CalendarHeatmap calendar={data.calendar} t={t} /> : <DailyChart days={data.byDay} t={t} />}
+        </div>
+        <div className="wl-legend">
+          {dailyMode === "calendar" ? (
+            <>
               <span className="wl-metric-sub">{t("cal.scale")}</span>
               <span className="wl-cal-scale" aria-hidden="true">
                 {[0, 1, 2, 3, 4].map((level) => (
@@ -854,19 +885,16 @@ function ByDayView({ data, t }) {
                 ))}
                 <span className="wl-metric-sub">{t("cal.less")} → {t("cal.more")}</span>
               </span>
-            </div>
-          </>
-        ) : (
-          <>
-            <DailyChart days={data.byDay} t={t} />
-            <div className="wl-legend">
+            </>
+          ) : (
+            <>
               <span><i className="wl-dot" style={{ background: "var(--dsw-static-neutral-300, #c7cbd1)" }} />{t("legend.cache")}</span>
               <span><i className="wl-dot" style={{ background: "var(--dsw-static-blue-500, #3b82f6)" }} />{t("legend.input")}</span>
               <span><i className="wl-dot" style={{ background: "var(--dsw-static-green-500, #10b981)" }} />{t("legend.output")}</span>
               <span><i className="wl-dot" style={{ background: "var(--dsw-static-deepseek-500, #4d6bfe)" }} />{t("legend.active")}</span>
-            </div>
-          </>
-        )}
+            </>
+          )}
+        </div>
       </div>
 
       <ModelSection data={data} t={t} />

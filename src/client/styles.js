@@ -167,7 +167,11 @@ export const STYLES = `
 
 
 /* ── 每日用量趋势（左）与模型用量（右）并排 ── */
-.wl-grid-daily-model { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 14px; align-items: start; margin-bottom: 14px; }
+/* 左右两卡等高（align-items: stretch + 卡片 height:100%）；左列图表区再 flex 吃掉剩余高度 */
+.wl-grid-daily-model { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 14px; margin-bottom: 14px; }
+.wl-grid-daily-model > .wl-card { display: flex; flex-direction: column; height: 100%; margin-bottom: 0; }
+/* 日历与柱状图共用一个固定高度的容器，切换模式时卡片高度不跳 */
+.wl-daily-body { flex: 1 1 auto; display: flex; flex-direction: column; justify-content: center; min-height: 244px; }
 /* 右列较窄：模型卡内部改为上下堆叠（treemap 在上、趋势在下） */
 .wl-model-grid { grid-template-columns: 1fr; gap: 10px; }
 @media (max-width: 1080px) { .wl-grid-daily-model { grid-template-columns: 1fr; } .wl-model-grid { grid-template-columns: 1fr; } }
