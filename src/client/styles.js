@@ -181,11 +181,12 @@ export const STYLES = `
 
 
 /* ── 每日用量趋势（左）与模型用量（右）并排 ── */
-/* 左右两卡等高（align-items: stretch + 卡片 height:100%）；左列图表区再 flex 吃掉剩余高度 */
+/* 左右两卡等高：栅格 stretch 即可，卡片不能再写 height:100%（content-box 下会把卡撑出 padding 高度、压住下一行）；
+   卡内固定三段 head(auto) → body(flex:1) → legend(auto)，body 首选 244px 且可收缩，任何内容都不会溢出卡片 */
 .wl-grid-daily-model { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 14px; margin-bottom: 14px; }
-.wl-grid-daily-model > .wl-card { display: flex; flex-direction: column; height: 100%; margin-bottom: 0; }
-/* 日历与柱状图共用一个固定高度的容器，切换模式时卡片高度不跳 */
-.wl-daily-body { flex: 1 1 auto; display: flex; flex-direction: column; justify-content: center; min-height: 244px; }
+.wl-grid-daily-model > .wl-card { display: flex; flex-direction: column; min-height: 0; margin-bottom: 0; overflow: hidden; }
+/* 日历与柱状图共用同一个容器：首选 244px，随行高伸展/收缩（min-height:0 是 flex 溢出的关键） */
+.wl-daily-body { flex: 1 1 244px; min-height: 0; display: flex; flex-direction: column; justify-content: center; }
 /* 右列较窄：模型卡内部改为上下堆叠（treemap 在上、趋势在下） */
 .wl-model-grid { grid-template-columns: 1fr; gap: 10px; }
 @media (max-width: 1080px) { .wl-grid-daily-model { grid-template-columns: 1fr; } .wl-model-grid { grid-template-columns: 1fr; } }
@@ -199,7 +200,9 @@ export const STYLES = `
 .wl-model-name { display: inline-flex; align-items: center; gap: 6px; background: none; border: 0; padding: 0; cursor: pointer; color: inherit; font: inherit; }
 .wl-model-name i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
 .wl-model-raw { display: block; margin-top: 2px; }
-.wl-legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
+.wl-legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; line-height: 1.5; }
+/* legend 里的说明文字不再带 margin-top：日历/柱状图两种 legend 必须一样高，否则图表容器高度会随模式变化 */
+.wl-legend .wl-metric-sub { margin-top: 0; }
 .wl-legend-item { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); }
 .wl-legend-item i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
 @media (max-width: 900px) { .wl-model-grid { grid-template-columns: 1fr; } }

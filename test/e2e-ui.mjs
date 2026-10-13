@@ -282,6 +282,22 @@ try {
   });
   await sleep(800);
 
+  // 每日趋势卡几何：与右侧模型卡等高、legend 在卡片内容区内、与下一行栅格不重叠
+  const dailyGeometry = await page.evaluate(() => {
+    const [left, right] = [...document.querySelectorAll(".wl-grid-daily-model > .wl-card")];
+    const legend = left.querySelector(".wl-legend");
+    const next = document.querySelector(".wl-grid-daily-model + .wl-grid-2");
+    const style = getComputedStyle(left);
+    const contentBottom = left.getBoundingClientRect().bottom - parseFloat(style.paddingBottom) - parseFloat(style.borderBottomWidth);
+    const round = (value) => Math.round(value * 100) / 100;
+    return {
+      heightDiff: round(Math.abs(left.getBoundingClientRect().height - right.getBoundingClientRect().height)),
+      legendGap: round(contentBottom - legend.getBoundingClientRect().bottom),
+      gapToNext: next === null ? null : round(next.getBoundingClientRect().top - left.getBoundingClientRect().bottom),
+    };
+  });
+  ok(dailyGeometry.heightDiff === 0 && dailyGeometry.legendGap >= 0 && dailyGeometry.gapToNext !== null && dailyGeometry.gapToNext > 0, "每日趋势卡与模型卡等高、legend 在卡内、与下一行不重叠", JSON.stringify(dailyGeometry));
+
   // ---- 并排两图：时刻分析 + 工作区占比 ----
   const sideCharts = await page.evaluate(() => {
     const cards = [...document.querySelectorAll(".wl-grid-2 > .wl-card")];
