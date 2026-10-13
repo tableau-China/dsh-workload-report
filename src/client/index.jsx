@@ -186,7 +186,7 @@ function eachDate(from, to, limit = 1000) {
 /**
  * 日历热力图：纵轴周一～周日，横轴 Year-Week，颜色深浅＝活跃时长（受顶部区间筛选控制）。
  */
-function CalendarHeatmap({ calendar, t, availableHeight = 0, availableWidth = 0 }) {
+function CalendarHeatmap({ calendar, t, availableHeight = 0 }) {
   const model = useMemo(() => {
     const byDate = new Map((calendar?.days ?? []).map((day) => [day.date, day]));
     const dates = eachDate(calendar?.from ?? "", calendar?.to ?? "");
@@ -214,18 +214,19 @@ function CalendarHeatmap({ calendar, t, availableHeight = 0, availableWidth = 0 
   const topPad = 18;
   const barArea = 54;
   const valueArea = 44;
-  // cell 从容器真实高度反解：日历填满卡片的剩余高度（不再在下方留大片空白）；
-  // 同时受可用宽度约束（多周时不会把周几累计条挤出可视区），上限 30 保持格子不过分夸张。
+  // cell 从容器真实高度反解：日历始终填满卡片剩余高度（不再在下方留大片空白）。
+  // 不按可用宽度压缩格子——列数多时 SVG 自然变宽，交给 .wl-cal-scroll 横向滚动；
+  // 纵向必须完整可见：填不满只会缩短，绝不溢出裁切（上限 30 保持格子不过分夸张）。
   const columns = Math.max(1, model.list.length);
   const fallback = columns > 30 ? 11 : columns > 14 ? 15 : 20;
   // 7 行之间有 7 个 (cell+gap) 步长（含底部一格间距），故预留 7*gap
   const byHeight = availableHeight > 0 ? (availableHeight - topPad - 4 - 7 * gap) / 7 : fallback;
-  const byWidth = availableWidth > 0 ? (availableWidth - leftPad - 8 - barArea - valueArea) / columns - gap : fallback;
-  const cell = Math.max(10, Math.min(30, byHeight, byWidth));
+  const cell = Math.max(6, Math.min(30, byHeight));
   const calendarWidth = leftPad + columns * (cell + gap);
   const barX = calendarWidth + 8;
   const width = barX + barArea + valueArea;
-  const height = topPad + 7 * (cell + gap) + 4;
+  // 兜底：绝不超过容器高度（正常 byHeight 已让高度正好等于容器高度）
+  const height = availableHeight > 0 ? Math.min(topPad + 7 * (cell + gap) + 4, availableHeight) : topPad + 7 * (cell + gap) + 4;
   const level = (ms) => {
     if (!(ms > 0)) return 0;
     const ratio = ms / model.max;
@@ -1086,7 +1087,7 @@ function ByDayView({ data, t }) {
         {/* 图表容器固定高度：日历与柱状图切换时卡片高度不跳 */}
         <div className="wl-daily-body" ref={dailyBodyRef}>
           {dailyMode === "calendar" ? (
-            <CalendarHeatmap calendar={data.calendar} t={t} availableHeight={dailyBody.height} availableWidth={dailyBody.width} />
+            <CalendarHeatmap calendar={data.calendar} t={t} availableHeight={dailyBody.height} />
           ) : (
             <DailyChart days={data.byDay} t={t} />
           )}

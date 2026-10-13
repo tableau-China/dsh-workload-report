@@ -146,7 +146,11 @@ export const STYLES = `
 .wl-grid-2 { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 14px; margin-bottom: 14px; }
 .wl-grid-2 .wl-card { margin-bottom: 0; }
 /* 日历热力图 */
-.wl-cal-scroll { overflow-x: auto; padding-bottom: 4px; }
+/* 只允许横向滚动（Year-Week 多列时）；纵向必须完整可见——
+   注意：overflow-x:auto 会把另一轴的 overflow-y:visible 计算成 auto（CSS 规范），
+   于是纵向也冒出滚动条，故这里显式 overflow-y:hidden；svg 改块级以去掉行内基线间隙。 */
+.wl-cal-scroll { overflow-x: auto; overflow-y: hidden; }
+.wl-cal-scroll > svg { display: block; }
 /* 时刻分析 */
 .wl-hour-grid { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 3px; align-items: end; height: 150px; margin-top: 6px; }
 .wl-hour-col { position: relative; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; cursor: default; }
