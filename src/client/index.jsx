@@ -478,8 +478,8 @@ function useChartSize(ref) {
 }
 
 /**
- * 每日趋势：柱高与折线点都取 day.activeMs（**单一序列**：活跃时长）。
- * 折线点上用小字号标数值（h/m/s），点数多时隔点标注，避免叠字。
+ * 每日趋势：只有柱（无折线），柱高取 day.activeMs（**单一序列**：活跃时长）。
+ * 柱顶用小字号标数值（h/m/s），点数多时隔点标注避免叠字；周六 / 周日用强调色区分。
  */
 function DailyChart({ days, t }) {
   const box = useRef(null);
@@ -497,21 +497,33 @@ function DailyChart({ days, t }) {
     const labelStep = Math.max(1, Math.ceil(30 / step));
     const bars = [];
     const values = [];
-    const points = [];
     days.forEach((day, index) => {
       const centerX = pad.left + step * index + step / 2;
       const y = pad.top + innerH - (day.activeMs / maxActive) * innerH;
-      points.push(`${centerX.toFixed(2)},${y.toFixed(2)}`);
+      // 星期由本地日期串判定：补 T00:00:00 按本地时区解析，不会整体偏移一天
+      const weekday = new Date(`${day.date}T00:00:00`).getDay();
+      const weekend = weekday === 0 || weekday === 6;
       // 每天都画柱（0 也留 1px）：悬停提示覆盖全部日期，柱 rect 数 = 天数
       bars.push(
-        <rect key={day.date} data-kind="active-bar" x={centerX - barWidth / 2} y={y} width={barWidth} height={Math.max(pad.top + innerH - y, 1)} rx="2" fill="var(--dsw-static-deepseek-500, #4d6bfe)">
+        <rect
+          key={day.date}
+          data-kind="active-bar"
+          data-date={day.date}
+          data-weekend={weekend ? "true" : undefined}
+          x={centerX - barWidth / 2}
+          y={y}
+          width={barWidth}
+          height={Math.max(pad.top + innerH - y, 1)}
+          rx="2"
+          fill={weekend ? "var(--dsw-static-amber-500, #f59e0b)" : "var(--dsw-static-deepseek-500, #4d6bfe)"}
+        >
           <title>{`${day.date}\n活跃 ${formatDuration(day.activeMs)}\n对话 ${day.conversations} · 轮次 ${day.turns}\nToken ${formatInt(day.tokensTotal)}`}</title>
         </rect>,
       );
-      // 0 不标：点就落在轴上，标 "0" 只会和日期挤在一起
+      // 0 不标：柱就落在轴上，标 "0" 只会和日期挤在一起；数值标在柱顶（h/m/s 小字号）
       if (day.activeMs > 0 && index % labelStep === 0) {
         values.push(
-          <text key={day.date} data-kind="point-label" x={centerX} y={y - 5} textAnchor="middle" fontSize="9" fill="var(--dsw-alias-label-secondary, #4b5563)">
+          <text key={day.date} data-kind="bar-label" data-date={day.date} x={centerX} y={y - 5} textAnchor="middle" fontSize="9" fill="var(--dsw-alias-label-secondary, #4b5563)">
             {formatDuration(day.activeMs)}
           </text>,
         );
@@ -530,7 +542,7 @@ function DailyChart({ days, t }) {
         </text>
       );
     });
-    return { width, height, pad, innerH, innerW, bars, values, points, axis };
+    return { width, height, pad, innerH, innerW, bars, values, axis };
   }, [days, width, height]);
 
   if (geometry === null) {
@@ -540,13 +552,12 @@ function DailyChart({ days, t }) {
       </div>
     );
   }
-  const { pad, innerH, innerW, bars, values, points, axis } = geometry;
+  const { pad, innerH, innerW, bars, values, axis } = geometry;
   return (
     <div className="wl-chart-fill" ref={box} data-kind="daily-chart">
       <svg viewBox={`0 0 ${width} ${height}`} width={width} height={height} role="img" aria-label={t("chart.daily")}>
         <line x1={pad.left} y1={pad.top + innerH} x2={pad.left + innerW} y2={pad.top + innerH} stroke="var(--dsw-alias-border-l2, #e5e7eb)" />
         {bars}
-        <polyline points={points.join(" ")} fill="none" stroke="var(--dsw-static-deepseek-500, #4d6bfe)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" opacity="0.85" />
         {values}
         {axis}
       </svg>
@@ -1037,7 +1048,10 @@ function ByDayView({ data, t }) {
               </span>
             </>
           ) : (
-            <span><i className="wl-dot" style={{ background: "var(--dsw-static-deepseek-500, #4d6bfe)" }} />{t("legend.active")}</span>
+            <>
+              <span><i className="wl-dot" style={{ background: "var(--dsw-static-deepseek-500, #4d6bfe)" }} />{t("legend.active")}</span>
+              <span><i className="wl-dot" style={{ background: "var(--dsw-static-amber-500, #f59e0b)" }} />{t("legend.weekend")}</span>
+            </>
           )}
         </div>
       </div>
