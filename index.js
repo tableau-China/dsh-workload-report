@@ -68,11 +68,36 @@ const DEFAULTS = {
   activeModelMetric: "requests",
   /** 同一会话两次模型折叠的最小间隔（续聊后重新折叠）。 */
   modelRefoldMs: 15 * 60 * 1000,
+  /** 已折过的会话，事件水位领先多少才值得重折（活会话的 asOfSeq 每来一个事件 +1，必须给阈值）。 */
+  modelRefoldDelta: 50,
+  /** 折叠失败的会话隔多久再试一次（失败不算 pending，只影响重试节奏）。 */
+  modelRetryMs: 15 * 60 * 1000,
 };
 
 /** 把未知异常收敛成一行文本。 */
 function reasonOf(error) {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** 行上记录的折叠失败原因上限（消息可能很长，避免把索引文件写胖）。 */
+const MODEL_FOLD_ERROR_MAX = 200;
+
+/**
+ * 模型折叠结果在行上的字段。投影重建出来的行**不含**模型维度（模型来自事件日志，不是投影），
+ * 所以每次用 fresh 行替换旧行时必须把这组字段整体搬过去；否则：
+ *   · 活会话每来一个事件、每次 sync 命中检查点，折好的 models 都会当场丢失；
+ *   · pending 永远 > 0 → 界面永远停在"模型维度正在回填…"；
+ *   · 重启后又要从头折一遍。
+ */
+const MODEL_ROW_FIELDS = ["models", "modelFoldSeq", "modelFoldAt", "modelFoldSkipped", "modelFoldError", "modelFoldErrorAt"];
+
+/** 把上一版行的模型折叠结果搬到新行上（新行缺的字段才补，不覆盖）。 */
+function carryModelFields(row, previous) {
+  if (previous === undefined || previous === row) return row;
+  for (const field of MODEL_ROW_FIELDS) {
+    if (row[field] === undefined && previous[field] !== undefined) row[field] = previous[field];
+  }
+  return row;
 }
 
 /** 读取系统时区。 */
@@ -145,13 +170,18 @@ class WorkloadIndex {
     this.rowSavedAt = new Map();
     this.syncing = null;
     this.loadedFromDisk = false;
+    /** 落盘串行队列（见 saveToDisk）。 */
+    this.saveQueue = null;
     /** 模型维度回填状态（渐进：首屏先出总量，模型区随后补齐）。 */
-    this.modelFold = { running: false, done: 0, total: 0, folded: 0, skipped: 0, lastAt: 0, lastError: null };
+    this.modelFold = {
+      running: false, done: 0, total: 0, folded: 0, skipped: 0, failed: 0,
+      pending: 0, refold: 0, lastAt: 0, lastError: null, lastErrorAt: null,
+    };
     this.resolvedPricing = undefined;
     this.diagnostics = {
       sessions: 0, cached: 0, reused: 0, live: 0, cold: 0, missing: 0,
       buildMs: 0, lastSyncAt: 0, lastError: null, persisted: false,
-      modelsFolded: 0, modelPending: 0, modelSkipped: 0,
+      modelsFolded: 0, modelPending: 0, modelStale: 0, modelFailed: 0, modelSkipped: 0,
     };
   }
 
@@ -181,8 +211,16 @@ class WorkloadIndex {
     }
   }
 
-  /** 写本地索引（原子替换）。 */
+  /** 写本地索引：sync 与模型回填会并发触发，排队执行，避免两次写同一个 .tmp 互踩（rename ENOENT）。 */
   async saveToDisk() {
+    const previous = this.saveQueue ?? Promise.resolve();
+    const next = previous.then(() => this.writeIndex());
+    this.saveQueue = next.catch(() => {});
+    return next;
+  }
+
+  /** 真正落盘（原子替换）。 */
+  async writeIndex() {
     try {
       const path = this.indexPath();
       await mkdir(dirname(path), { recursive: true });
@@ -277,7 +315,8 @@ class WorkloadIndex {
     }
     const settle = (id, row, savedAt) => {
       if (!nextRows.has(id)) diagnostics.sessions += 1;
-      nextRows.set(id, row);
+      // 新行来自投影，不带模型维度：把上一版行的折叠结果搬过来（否则每次同步都会丢）
+      nextRows.set(id, carryModelFields(row, previousRows.get(id)));
       nextSavedAt.set(id, savedAt);
     };
     const revalidateMs = this.config.revalidateMs;
@@ -348,10 +387,8 @@ class WorkloadIndex {
       diagnostics.sessions = nextRows.size;
     }
     diagnostics.buildMs = Date.now() - started;
-    diagnostics.modelPending = this.modelFoldTargets().length;
-    diagnostics.modelsFolded = this.modelFold.folded;
-    diagnostics.modelSkipped = this.modelFold.skipped;
     this.diagnostics = diagnostics;
+    this.refreshModelDiagnostics();
     this.snapshotCache = undefined; // 索引刷新后缓存作废
     if (coldPerformed > 0) await this.saveToDisk();
     // 投影数据已可用 → 立刻放行首屏；模型维度在后台渐进补齐
@@ -366,73 +403,164 @@ class WorkloadIndex {
   }
 
   /**
-   * 需要折叠模型的会话：还没折过（缺 models），或事件水位比折过的水位新（续聊过）。
-   * @returns {Array<{id: string, row: object}>}
+   * 模型折叠队列（三档互斥，0.4.1 起 pending 只认"从未折过"）：
+   *   · pending —— 从未折过（`models === undefined` 且没记过失败）。界面「回填中」只跟它同步；
+   *   · refold  —— 折过、但事件水位显著前进（> modelRefoldDelta）或会话已非 live（收尾补齐）。
+   *                这类行已经有数据可用，重折不打扰界面；
+   *   · failed  —— 折过但失败、且已过重试窗口（modelRetryMs），再试一次；失败不算 pending。
+   * 活会话的 asOfSeq 每来一个事件就 +1：若"水位前进就重折"，pending 会永远 > 0，
+   * 界面就永远停在"模型维度正在回填…"——这正是 0.4.0 的线上缺陷。
+   * @returns {{pending: Array, refold: Array, failed: Array}}
    */
-  modelFoldTargets() {
-    if (this.config.modelUsage === "off") return [];
-    const targets = [];
+  modelFoldQueue() {
+    const queue = { pending: [], refold: [], failed: [] };
+    if (this.config.modelUsage === "off") return queue;
+    const now = Date.now();
     for (const [id, row] of this.rows) {
+      if (row.models === undefined) {
+        const failedAt = typeof row.modelFoldErrorAt === "number" ? row.modelFoldErrorAt : 0;
+        if (typeof row.modelFoldError !== "string" || row.modelFoldError === "") queue.pending.push({ id, row });
+        else if (now - failedAt >= this.config.modelRetryMs) queue.failed.push({ id, row });
+        continue;
+      }
       const foldedSeq = typeof row.modelFoldSeq === "number" ? row.modelFoldSeq : -1;
       const asOf = typeof row.asOfSeq === "number" ? row.asOfSeq : 0;
-      if (row.models === undefined || asOf > foldedSeq) targets.push({ id, row });
+      if (asOf - foldedSeq > this.config.modelRefoldDelta) queue.refold.push({ id, row });
+      else if (asOf > foldedSeq && this.liveSession(id) === undefined) queue.refold.push({ id, row });
     }
-    return targets;
+    return queue;
+  }
+
+  /** 需要本次折叠的会话（pending + refold + failed）。 */
+  modelFoldTargets() {
+    const queue = this.modelFoldQueue();
+    return [...queue.pending, ...queue.refold, ...queue.failed];
+  }
+
+  /** 当前处于"折叠失败"状态的行数（不参与 pending，界面上单独提示原因）。 */
+  modelFoldFailedRows() {
+    let count = 0;
+    for (const row of this.rows.values()) {
+      if (row.models === undefined && typeof row.modelFoldError === "string" && row.modelFoldError !== "") count += 1;
+    }
+    return count;
+  }
+
+  /** 行级失败里最近的一条（重启后运行级 lastError 是空的，但失败状态是从索引读回来的）。 */
+  lastRowFoldError() {
+    let newest = null;
+    for (const row of this.rows.values()) {
+      if (typeof row.modelFoldError !== "string" || row.modelFoldError === "") continue;
+      const at = typeof row.modelFoldErrorAt === "number" ? row.modelFoldErrorAt : 0;
+      if (newest === null || at > newest.at) newest = { at, message: row.modelFoldError };
+    }
+    return newest;
+  }
+
+  /** 模型维度诊断（/health、/snapshot 与 sync 共用同一份口径）。 */
+  modelFoldDiagnostics() {
+    const queue = this.modelFoldQueue();
+    const failedRows = this.modelFoldFailedRows();
+    const rowError = this.modelFold.lastError === null ? this.lastRowFoldError() : null;
+    return {
+      ...this.modelFold,
+      pending: queue.pending.length,
+      refold: queue.refold.length,
+      failedRows,
+      lastError: this.modelFold.lastError ?? rowError?.message ?? null,
+      lastErrorAt: this.modelFold.lastErrorAt ?? rowError?.at ?? null,
+    };
+  }
+
+  /** 把模型折叠进度写回诊断字段。 */
+  refreshModelDiagnostics() {
+    const fold = this.modelFoldDiagnostics();
+    this.diagnostics.modelsFolded = this.modelFold.folded;
+    this.diagnostics.modelSkipped = this.modelFold.skipped;
+    this.diagnostics.modelPending = fold.pending;
+    this.diagnostics.modelStale = fold.refold;
+    this.diagnostics.modelFailed = fold.failedRows;
+    return fold;
   }
 
   /**
    * 后台折叠模型维度：官方 `readSession()` 读整份事件日志 → src/models.js 折叠。
-   * 结论写回内存行（并在结束时落盘），因此重启后不必重折。
+   * 结果写回**当前**行（折叠期间行可能被投影重建，写回抓到的旧行等于白折），并在结束时落盘。
    */
   async runModelFold() {
     if (this.config.modelUsage === "off" || this.modelFold.running) return;
-    const targets = this.modelFoldTargets();
+    const queue = this.modelFoldQueue();
+    const targets = [...queue.pending, ...queue.refold, ...queue.failed];
     if (targets.length === 0) return;
-    this.modelFold = { running: true, done: 0, total: targets.length, folded: 0, skipped: 0, lastAt: Date.now(), lastError: null };
+    this.modelFold = {
+      running: true, done: 0, total: targets.length, folded: 0, skipped: 0, failed: 0,
+      pending: queue.pending.length, refold: queue.refold.length,
+      lastAt: Date.now(), lastError: null, lastErrorAt: null,
+    };
     try {
       await mapLimit(targets, Math.max(1, this.config.modelFoldConcurrency), async ({ id, row }) => {
+        // 水位在开读前取：折叠期间行换代也不至于把"没读到的新事件"当成已折
+        const asOf = typeof row.asOfSeq === "number" ? row.asOfSeq : 0;
         try {
           const snapshot = await this.ctx.sessionQuery.readSession(id);
           const events = Array.isArray(snapshot?.events) ? snapshot.events : [];
-          const asOf = typeof row.asOfSeq === "number" ? row.asOfSeq : 0;
+          const target = this.rows.get(id) ?? row; // 行可能已被 patchLive/sync 换代 → 写回当前行
           if (events.length > this.config.modelFoldMaxEvents) {
             // 巨型会话：跳过并标记，避免把整份日志常驻内存
             this.modelFold.skipped += 1;
-            row.models = row.models ?? {};
-            row.modelFoldSeq = asOf;
-            row.modelFoldSkipped = events.length;
+            target.models = target.models ?? {};
+            target.modelFoldSeq = asOf;
+            target.modelFoldSkipped = events.length;
+            delete target.modelFoldError;
+            delete target.modelFoldErrorAt;
             this.modelFold.done += 1;
             return;
           }
-          const folded = foldSessionModels(events, { groups: this.config.modelGroups, sessionLlmMs: row.llmMs });
-          row.models = folded.models;
-          row.modelFoldSeq = asOf;
-          row.modelFoldAt = Date.now();
-          delete row.modelFoldSkipped;
+          const folded = foldSessionModels(events, { groups: this.config.modelGroups, sessionLlmMs: target.llmMs });
+          target.models = folded.models;
+          target.modelFoldSeq = asOf;
+          target.modelFoldAt = Date.now();
+          delete target.modelFoldSkipped;
+          delete target.modelFoldError;
+          delete target.modelFoldErrorAt;
           this.modelFold.folded += 1;
         } catch (error) {
-          this.modelFold.lastError = reasonOf(error);
+          // 失败记在行上：重启后不必立刻重试，但过了重试窗口会再试；pending 不因它常驻
+          const message = reasonOf(error);
+          const target = this.rows.get(id) ?? row;
+          this.modelFold.failed += 1;
+          this.modelFold.lastError = message;
+          this.modelFold.lastErrorAt = Date.now();
+          target.modelFoldError = message.slice(0, MODEL_FOLD_ERROR_MAX);
+          target.modelFoldErrorAt = Date.now();
         }
         this.modelFold.done += 1;
         // 边折边落盘：进度可见，且重启后不白折
-        if (this.modelFold.done % 25 === 0) await this.saveToDisk();
+        if (this.modelFold.done % 25 === 0) {
+          this.refreshModelDiagnostics();
+          await this.saveToDisk();
+        }
       });
     } finally {
       this.modelFold.running = false;
-      this.diagnostics.modelsFolded = this.modelFold.folded;
-      this.diagnostics.modelSkipped = this.modelFold.skipped;
-      this.diagnostics.modelPending = this.modelFoldTargets().length;
+      this.refreshModelDiagnostics();
       this.snapshotCache = undefined; // 模型数据变了，缓存作废
       await this.saveToDisk();
     }
   }
 
-  /** 需要时后台启动模型回填（不 await，绝不阻塞请求）。 */
+  /**
+   * 需要时后台启动模型回填（不 await，绝不阻塞请求）。
+   * 节流只约束"重折 / 重试"：**从未折过的会话不受节流影响**，否则首屏后新出现的会话
+   * 要等满一个 modelRefoldMs 才会被折，界面就得挂 15 分钟的"回填中"。
+   */
   scheduleModelFold({ force = false } = {}) {
     if (this.config.modelUsage === "off" || this.modelFold.running) return;
-    const idleMs = Date.now() - this.modelFold.lastAt;
-    if (!force && this.modelFold.lastAt > 0 && idleMs < this.config.modelRefoldMs) return;
-    if (this.modelFoldTargets().length === 0) return;
+    const queue = this.modelFoldQueue();
+    if (queue.pending.length === 0) {
+      if (!force && this.modelFold.lastAt > 0 && Date.now() - this.modelFold.lastAt < this.config.modelRefoldMs) return;
+      if (queue.refold.length + queue.failed.length === 0) return;
+    }
     void this.runModelFold();
   }
 
@@ -459,7 +587,9 @@ class WorkloadIndex {
     try {
       const row = this.liveRow(session, session.header ?? { id: session.id });
       if (row === undefined) return;
-      this.rows.set(String(session.id), row);
+      const key = String(session.id);
+      carryModelFields(row, this.rows.get(key));
+      this.rows.set(key, row);
       this.rowSavedAt.set(String(session.id), Date.now());
       // 行变了 → 快照缓存立即作废：否则 5s TTL 内仍会返回旧值，活会话事件"看起来没生效"
       this.snapshotCache = undefined;
@@ -497,14 +627,17 @@ class WorkloadIndex {
     return { ...result, diagnostics: this.diagnosticsFor() };
   }
 
-  /** 诊断信息（含索引进度与模型回填进度）。 */
+  /** 诊断信息（含索引进度与模型回填进度）；顶层 modelPending/Stale/Failed 与 modelFold 同源刷新。 */
   diagnosticsFor() {
+    this.refreshModelDiagnostics();
     return {
       ...this.diagnostics,
+      // syncing 是"后台正在重扫"的诊断事实；indexing 才是给用户看的"首次补齐中"
+      syncing: this.syncing !== null,
       // 只有"首次全量建索引"才算补齐中；之后的增量重扫很快，不必打扰用户
       indexing: this.syncing !== null && this.firstBuildDone !== true,
       modelUsage: this.config.modelUsage !== "off",
-      modelFold: { ...this.modelFold, pending: this.modelFoldTargets().length },
+      modelFold: this.modelFoldDiagnostics(),
     };
   }
 }
@@ -561,11 +694,9 @@ export function apply(ctx, config = {}) {
 
       if (route === "/health") {
         // 非阻塞：同步可能持续数分钟（首次要冷读历史会话），只报进度。
-        const indexing = index.syncing !== null && index.firstBuildDone !== true;
-        sendJson(res, 200, {
-          ok: true, apiPath, indexing,
-          diagnostics: { ...index.diagnostics, indexing, modelUsage: merged.modelUsage !== "off", modelFold: { ...index.modelFold, pending: index.modelFoldTargets().length } },
-        });
+        // diagnostics 与 /snapshot 用同一份口径（indexing / syncing / modelUsage / modelFold 都在里面）。
+        const diagnostics = index.diagnosticsFor();
+        sendJson(res, 200, { ok: true, apiPath, indexing: diagnostics.indexing, syncing: diagnostics.syncing, diagnostics });
         return;
       }
       if (route === "/snapshot" || route === "/export.json") {

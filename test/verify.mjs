@@ -273,6 +273,25 @@ const ctx = {
         dispose() { coldDisposed += 1; },
       };
     },
+    // 官方 readSession()：模型维度用它读事件日志（stub 给每个会话一条 assistant/message）
+    readSession: async (id) => ({
+      session: records.find((r) => r.header.id === id)?.header ?? {},
+      inheritedEventCount: 0,
+      events: [
+        {
+          type: "assistant/message",
+          seq: 1,
+          time: Date.UTC(2026, 9, 14, 2),
+          data: {
+            turn: 1,
+            step: 1,
+            message: { role: "assistant", source: { kind: "model", provider: "deepseek-official", model: "deepseek-flash" } },
+            usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 300, cacheWriteTokens: 0 },
+            stream: [{ type: "chunk", time: Date.UTC(2026, 9, 14, 2) }, { type: "chunk", time: Date.UTC(2026, 9, 14, 2) + 500 }],
+          },
+        },
+      ],
+    }),
   },
   sessionProjectionCache: { cachedSnapshot: (header) => snapshots[String(header.id)] },
   webServer: { register(spec) { routes.push(spec); return () => {}; } },
@@ -300,6 +319,40 @@ function call(url, method = "GET") {
       reject(error);
     }
   });
+}
+
+/** 在指定路由表上发一次请求（多实例测试用；call 默认打第一条路由）。 */
+function callOn(routeList, url, method = "GET") {
+  return new Promise((resolve, reject) => {
+    const res = {
+      statusCode: 0,
+      headers: {},
+      body: "",
+      writeHead(status, headers) { this.statusCode = status; this.headers = headers; },
+      end(chunk) { if (chunk) this.body += chunk; resolve({ status: this.statusCode, headers: this.headers, body: this.body }); },
+    };
+    try {
+      routeList[0].handler({ method, url }, res);
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+/** 轮询 /health 直到条件满足。 */
+async function waitHealth(routeList, predicate, label) {
+  for (let i = 0; i < 300; i += 1) {
+    const body = JSON.parse((await callOn(routeList, "/workload-report/v1/health")).body);
+    if (predicate(body)) return body;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`等待超时：${label}`);
+}
+
+/** 触发一次强制重扫并等它**真正跑完**（refresh 同步在后台跑，请求不等它）。 */
+async function forceRescan(routeList) {
+  await callOn(routeList, "/workload-report/v1/snapshot?days=30&tz=UTC&refresh=1");
+  return waitHealth(routeList, (body) => body.diagnostics.syncing === false && body.diagnostics.lastSyncAt > 0, "重扫完成");
 }
 
 /** 等索引同步完成（stub 里冷读是瞬时的，真实环境首次可能要几分钟）。 */
@@ -477,6 +530,125 @@ ok(Array.isArray(snapJson.byModel), "/snapshot 返回 byModel 数组");
 ok(Array.isArray(snapJson.modelDaily), "/snapshot 返回 modelDaily 数组");
 ok(snapJson.pricing !== undefined && Array.isArray(snapJson.pricing.links), "/snapshot 返回官方价目与链接");
 ok(snapJson.diagnostics.modelUsage === true, "诊断里带 modelUsage 开关状态");
+// 0.4.1 修复点：回填完成（pending = 0）后模型区必须有数据。
+// 0.4.0 的缺陷是：已折过的行只要 asOfSeq 前进就重新计入 pending → 界面永远"回填中"。
+{
+  const foldReady = await waitHealth(routes, (body) => body.diagnostics.modelFold.running === false && body.diagnostics.modelFold.pending === 0, "模型回填完成");
+  eq(foldReady.diagnostics.modelFold.pending, 0, "回填完成后 /health modelFold.pending = 0");
+  ok(
+    typeof foldReady.diagnostics.modelFold.refold === "number" && typeof foldReady.diagnostics.modelFold.failedRows === "number",
+    "诊断把 pending / refold / failedRows 分开（已折过的不再混进 pending）",
+    JSON.stringify(foldReady.diagnostics.modelFold),
+  );
+  const modelApi = JSON.parse((await call("/workload-report/v1/snapshot?days=30&tz=UTC")).body);
+  ok(modelApi.byModel.length > 0, "回填完成后 /snapshot 模型区有数据", JSON.stringify(modelApi.byModel.map((m) => m.key)));
+}
+
+// ---------------------------------------------------------------- 模型折叠生命周期（0.4.1 修复）
+console.log("\n—— 模型折叠生命周期（pending 语义 / 行换代不丢 / 重启复用）——");
+const LIFECYCLE_INDEX = `/tmp/wl-verify-lifecycle-${process.pid}.json`;
+await rm(LIFECYCLE_INDEX, { force: true }).catch(() => {});
+
+/** 折叠用的事件：一条 assistant/message（带 usage 与流式窗口）。 */
+const lifecycleEvent = (model) => ({
+  type: "assistant/message", seq: 1, time: Date.UTC(2026, 9, 14, 2),
+  data: {
+    turn: 1, step: 1,
+    message: { role: "assistant", source: { kind: "model", provider: "deepseek-official", model } },
+    usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 300, cacheWriteTokens: 0 },
+    stream: [{ type: "chunk", time: 0 }, { type: "chunk", time: 400 }],
+  },
+});
+
+/**
+ * 起一个隔离宿主实例（独立路由表 + 独立索引文件）：
+ *   L1 检查点可用；L2 可切成活会话；L3 的 readSession 永远抛错（真实世界的旧格式日志）。
+ */
+function bootLifecycle() {
+  const routeList = [];
+  const state = { live: false, reads: 0, listener: null };
+  const lcRecords = ["L1", "L2", "L3"].map((id) => ({
+    header: { id, createdAt: base, cwd: "/tmp/lc", isSeeded: false, version: 4 }, live: false, persisted: true,
+  }));
+  const values = (id) => ({
+    sessionStats: { turns: 1, steps: 1, llmMs: 1000, toolMs: 0 },
+    tokenUsage: { uncachedInputTokens: 10, outputTokens: 5, cacheReadTokens: 100, cacheWriteTokens: 0 },
+    title: id,
+  });
+  const lcSnapshots = { L1: { asOfSeq: 10, values: values("L1") }, L2: { asOfSeq: 20, values: values("L2") } };
+  const lcCtx = {
+    logger: { info() {}, warn() {} },
+    effect(fn) { fn(); return () => {}; },
+    on(name, listener) { state.listener = listener; return () => {}; },
+    sessions: { get: (id) => (state.live && id === "L2" ? { id: "L2", header: lcRecords[1].header } : undefined) },
+    sessionProjections: { snapshot: () => ({ asOfSeq: lcSnapshots.L2.asOfSeq, values: lcSnapshots.L2.values }) },
+    sessionQuery: {
+      listSessions: async () => lcRecords,
+      observeSession: async (id) => ({ header: lcRecords.find((r) => r.header.id === id).header, projections: { asOfSeq: 5, values: {} }, dispose() {} }),
+      readSession: async (id) => {
+        state.reads += 1;
+        if (id === "L3") throw new Error("unsupported descriptor version 2");
+        return { session: {}, inheritedEventCount: 0, events: [lifecycleEvent(id === "L2" ? "deepseek-v4-pro" : "deepseek-flash")] };
+      },
+    },
+    sessionProjectionCache: { cachedSnapshot: (header) => lcSnapshots[String(header.id)] },
+    webServer: { register(spec) { routeList.push(spec); return () => {}; } },
+  };
+  apply(lcCtx, { indexPath: LIFECYCLE_INDEX });
+  return { routeList, state, lcSnapshots, lcRecords };
+}
+
+const first = bootLifecycle();
+const settledFold = await waitHealth(first.routeList, (body) => body.indexing === false && body.diagnostics.modelFold.running === false && body.diagnostics.modelFold.pending === 0, "首次回填完成");
+eq(settledFold.diagnostics.modelFold.pending, 0, "首次回填完成后 pending = 0");
+eq(settledFold.diagnostics.modelFold.failedRows, 1, "读日志失败的会话单独计入 failedRows（不混进 pending）");
+ok(String(settledFold.diagnostics.modelFold.lastError ?? "").includes("unsupported descriptor"), "/health 暴露 modelFold.lastError（能直接定位到会话与原因）");
+ok(typeof settledFold.diagnostics.modelFold.lastErrorAt === "number" && settledFold.diagnostics.modelFold.lastErrorAt > 0, "lastError 带时间戳");
+const lifecycleSnap = JSON.parse((await callOn(first.routeList, "/workload-report/v1/snapshot?days=30&tz=UTC")).body);
+eq(lifecycleSnap.byModel.length, 2, "回填后 /snapshot.byModel 有两个模型（L2 pro + L1 flash）");
+const readsAfterFirst = first.state.reads;
+eq(readsAfterFirst, 3, "首次回填把 3 个会话各读一次（含 1 个失败）");
+
+// 行换代不丢：refresh 重扫会用投影重建每一行（检查点命中），折叠结果必须原样带过来
+await forceRescan(first.routeList);
+const rescanned = JSON.parse((await callOn(first.routeList, "/workload-report/v1/snapshot?days=30&tz=UTC")).body);
+eq(rescanned.byModel.length, 2, "重扫（行被投影重建）后模型数据仍在");
+eq(first.state.reads, readsAfterFirst, "重扫不重读日志（已折过的不重折）");
+eq(rescanned.diagnostics.modelFold.pending, 0, "重扫后 pending 仍为 0");
+
+// 活会话水位 +1：不重折、pending 不涨（0.4.0 就是在这里永远 pending）
+first.state.live = true;
+first.lcSnapshots.L2.asOfSeq += 1;
+first.state.listener({ id: "L2", header: first.lcRecords[1].header }, { type: "step/end" });
+const liveFold = await waitHealth(first.routeList, (body) => body.diagnostics.modelFold.running === false, "活会话增量");
+eq(liveFold.diagnostics.modelFold.pending, 0, "活会话 asOfSeq +1 后 pending 仍为 0（水位阈值生效）");
+eq(liveFold.diagnostics.modelFold.refold, 0, "活会话只前进 1 个水位：不触发重折");
+eq(JSON.parse((await callOn(first.routeList, "/workload-report/v1/snapshot?days=30&tz=UTC")).body).byModel.length, 2, "活会话增量更新后模型数据没被清掉");
+
+// 会话转冷后水位前进：进重折队列，但**不算 pending**（界面提示不复活）
+first.state.live = false;
+first.lcSnapshots.L2.asOfSeq += 1;
+await forceRescan(first.routeList);
+const coldFold = await waitHealth(first.routeList, (body) => body.diagnostics.modelFold.refold >= 1, "转冷后水位前进进入重折队列");
+eq(coldFold.diagnostics.modelFold.refold, 1, "会话转冷后水位前进：进入重折队列");
+eq(coldFold.diagnostics.modelFold.pending, 0, "重折不计入 pending（界面不再显示「回填中」）");
+eq(JSON.parse((await callOn(first.routeList, "/workload-report/v1/snapshot?days=30&tz=UTC")).body).byModel.length, 2, "待重折的行仍有旧数据可用");
+
+// 重启：换实例读同一份索引 —— 模型数据原样回来，且一次日志都不重读
+const second = bootLifecycle();
+const restartedFold = await waitHealth(second.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0 && body.diagnostics.modelFold.running === false, "重启实例索引就绪");
+eq(restartedFold.diagnostics.modelFold.pending, 0, "重启后 pending = 0（模型数据从索引缓存读回）");
+eq(restartedFold.diagnostics.modelFold.done, 0, "重启后没有重新折叠任何会话");
+eq(second.state.reads, 0, "重启后一次 readSession 都没发生（不重折全部）");
+const restartSnap = JSON.parse((await callOn(second.routeList, "/workload-report/v1/snapshot?days=30&tz=UTC")).body);
+eq(restartSnap.byModel.length, 2, "重启后模型区仍有数据");
+eq(restartSnap.diagnostics.modelFold.failedRows, 1, "重启后失败行数也从索引缓存读回");
+ok(
+  String(restartSnap.diagnostics.modelFold.lastError ?? "").includes("unsupported descriptor") && restartSnap.diagnostics.modelFold.lastErrorAt > 0,
+  "重启后 /health 仍能看到失败原因与时间（从索引缓存读回，不需要重试一次才知道）",
+  String(restartSnap.diagnostics.modelFold.lastError),
+);
+await rm(LIFECYCLE_INDEX, { force: true }).catch(() => {});
 
 // 收尾：删掉本次的临时索引
 await rm(INDEX_PATH, { force: true }).catch(() => {});
