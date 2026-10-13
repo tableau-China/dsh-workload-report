@@ -6,6 +6,7 @@
  */
 
 import { escapeHtml, formatDuration, formatInt, formatPercent, formatTokens } from "./format.js";
+import { sectorPath } from "./sector-path.js";
 
 /** 主题色板（浅色/深色）。 */
 const PALETTES = {
@@ -164,7 +165,9 @@ function hourChart(hours, palette) {
 }
 
 /**
- * 工作区环形图（Top 6 + 其他，按活跃时长）。
+ * 工作区环形图（Top 6 + others，按活跃时长）。
+ * 与看板同构：同样的环形几何（外 74 / 内 50，viewBox 160）+ 主题背景色描边，
+ * 扇区之间因此有可见缝隙（stroke-dasharray 画的圆描不出两条半径边，故用真实扇区 path）。
  * @param items - byWorkspace 数组。
  * @param palette - 色板。
  * @returns HTML 字符串。
@@ -175,18 +178,19 @@ function workspacePie(items, palette) {
   const colors = [palette.input, palette.output, palette.accent, "#f59e0b", "#f25a5a", "#a9b8ff", palette.cache];
   const top = active.slice(0, 6).map((item) => ({ label: item.label, value: item.activeMs, item }));
   const rest = active.slice(6);
-  if (rest.length > 0) top.push({ label: `其他 ${rest.length} 个工作区`, value: rest.reduce((sum, item) => sum + item.activeMs, 0), item: null });
+  if (rest.length > 0) top.push({ label: "others", value: rest.reduce((sum, item) => sum + item.activeMs, 0), item: null });
   const total = top.reduce((sum, slice) => sum + slice.value, 0) || 1;
-  const radius = 58;
-  const stroke = 22;
-  const circumference = 2 * Math.PI * radius;
-  let offset = 0;
+  const radius = 62;
+  const stroke = 24;
+  const outer = radius + stroke / 2;
+  const inner = radius - stroke / 2;
+  let angle = 0;
   const arcs = top
     .map((slice, index) => {
       const share = slice.value / total;
-      const dash = share * circumference;
-      const arc = `<circle r="${radius}" fill="none" stroke="${colors[index % colors.length]}" stroke-width="${stroke}" stroke-dasharray="${dash.toFixed(2)} ${(circumference - dash).toFixed(2)}" stroke-dashoffset="${(-offset).toFixed(2)}"><title>${escapeHtml(slice.label)}：${escapeHtml(formatDuration(slice.value))}（${escapeHtml(formatPercent(share))}）</title></circle>`;
-      offset += dash;
+      const sweep = share * Math.PI * 2;
+      const arc = `<path d="${sectorPath(outer, inner, angle, angle + sweep)}" fill="${colors[index % colors.length]}" stroke="${palette.surface}" stroke-width="1.6" stroke-linejoin="round"><title>${escapeHtml(slice.label)}：${escapeHtml(formatDuration(slice.value))}（${escapeHtml(formatPercent(share))}）</title></path>`;
+      angle += sweep;
       return arc;
     })
     .join("");
@@ -260,7 +264,7 @@ function modelTreemap(models, palette, metric = "tokens") {
   const rest = sorted.slice(8);
   const cells = top.map((item, index) => ({ key: item.key, label: item.label, value: valueOf(item), color: series[index % series.length] }));
   if (rest.length > 0) {
-    cells.push({ key: "__others", label: "其他 " + rest.length + " 个模型", value: rest.reduce((sum, item) => sum + valueOf(item), 0), color: palette.muted });
+    cells.push({ key: "__others", label: "others", value: rest.reduce((sum, item) => sum + valueOf(item), 0), color: palette.muted });
   }
   const total = cells.reduce((sum, cell) => sum + cell.value, 0);
   const rects = layoutTreemap(cells, 0, 0, 100, 56);
@@ -489,7 +493,6 @@ export function renderReport(snapshot, options = {}) {
     </section>
     <section class="card">
       <h2>工作区占比</h2>
-      <p class="hint">Top 6 + 其他</p>
       ${workspacePie(snapshot.byWorkspace, palette)}
     </section>
   </div>
