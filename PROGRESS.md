@@ -168,8 +168,75 @@
 `node build.mjs` 之后**能**取到新 bundle（`window.__DSH_BOOT__` 的 rev 对应新文件，取回的 bundle 含新文案、无 `polyline`），
 所以对运行实例跑 E2E 可信；但没有 HMR 监听 / rev 未变时仍需重启。要做与实例无关的 UI 回归，用同构量测更稳。
 
+## 2026-10-13 第五轮：模型回填常驻缺陷 + 报告对齐看板（v0.4.1）
+
+### 根因（三个叠在一起，缺一条都复现不出完整症状）
+
+| # | 现象 | 根因 | 证据（修复前，隔离实例 /tmp/dsh-workload-e2e） |
+| --- | --- | --- | --- |
+| 1 | 「模型维度正在回填…」常驻不消失 | `modelFoldTargets()` = `models === undefined \|\| asOfSeq > modelFoldSeq`；活会话每个事件 `asOfSeq` +1 → 永远 pending；`scheduleModelFold` 还有 15 分钟节流 | 轮询 6 次：`done` 130→194（/204），`pending` **恒为 204** |
+| 2 | 重启 / 刷新后模型区没数据 | 折叠结果挂在行对象上，而 `liveRow/cachedRow/coldRow` 每次都新建行；`settle()` 与 `patchLive()` 直接换行；执行中的折叠还把结果写回**已被换掉的旧行** | 索引 336 行只有 132 行带 `models`，而 `folded` 已 274；`days=7` 的 `byModel = 0` |
+| 3 | 一部分会话永远折不出来 | `readSession()` 对 v0 旧格式会话抛 `unsupported descriptor version 2`（本机 54 个） | `/health.modelFold.lastError` 原文；这些行把 pending 顶在 > 0 |
+
+**关键量测（修复前 /health 的 modelFold）**：
+
+```json
+{ "running": false, "done": 204, "total": 204, "folded": 150, "skipped": 0,
+  "lastAt": 1791886111864,
+  "lastError": "failed to read stored session \"571902d6-…\": subagent/descriptor 0 uses unsupported descriptor version 2; …",
+  "pending": 204 }
+```
+对应 `/snapshot?days=7`：`byModel = 0`、`topModel = null`（默认区间就是没数据）。
+
+**修复后（同一实例，重启两次）**：
+
+```json
+{ "running": false, "done": 204, "total": 204, "folded": 150, "skipped": 0, "failed": 54,
+  "pending": 0, "refold": 0, "failedRows": 54,
+  "lastAt": 1791886511558, "lastErrorAt": 1791886699495,
+  "lastError": "failed to read stored session \"f3f0af01-…\": subagent/descriptor 0 uses unsupported descriptor version 2; …" }
+```
+`days=7`：`byModel = 3`、`totalCost = ¥77.16`；**再重启一次**：`done = 0`（一次 `readSession` 都没发生）、`pending = 0`、`byModel = 3`。
+
+### 修法
+
+- `modelFoldQueue()` 三档：**pending**（从未折过，界面「回填中」只看它）/ **refold**（已折过且 `asOfSeq - modelFoldSeq > 50`，
+  或会话已非 live）/ **failed**（失败行，过 `modelRetryMs` 再试）。失败**不算 pending** —— 否则 v0 老会话会让提示永远挂着。
+- `carryModelFields()`：行换代时把 `models / modelFoldSeq / modelFoldAt / modelFoldSkipped / modelFoldError(At)` 整组搬到新行；
+  折叠结果写回 `this.rows.get(id)`（**当前**行），不再写回抓到的旧行。
+- 诊断：`modelFold.pending / refold / failedRows / lastError / lastErrorAt` 进 `/health` 与 `/snapshot`；界面在模型页签显示
+  失败短句（`title` 放全文，`.wl-fold-error` 用 `--dsw-alias-label-error` token）；轮询条件从"仅 indexing"扩到"indexing 或 pending > 0"，
+  折完自动停。运行级 `lastError` 为空时回退到**最近一条行级失败**，所以重启后不用再试一次就能看到原因。
+- `saveToDisk()` 串行化（sync 与回填并发写同一个 `.tmp` 会 rename ENOENT）；`/health.diagnostics` 与 `/snapshot.diagnostics`
+  统一走 `diagnosticsFor()`，新增 `syncing`（后台重扫事实，与给用户的 `indexing` 区分）。
+
+### 量测（真实隔离实例 1560×1000；脚本 `.tmp/measure-final.mjs`，已 gitignore）
+
+| 项 | 目标 | 实测 |
+| --- | --- | --- |
+| 首页模型环形图上下留白 | 差 ≤ 2px | 上 60.3 / 下 60.3 → **差 0**（卡高 344，图形 160） |
+| 模型页签 treemap 到容器 | 左右 ≤ 8px | 容器 582×210，左/右/上/下 **0/0/0/0** |
+| 卡片重复标题 | 无 | `.wl-card h3` = `[]`（只剩 h4 小标题 `Model share · area = tokens`） |
+| 回填提示 | 折完即消失 | `[data-kind="model-folding"] = null` |
+| 失败提示 | 可见 | `54 sessions failed to read logs: …`（`title` 全文） |
+| 报告 treemap | 铺满 | 339 = 父容器 339，左右留白 0 |
+| 报告内容 | 模型一节 + 模型费用 KPI + 无折线 + 周末异色 | sections 含「模型用量」；KPI 第 3 张「模型费用(估算)」；`polyline = 0`；周末柱 29 根 |
+| 报告自包含 | 无脚本 / 仅官方外链 | `script = 0`、`style = 1`（内联）、6 条外链全是官方计费页 |
+| 工具栏 | 无「复制 JSON」 | `["Refresh", "Export HTML report", "✕"]` |
+
+E2E（`test/e2e-ui.mjs`，真实实例）全过；离线断言 184 → **215**（连跑 2 次 exit 0）。
+
+### 环境坑（沙箱内）
+
+- 隔离实例的 `dsh` 不在 PATH：`DSH_BIN=/Users/xilejun/.npm/_npx/b5c6312874079fe8/node_modules/.bin/dsh`（`test/e2e-boot.sh` 只剩这个变量要手动给）。
+- `ps` 被沙箱拦：找实例进程用 `lsof -nP -iTCP:3299 -sTCP:LISTEN -t` 再 `kill`。
+- puppeteer-core 不在本仓库：`WL_PUPPETEER_DIR=/Users/xilejun/WorkBuddy/ds_Harness/tableau-twb-viewer/node_modules`。
+- 面板语言可能是**英文**（本实例就是）：E2E 里凡断言文案的地方都要中英都认，本轮踩过一次。
+- 需要"重启后仍带模型数据"的证据时，用 `E2E_KEEP=1` 复用同一个 `E2E_HOME`（索引文件在 `$E2E_HOME/workload-report/index-v3.json`）。
+
 ## 待办
 
 - [x] 安装进真实 web profile（2026-10-10 由用户执行 `dsh plugin --profile web add link:$PWD`）。
+- [x] 模型维度已在 0.4.0 接入、0.4.1 修掉回填常驻缺陷（读 `readSession` 事件日志，见 docs/models.md）。
 - [ ] 可选：把「按工作区」做成季度/月度对比；把导出接入 PNG（现在用浏览器截图即可）。
-- [ ] 可选：接入模型维度（需要读 `request/header` 事件，成本高于投影读取，暂不做）。
+- [ ] 可选：把「最活跃模型」也搬进报告（本轮只补了模型费用 KPI，避免报告 KPI 行超过 8 张）。

@@ -1,5 +1,59 @@
 # CHANGELOG — dsh-workload-report
 
+## v0.4.1（2026-10-13）— 模型回填常驻缺陷 + 报告对齐看板
+
+### 修复
+
+- **「模型维度正在回填…」常驻不消失、重启后模型区没数据（最高优先）**。三个叠在一起的根因：
+  1. `modelFoldTargets()` 把"已折过、但 `asOfSeq > modelFoldSeq`"也算成待折——活会话每来一个事件 `asOfSeq` 就 +1，
+     于是 pending 永远 > 0，界面永远停在回填提示，而 `scheduleModelFold` 还有 15 分钟节流。实测修复前连续轮询 6 次：
+     `done` 从 130 涨到 194 / 204，`pending` **恒为 204**。
+  2. **折叠结果在行换代时被丢掉**：`models` 挂在行对象上，而 `liveRow()` / `cachedRow()` / `coldRow()` 每次都用投影**新建一行**
+     （不含模型维度）；`settle()` 与 `patchLive()` 都是直接换行，于是每次同步（30s / refresh）与每个 `session/event`
+     都会把折好的 `models` 冲掉；执行中的折叠还会把结果写回"已经被换掉的旧行"。实测 336 行的索引里只有 132 行带 `models`，
+     而回填计数已经 `folded = 274`；近 7 天区间 `byModel` 为 **0**（看板模型区与报告模型一节因此都是空的）。
+  3. `readSession()` 对 v0 旧格式会话抛错（`subagent/descriptor 0 uses unsupported descriptor version 2`，本机 54 个），
+     这些行永远折不出来 → 只要它们还在 pending 里，提示就永远不会消失。
+- **修法**：`modelFoldQueue()` 分三档——**pending**（从未折过，界面提示只看它）/ **refold**（已折过：水位前进超过
+  `modelRefoldDelta`＝50 或会话已非 live）/ **failed**（失败行，过 `modelRetryMs` 再试）；`carryModelFields()` 在行换代时把
+  `models` / `modelFoldSeq` / `modelFoldAt` / `modelFoldSkipped` / `modelFoldError(At)` 整组搬过去；折叠结果写回**当前**行；
+  失败记在行上（重启也不重复试），`lastError` / `lastErrorAt` / `failedRows` 暴露到 `/health`、`/snapshot.diagnostics.modelFold`
+  与界面（短句 + `title` 全文）；`saveToDisk()` 串行化（sync 与回填并发写同一个 `.tmp` 会 rename ENOENT）。
+- **重启不重折全部**：`models` 随索引落盘、重启读回。实测重启后 `/health.modelFold.done = 0`（一次 `readSession` 都没发生）、
+  `pending = 0`、`byModel` 仍有数据。
+- **首页「模型 Token 占比」环形图上下居中**：卡片被上一行等高拉伸时，图形区在卡内垂直居中。实测上下留白各 60.3px，**差 0**（卡高 344 / 图形 160）。
+- **模型用量页签**：删掉卡片里重复的「模型用量」标题（页签已表达，`model.title` 随之成为死键并删除）；treemap 加小标题
+  「模型占比 · 面积 = Token」（`model.treemapTitle`）；treemap 改用量容器**真实像素**做 viewBox（原来 `preserveAspectRatio`
+  等比缩放会在左右留出大片空白）。实测容器 582×210，矩形到四边留白 **0 / 0 / 0 / 0**（目标 ≤ 8px）。
+- **导出报告与看板对齐**：补齐「模型用量」一节（treemap + 按日趋势 + 明细 + 官方计费链接——之前**不是**没写 `modelSection`，
+  而是 `snapshot.byModel` 为空导致整节不渲染，即问题 2 的同一个根因）；KPI 增加第三张「模型费用(估算)」；
+  每日趋势改单序列活跃时长（**去折线 + 周六/周日异色**，与看板柱状图一致），treemap 用 `height:auto` 铺满容器；
+  报告仍**自包含**（无脚本、无外链资源，外链仅官方计费页）。
+- **删除「复制 JSON」按钮**（工具栏只留 刷新 / 导出 / 关闭）与 i18n 死键 `action.copy` / `action.copied`（zh / en 各 2 个）。
+- **诊断口径统一**：`/health.diagnostics` 与 `/snapshot.diagnostics` 都走 `diagnosticsFor()`；新增 `syncing`（后台重扫事实，
+  与给用户看的 `indexing` 区分）与 `modelPending` / `modelStale` / `modelFailed`。
+
+### 测试
+
+- 离线断言 **184 → 215**（连跑 2 次 exit 0）：新增「模型折叠生命周期」一节——首次回填 pending 归零、失败行单独计入
+  `failedRows` 且不改写 pending、重扫（行被投影重建）不丢模型、活会话水位 +1 不触发重折、会话转冷后水位前进只进重折队列、
+  重启实例零次重读且模型数据与失败原因都还在；报告断言收紧为「外链只有官方计费页」「无脚本 / 无外链资源」。
+- 真实隔离实例 E2E 全过（新增：回填提示消失且模型区有数据、treemap 铺满容器、环形图居中、工具栏无复制按钮、
+  报告含模型一节 + 模型费用 KPI + 无折线 + 周末异色 + 自包含）。
+
+### 报告 vs 看板差异（本轮补齐后）
+
+| 维度 | 看板 | 报告 |
+| --- | --- | --- |
+| KPI | 8 张（含「最活跃模型」） | 7 张（含「模型费用(估算)」；「最活跃模型」仅看板） |
+| 每日趋势 | 单序列活跃时长、周末异色、柱顶标值 | 同左 |
+| 模型用量 | 独立页签，treemap 可切口径并点选联动 | 模型一节：treemap + 按日趋势 + 明细 + 官方链接（静态、无交互） |
+| 环形图 | 模型占比 + 工作区占比 | 工作区占比（模型占比由 treemap 表达） |
+| 时刻分析 / 工作区排行 / 按日期明细 | 同构 | 同构 |
+| 日历热力图 | 有（全历史） | 无（报告按区间枚举，纯静态） |
+| 主要会话 | 40 行、四列可点表头排序 | Top 12（`sessions` 可调），不可排序（报告不引脚本） |
+| 交互 | 页签 / 区间 / 范围 / 筛选 | 无（自包含，可打印 / 发客户） |
+
 ## v0.4.0（2026-10-13）— 模型用量分析
 
 - **模型维度**：新增 `src/models.js`，用官方 `ctx.sessionQuery.readSession()` 读事件日志（不自己解析日志格式），
