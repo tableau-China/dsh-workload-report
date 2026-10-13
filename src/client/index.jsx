@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 
 import { STYLES } from "./styles.js";
 import { NS, en, languageOf, translate, zh } from "./locales.js";
 import { formatDuration, formatInt, formatKpiDuration, formatPercent, formatTokens } from "../format.js";
+import { sectorPath } from "../sector-path.js";
 
 /** 宿主半部注册的只读接口前缀（与 index.js 的默认 apiPath 一致）。 */
 const API_PATH = "/workload-report/v1";
@@ -330,30 +331,11 @@ function HourChart({ hours, t }) {
   );
 }
 
-/**
- * 环形扇区路径（外弧 → 内弧，闭合成一个扇区）。
- * 白描边需要扇区的真实轮廓：stroke-dasharray 画的圆只有颜色、描不出两条半径边。
- * 角度以 +x 轴为 0（调用方整体 rotate(-90)，让 0 点朝正上方）。
- */
-export function sectorPath(outer, inner, from, to) {
-  const point = (radius, angle) => `${(radius * Math.cos(angle)).toFixed(2)} ${(radius * Math.sin(angle)).toFixed(2)}`;
-  const sweep = to - from;
-  if (sweep >= Math.PI * 2 - 1e-6) {
-    // 满环：A 命令的起点终点重合会导致不渲染，拆成两段半圆
-    const mid = from + Math.PI;
-    return `${sectorPath(outer, inner, from, mid)} ${sectorPath(outer, inner, mid, to)}`;
-  }
-  const large = sweep > Math.PI ? 1 : 0;
-  return [
-    `M ${point(outer, from)}`,
-    `A ${outer} ${outer} 0 ${large} 1 ${point(outer, to)}`,
-    `L ${point(inner, to)}`,
-    `A ${inner} ${inner} 0 ${large} 0 ${point(inner, from)}`,
-    "Z",
-  ].join(" ");
-}
+// 扇区几何在 ../sector-path.js：看板与报告必须共用同一实现（否则白描边缝隙不一致）。
+// 这里保留既有导出，客户端模块的对外形状不变。
+export { sectorPath };
 
-/** 工作区环形图（时长 / Token 可切换，Top N + 其他）。 */
+/** 工作区环形图（时长 / Token 可切换，Top N + others）。 */
 function WorkspacePie({ items, range, t }) {
   const [metric, setMetric] = useState("activeMs");
   const slices = useMemo(() => {
@@ -362,7 +344,7 @@ function WorkspacePie({ items, range, t }) {
     const top = sorted.slice(0, 6);
     const rest = sorted.slice(6);
     const slicesOut = top.map((item) => ({ label: item.label, value: valueOf(item), item }));
-    if (rest.length > 0) slicesOut.push({ label: t("pie.others", { count: rest.length }), value: rest.reduce((sum, item) => sum + valueOf(item), 0), item: null });
+    if (rest.length > 0) slicesOut.push({ label: "others", value: rest.reduce((sum, item) => sum + valueOf(item), 0), item: null });
     const total = slicesOut.reduce((sum, slice) => sum + slice.value, 0);
     return { slices: slicesOut, total };
   }, [items, metric, t]);
@@ -554,13 +536,13 @@ function ModelSection({ data, t }) {
   const totalMetric = ranked.reduce((sum, item) => sum + metricValue(item), 0);
   const colorOf = (key) => palette[Math.max(0, ranked.findIndex((item) => item.key === key)) % palette.length];
 
-  // 面积分布：Top 8 + 其他（保证 treemap 可读）
+  // 面积分布：Top 8 + others（保证 treemap 可读）
   const cells = useMemo(() => {
     const top = ranked.filter((item) => metricValue(item) > 0).slice(0, 8);
     const rest = ranked.filter((item) => metricValue(item) > 0).slice(8);
     const list = top.map((item) => ({ key: item.key, label: item.label, value: metricValue(item), item }));
     if (rest.length > 0) {
-      list.push({ key: "__others", label: t("model.others", { count: rest.length }), value: rest.reduce((sum, item) => sum + metricValue(item), 0), item: null });
+      list.push({ key: "__others", label: "others", value: rest.reduce((sum, item) => sum + metricValue(item), 0), item: null });
     }
     return list;
   }, [ranked, metric, t]);
