@@ -240,3 +240,31 @@ E2E（`test/e2e-ui.mjs`，真实实例）全过；离线断言 184 → **215**�
 - [x] 模型维度已在 0.4.0 接入、0.4.1 修掉回填常驻缺陷（读 `readSession` 事件日志，见 docs/models.md）。
 - [ ] 可选：把「按工作区」做成季度/月度对比；把导出接入 PNG（现在用浏览器截图即可）。
 - [ ] 可选：把「最活跃模型」也搬进报告（本轮只补了模型费用 KPI，避免报告 KPI 行超过 8 张）。
+
+## 2026-10-13 v0.4.1 发布
+
+### 本轮新增能力
+
+- **模型维度（0.4.0 起）**：`src/models.js` 从官方 `ctx.sessionQuery.readSession()` 的事件日志折叠模型与 token
+  （不解析 zstd/JSONL），归并 `deepseek-flash` → `deepseek-v4-flash`（官方定价页注 1：同一模型的新旧名）；
+  索引 `INDEX_VERSION = 3`，行内带 `models` / `modelFoldSeq`，**结果随索引落盘、重启不重折**。
+- **费用估算**：内置 DeepSeek 官方**峰谷价**（as-of 2026-10-13；峰时 01:00–04:00 与 06:00–10:00 UTC 周一至周五，谷价半价），
+  按每条 `assistant/message` 的时间逐条判峰谷计费；无官方价的模型显示 `—` 不猜；页面与报告底部给官方计费链接；**运行时不联网**。
+- **多机同步暂缓**：方案保留在 `docs/sync.md`，列入 `docs/roadmap.md` 后期。
+
+### 关键决策与坑（避免重复踩）
+
+1. **行换代必须搬运模型字段**：`liveRow/cachedRow/coldRow` 每次都新建行，模型折叠结果若不随行搬运就会被每次同步/事件冲掉
+   （曾导致"折叠计数涨、界面却为空"）。用 `carryModelFields()` 统一搬运，折叠结果写回**当前**行。
+2. **pending 只认"从未折过"**：活会话 `asOfSeq` 持续增长，把它计入 pending 会让提示永不消失；已折过的只在
+   `asOfSeq - modelFoldSeq > 50` 或会话已非 live 时重折；失败行单独计数并暴露 `/health`。
+3. **`overflow-x: auto` 会把另一轴计算成 `auto`**：日历需要横向滚动时，必须显式 `overflow-y: hidden`，
+   并给内联 SVG `display: block`（去掉基线间隙），否则出现 7px 纵向滚动条。
+4. **官方接口边界**：`listEvents()` 无事件正文；只有 `readSession()` 能拿完整事件；v0 旧格式会话 `readSession()` 会抛错，
+   只能界面说明 + 单独计数，不是本插件可修的问题。
+5. **i18n 静态校验**：新增/删除键必须 zh/en 同步，否则 verify 的死键/对齐断言会红。
+
+### 发布
+
+- GitHub：推 `main`（CI 跑构建 + 产物一致性 + 离线断言）。
+- npm：`npm stage publish` 暂存 → 本人在本地用一次 OTP `npm stage approve`（npm 现要求交互式 2FA，token 不能替代）。
