@@ -303,18 +303,23 @@ try {
   // 每日趋势卡几何：与右侧模型占比卡等高、legend 在卡片内容区内、与下一行栅格不重叠
   const dailyGeometry = await page.evaluate(() => {
     const [left, right] = [...document.querySelectorAll(".wl-grid-daily-model > .wl-card")];
-    const legend = left.querySelector(".wl-legend");
+    const body = left.querySelector(".wl-daily-body");
+    // 日历与柱状图都在 .wl-daily-body 里；这里量的是当前日历的留白
+    const chart = left.querySelector(".wl-cal-scroll svg, [data-kind=daily-chart] svg");
     const next = document.querySelector(".wl-grid-daily-model + .wl-grid-2");
-    const style = getComputedStyle(left);
-    const contentBottom = left.getBoundingClientRect().bottom - parseFloat(style.paddingBottom) - parseFloat(style.borderBottomWidth);
     const round = (value) => Math.round(value * 100) / 100;
+    const box = chart?.getBoundingClientRect() ?? null;
+    const bodyBox = body.getBoundingClientRect();
     return {
       heightDiff: round(Math.abs(left.getBoundingClientRect().height - right.getBoundingClientRect().height)),
-      legendGap: round(contentBottom - legend.getBoundingClientRect().bottom),
+      legendCount: left.querySelectorAll(".wl-legend").length,
+      blankTop: box === null ? null : round(box.top - bodyBox.top),
+      blankBottom: box === null ? null : round(bodyBox.bottom - box.bottom),
       gapToNext: next === null ? null : round(next.getBoundingClientRect().top - left.getBoundingClientRect().bottom),
     };
   });
-  ok(dailyGeometry.heightDiff === 0 && dailyGeometry.legendGap >= 0 && dailyGeometry.gapToNext !== null && dailyGeometry.gapToNext > 0, "每日趋势卡与模型占比卡等高、legend 在卡内、与下一行不重叠", JSON.stringify(dailyGeometry));
+  ok(dailyGeometry.heightDiff === 0 && dailyGeometry.legendCount === 0 && dailyGeometry.gapToNext !== null && dailyGeometry.gapToNext > 0, "每日趋势卡与模型占比卡等高、无底部 legend、与下一行不重叠", JSON.stringify(dailyGeometry));
+  ok(dailyGeometry.blankTop !== null && dailyGeometry.blankBottom !== null && dailyGeometry.blankTop + dailyGeometry.blankBottom <= 40, "日历填满每日趋势卡剩余高度（上下留白合计 ≤ 40px）", JSON.stringify(dailyGeometry));
 
   // ---- 并排两图：时刻分析 + 工作区占比 ----
   const sideCharts = await page.evaluate(() => {

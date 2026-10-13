@@ -186,7 +186,7 @@ function eachDate(from, to, limit = 1000) {
 /**
  * 日历热力图：纵轴周一～周日，横轴 Year-Week，颜色深浅＝活跃时长（受顶部区间筛选控制）。
  */
-function CalendarHeatmap({ calendar, t }) {
+function CalendarHeatmap({ calendar, t, availableHeight = 0, availableWidth = 0 }) {
   const model = useMemo(() => {
     const byDate = new Map((calendar?.days ?? []).map((day) => [day.date, day]));
     const dates = eachDate(calendar?.from ?? "", calendar?.to ?? "");
@@ -209,13 +209,20 @@ function CalendarHeatmap({ calendar, t }) {
   }, [calendar]);
 
   if (model === null) return <p className="wl-state">{t("state.empty")}</p>;
-  const cell = model.list.length > 30 ? 11 : model.list.length > 14 ? 15 : 20;
   const gap = 3;
   const leftPad = 30;
   const topPad = 18;
   const barArea = 54;
   const valueArea = 44;
-  const calendarWidth = leftPad + model.list.length * (cell + gap);
+  // cell 从容器真实高度反解：日历填满卡片的剩余高度（不再在下方留大片空白）；
+  // 同时受可用宽度约束（多周时不会把周几累计条挤出可视区），上限 30 保持格子不过分夸张。
+  const columns = Math.max(1, model.list.length);
+  const fallback = columns > 30 ? 11 : columns > 14 ? 15 : 20;
+  // 7 行之间有 7 个 (cell+gap) 步长（含底部一格间距），故预留 7*gap
+  const byHeight = availableHeight > 0 ? (availableHeight - topPad - 4 - 7 * gap) / 7 : fallback;
+  const byWidth = availableWidth > 0 ? (availableWidth - leftPad - 8 - barArea - valueArea) / columns - gap : fallback;
+  const cell = Math.max(10, Math.min(30, byHeight, byWidth));
+  const calendarWidth = leftPad + columns * (cell + gap);
   const barX = calendarWidth + 8;
   const width = barX + barArea + valueArea;
   const height = topPad + 7 * (cell + gap) + 4;
@@ -1010,9 +1017,6 @@ function SkeletonBody({ t }) {
             </div>
           </div>
           <div className="wl-daily-body"><div className="wl-chart-fill wl-skeleton-area" /></div>
-          <div className="wl-legend">
-            <span><i className="wl-dot" style={{ background: "var(--dsw-static-deepseek-500, #4d6bfe)" }} />{t("legend.active")}</span>
-          </div>
         </div>
         <div className="wl-card">
           <div className="wl-card-head">
@@ -1060,6 +1064,8 @@ function SkeletonBody({ t }) {
  */
 function ByDayView({ data, t }) {
   const [dailyMode, setDailyMode] = useState("calendar");
+  const dailyBodyRef = useRef(null);
+  const dailyBody = useChartSize(dailyBodyRef);
   const models = data.byModel ?? [];
   const rows = [...data.byDay].filter((day) => day.sessions > 0).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 31);
 
@@ -1078,37 +1084,11 @@ function ByDayView({ data, t }) {
           </div>
         </div>
         {/* 图表容器固定高度：日历与柱状图切换时卡片高度不跳 */}
-        <div className="wl-daily-body">
-          {dailyMode === "calendar" ? <CalendarHeatmap calendar={data.calendar} t={t} /> : <DailyChart days={data.byDay} t={t} />}
-        </div>
-        <div className="wl-legend">
+        <div className="wl-daily-body" ref={dailyBodyRef}>
           {dailyMode === "calendar" ? (
-            <>
-              <span className="wl-metric-sub">{t("cal.scale")}</span>
-              <span className="wl-cal-scale" aria-hidden="true">
-                {[0, 1, 2, 3, 4].map((level) => (
-                  <i
-                    key={level}
-                    className="wl-cal-swatch"
-                    style={{
-                      background: [
-                        "var(--dsw-alias-bg-layer-2, #eef0f3)",
-                        "var(--dsw-static-deepseek-100, #dfe5ff)",
-                        "var(--dsw-static-deepseek-300, #a9b8ff)",
-                        "var(--dsw-static-deepseek-500, #4d6bfe)",
-                        "var(--dsw-static-deepseek-700, #2b3fa8)",
-                      ][level],
-                    }}
-                  />
-                ))}
-                <span className="wl-metric-sub">{t("cal.less")} → {t("cal.more")}</span>
-              </span>
-            </>
+            <CalendarHeatmap calendar={data.calendar} t={t} availableHeight={dailyBody.height} availableWidth={dailyBody.width} />
           ) : (
-            <>
-              <span><i className="wl-dot" style={{ background: "var(--dsw-static-deepseek-500, #4d6bfe)" }} />{t("legend.active")}</span>
-              <span><i className="wl-dot" style={{ background: "var(--dsw-static-amber-500, #f59e0b)" }} />{t("legend.weekend")}</span>
-            </>
+            <DailyChart days={data.byDay} t={t} />
           )}
         </div>
       </div>

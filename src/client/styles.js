@@ -147,8 +147,6 @@ export const STYLES = `
 .wl-grid-2 .wl-card { margin-bottom: 0; }
 /* 日历热力图 */
 .wl-cal-scroll { overflow-x: auto; padding-bottom: 4px; }
-.wl-cal-scale { display: inline-flex; align-items: center; gap: 4px; }
-.wl-cal-swatch { display: inline-block; width: 11px; height: 11px; border-radius: 3px; }
 /* 时刻分析 */
 .wl-hour-grid { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 3px; align-items: end; height: 150px; margin-top: 6px; }
 .wl-hour-col { position: relative; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; cursor: default; }
@@ -181,12 +179,13 @@ export const STYLES = `
 
 /* ── 每日用量趋势（左）与模型用量（右）并排 ── */
 /* 左右两卡等高：栅格 stretch 即可，卡片不能再写 height:100%（content-box 下会把卡撑出 padding 高度、压住下一行）；
-   卡内固定三段 head(auto) → body(flex:1) → legend(auto)，body 首选 244px 且可收缩，任何内容都不会溢出卡片 */
+   左侧每日趋势卡内只有 head(auto) → body(flex:1) 两段（底部 legend 已删），body 首选 190px 且可收缩 */
 .wl-grid-daily-model { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 14px; margin-bottom: 14px; }
 .wl-grid-daily-model > .wl-card { display: flex; flex-direction: column; min-height: 0; margin-bottom: 0; overflow: hidden; }
-/* 日历与柱状图共用同一个容器：首选 244px，随行高伸展/收缩（min-height:0 是 flex 溢出的关键） */
-.wl-daily-body { flex: 1 1 244px; min-height: 0; display: flex; flex-direction: column; justify-content: center; }
-/* 柱状图铺满容器剩余高度：viewBox 用容器像素，图形到底边即图例上沿（不留底部空白带） */
+/* 日历与柱状图共用同一个容器：首选 190px，随行高伸展/收缩（min-height:0 是 flex 溢出的关键）。
+   比 0.4.1 压低约 54px，首页两张卡整体变矮；日历按容器高度自适应，填满卡片剩余高度。 */
+.wl-daily-body { flex: 1 1 190px; min-height: 0; display: flex; flex-direction: column; justify-content: center; }
+/* 柱状图铺满容器剩余高度：viewBox 用容器像素，图形直接到底边（不留底部空白带） */
 .wl-chart-fill { flex: 1 1 auto; min-height: 0; height: 100%; overflow: hidden; }
 .wl-chart-fill > svg { display: block; }
 /* 右列较窄：模型卡内部改为上下堆叠（treemap 在上、趋势在下） */
