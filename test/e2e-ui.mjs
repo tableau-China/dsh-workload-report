@@ -153,7 +153,7 @@ try {
   await sleep(1500);
 
   const kpis = await page.evaluate(() => [...document.querySelectorAll(".wl-kpi-value")].map((node) => node.textContent));
-  ok(kpis.length === 6, "看板渲染 6 张 KPI 卡", JSON.stringify(kpis));
+  ok(kpis.length === 7, "看板渲染 7 张 KPI 卡（含「最活跃模型」）", JSON.stringify(kpis));
   ok(kpis.some((value) => /[1-9]/.test(value ?? "")), "KPI 有真实数值（非全 0）", JSON.stringify(kpis));
   ok(/^[\d,]*[1-9][\d,]*$/.test(kpis[1] ?? ""), "「总 Token」KPI 非零且为完整整数（能识别官方 wire 形状）", kpis[1]);
   ok(/[1-9]/.test(kpis[0] ?? ""), "「活跃时长」KPI 非零", kpis[0]);
@@ -167,6 +167,7 @@ try {
     JSON.stringify(kpiLabels),
   );
   ok(/^[\d,]+$/.test(kpis[1] ?? "") && (kpis[1] ?? "").length >= 6, "总 Token 是完整整数（非 K/M/B 缩写）", kpis[1]);
+  ok(/模型|model/i.test(kpiLabels[6] ?? ""), "第 7 张 KPI 是「最活跃模型」", JSON.stringify(kpiLabels[6]));
 
   // ---- 单位统一 H/M/S + 备注足够短（降低多语言工作量）----
   const copyCheck = await page.evaluate(() => ({
@@ -296,6 +297,58 @@ try {
   });
   ok(details !== null && details.open === false, "按日期明细默认折叠", JSON.stringify(details));
   ok(/明细|detail/i.test(details?.summary ?? ""), "折叠标题写明是明细", details?.summary);
+  // ---- 模型区块：treemap + 联动筛选 + 官方计费链接 ----
+  // 模型维度是后台渐进回填的（要读事件日志），所以先等模型表出现
+  await page.waitForFunction(() => document.querySelectorAll(".wl-model-table tbody tr").length > 0, { timeout: 900000 });
+  const modelBlock = await page.evaluate(() => ({
+    hasSection: [...document.querySelectorAll(".wl-card h3")].some((n) => /模型用量|Model usage/.test(n.textContent || "")),
+    tiles: document.querySelectorAll('rect[data-kind="model"]').length,
+    others: document.querySelectorAll('rect[data-kind="others"]').length,
+    rows: document.querySelectorAll(".wl-model-table tbody tr").length,
+    links: [...document.querySelectorAll(".wl-model-links a")].map((a) => a.getAttribute("href") ?? ""),
+    costs: [...document.querySelectorAll(".wl-model-table tbody tr")].map((tr) => tr.lastElementChild?.textContent ?? ""),
+    hits: [...document.querySelectorAll(".wl-model-table tbody tr")].map((tr) => tr.children[6]?.textContent ?? ""),
+    trendBars: document.querySelectorAll(".wl-model-grid svg rect").length,
+    trendLabels: [...document.querySelectorAll(".wl-model-grid svg text")].map((n) => n.textContent ?? "").filter((x) => /\d\d-\d\d/.test(x)).length,
+  }));
+  ok(modelBlock.hasSection, "看板含「模型用量」区块");
+  ok(modelBlock.tiles > 0, "模型 treemap 渲染出矩形", String(modelBlock.tiles));
+  ok(modelBlock.rows > 0, "模型明细表有数据行", String(modelBlock.rows));
+  ok(modelBlock.trendBars > 0, "按日模型趋势有柱子", String(modelBlock.trendBars));
+  ok(modelBlock.trendLabels > 0, "趋势图带日期刻度", String(modelBlock.trendLabels));
+  ok(modelBlock.links.some((href) => /deepseek/.test(href)), "给出 DeepSeek 官方计费链接", JSON.stringify(modelBlock.links));
+  ok(modelBlock.links.some((href) => /kimi|moonshot/i.test(href)), "给出 Kimi 官方计费链接（无官方价也保留链接）", JSON.stringify(modelBlock.links));
+  ok(modelBlock.costs.some((text) => /[\u00a5$]/.test(text)), "DeepSeek 模型显示费用估算", JSON.stringify(modelBlock.costs));
+  ok(modelBlock.hits.some((text) => /%/.test(text)), "模型明细含缓存命中率", JSON.stringify(modelBlock.hits));
+  // 点击第一个模型 → 右侧趋势被筛选（出现清除按钮 + 选中态）
+  const trendBefore = await page.evaluate(() => ({
+    segments: document.querySelectorAll(".wl-model-grid > div:nth-child(2) svg rect").length,
+    clear: [...document.querySelectorAll(".wl-chip")].filter((n) => /清除|Clear/.test(n.textContent || "")).length,
+  }));
+  await page.evaluate(() => {
+    const tile = document.querySelector('rect[data-kind="model"]');
+    tile?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await sleep(1000);
+  const trendAfter = await page.evaluate(() => ({
+    segments: document.querySelectorAll(".wl-model-grid > div:nth-child(2) svg rect").length,
+    clear: [...document.querySelectorAll(".wl-chip")].filter((n) => /清除|Clear/.test(n.textContent || "")).length,
+    selectedStroke: [...document.querySelectorAll('rect[data-kind="model"]')].map((r) => Number(r.getAttribute("stroke-width"))).filter((w) => w > 1).length,
+    dimmed: [...document.querySelectorAll('rect[data-kind="model"] ~ *')].length,
+  }));
+  ok(trendBefore.clear === 0, "筛选前没有「清除筛选」按钮", JSON.stringify(trendBefore));
+  ok(trendAfter.clear === 1, "点击模型后出现「清除筛选」", JSON.stringify(trendAfter));
+  ok(trendAfter.selectedStroke >= 1, "被选中的模型有明显选中态（描边加粗）", JSON.stringify(trendAfter));
+  ok(trendAfter.segments <= trendBefore.segments, "右侧趋势按选中模型收窄", trendBefore.segments + "→" + trendAfter.segments);
+  // 清除筛选
+  await page.evaluate(() => {
+    const chip = [...document.querySelectorAll(".wl-chip")].find((n) => /清除|Clear/.test(n.textContent || ""));
+    chip?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await sleep(600);
+  const cleared = await page.evaluate(() => [...document.querySelectorAll(".wl-chip")].filter((n) => /清除|Clear/.test(n.textContent || "")).length);
+  ok(cleared === 0, "清除筛选后回到全部模型", String(cleared));
+
   await page.screenshot({ path: join(ARTIFACTS, "02-dashboard-by-day.png") });
 
   // 切到「按工作区」

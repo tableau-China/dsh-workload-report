@@ -6,6 +6,10 @@ import { readFile, rm } from "node:fs/promises";
 import { aggregate, dateKey, present, resolveRange, rowFromSession, workspaceLabel } from "../src/aggregate.js";
 import { formatDuration, formatTokens, escapeHtml } from "../src/format.js";
 import { renderReport } from "../src/report-html.js";
+import {
+  DEFAULT_PRICING, allocateLlmMs, cacheHitRate, costOf, emptyModelBucket, foldSessionModels,
+  groupKeyFor, isPeak, modelLabel, modelTokens, resolvePricing, UNKNOWN_MODEL,
+} from "../src/models.js";
 
 let failures = 0;
 const ok = (condition, label, detail = "") => {
@@ -360,6 +364,119 @@ eventListener(liveSession, { type: "step/end" });
 const afterLive = await call(`/workload-report/v1/snapshot?days=30&tz=UTC`);
 const liveApi = JSON.parse(afterLive.body);
 eq(liveApi.totals.tokens.input, 1014, "活会话事件即时反映到快照（999 + 10 + 冷读 5）");
+
+// ---------------------------------------------------------------- 模型维度（0.4.0）
+console.log("\n—— 模型归并与峰谷 ——");
+eq(groupKeyFor("deepseek-official", "deepseek-flash"), "deepseek-v4-flash", "deepseek-flash 归并到 deepseek-v4-flash（官方注 1：legacy 名）");
+eq(groupKeyFor("deepseek-official", "deepseek-v4-flash"), "deepseek-v4-flash", "legacy 名 deepseek-v4-flash 同样归并");
+eq(groupKeyFor("moonshotai-cn", "kimi-k3"), "moonshotai-cn/kimi-k3", "其它模型保持 provider/model");
+eq(groupKeyFor("", ""), UNKNOWN_MODEL, "缺 provider/model 归入未标注桶");
+eq(groupKeyFor("acme", "x", { "my-group": ["x"] }), "my-group", "用户自定义归并规则生效");
+eq(groupKeyFor("acme", "x", [{ group: "g2", match: ["x"] }]), "g2", "数组形式的自定义规则同样生效");
+eq(modelLabel("deepseek-v4-flash", {}), "deepseek-v4-flash", "展示名默认取组名");
+eq(modelLabel("moonshotai-cn/kimi-k3", {}), "kimi-k3", "展示名去掉 provider 前缀");
+eq(modelLabel("moonshotai-cn/kimi-k3", { "moonshotai-cn/kimi-k3": "K3 旗舰" }), "K3 旗舰", "别名优先");
+eq(isPeak(Date.UTC(2026, 9, 14, 2)), true, "02:00 UTC 周三 → 峰时");
+eq(isPeak(Date.UTC(2026, 9, 14, 12)), false, "12:00 UTC 周三 → 谷时");
+eq(isPeak(Date.UTC(2026, 9, 17, 2)), false, "周六 02:00 → 谷时（周末全谷）");
+
+console.log("\n—— 事件折叠 ——");
+const mkAssistant = (seq, time, provider, model, usage, streamSpan) => ({
+  type: "assistant/message", seq, time,
+  data: {
+    turn: 1, step: 1,
+    message: { role: "assistant", source: { kind: "model", provider, model } },
+    ...(usage === null ? {} : { usage }),
+    stream: streamSpan === undefined ? [] : [{ type: "chunk", time }, { type: "chunk", time: time + streamSpan }],
+  },
+});
+const mkHeader = (seq, time, provider, model, effort) => ({ type: "request/header", seq, time, data: { header: { config: { provider, model, reasoningEffort: effort } } } });
+const peakTime = Date.UTC(2026, 9, 14, 2); // 周三 02:00 UTC = 峰时
+const offTime = Date.UTC(2026, 9, 14, 12); // 周三 12:00 UTC = 谷时
+const foldEvents = [
+  mkAssistant(1, peakTime, "deepseek-official", "deepseek-v4-flash", { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 9000, cacheWriteTokens: 0 }, 600),
+  mkAssistant(2, offTime, "deepseek-official", "deepseek-flash", { inputTokens: 2000, outputTokens: 200, cacheReadTokens: 18000, cacheWriteTokens: 0 }, 400),
+  mkAssistant(3, offTime, "deepseek-official", "deepseek-flash", null, 300), // 缺 usage：计请求不计 token
+  mkAssistant(4, peakTime, "deepseek-official", "deepseek-v4-pro", { inputTokens: 500, outputTokens: 50, cacheReadTokens: 1000, cacheWriteTokens: 0 }, 1000),
+  mkHeader(5, peakTime, "deepseek-official", "deepseek-v4-flash", "max"),
+  mkHeader(6, offTime, "deepseek-official", "deepseek-flash", "max"),
+  mkHeader(7, offTime, "deepseek-official", "deepseek-v4-pro", "high"),
+];
+const folded = foldSessionModels(foldEvents, { sessionLlmMs: 1000 });
+const flash = folded.models["deepseek-v4-flash"];
+const pro = folded.models["deepseek-official/deepseek-v4-pro"];
+eq(flash.requests, 3, "归并后 flash 请求数 3（含 1 次缺 usage）");
+eq(folded.models["deepseek-official/deepseek-flash"], undefined, "旧名不再单独成桶（已归并）");
+eq(pro.requests, 1, "pro 请求数 1");
+eq(flash.inPeak, 1000, "峰时输入计入 inPeak");
+eq(flash.inOff, 2000, "谷时输入计入 inOff");
+eq(flash.crPeak + flash.crOff, 27000, "缓存读合计正确");
+eq(flash.outPeak + flash.outOff, 300, "输出合计正确");
+eq(folded.unknownRequests, 1, "缺 usage 的请求被记录（不猜 token）");
+eq(flash.efforts.max, 2, "思考强度 max 计数 2");
+eq(pro.efforts.high, 1, "思考强度 high 计数 1");
+eq(flash.raw["deepseek-official/deepseek-flash"], 1, "原始组成：legacy 名保留（明细可展开）");
+eq(flash.raw["deepseek-official/deepseek-v4-flash"], 1, "原始组成：新名保留");
+eq(Math.round(flash.llmMs + pro.llmMs), 1000, "各模型耗时之和 = 会话 llmMs（守恒）");
+eq(flash.llmMs, 500, "按流式窗口分摊：flash 500（窗口 1000 vs 1000）");
+eq(modelTokens(flash), 1000 + 2000 + 100 + 200 + 9000 + 18000, "模型 token 合计正确");
+ok(Math.abs(cacheHitRate(flash) - 27000 / 30000) < 1e-9, "缓存命中率 = 缓存读 /(缓存读+未命中输入)");
+eq(cacheHitRate(emptyModelBucket()), null, "无数据时命中率为 null（显示 —）");
+
+console.log("\n—— 耗时分摊与官方价目 ——");
+const onlyOne = foldSessionModels([mkAssistant(1, peakTime, "p", "m", { inputTokens: 1, outputTokens: 1, cacheReadTokens: 1, cacheWriteTokens: 0 })], { sessionLlmMs: 777 });
+eq(onlyOne.models["p/m"].llmMs, 777, "单模型无流式窗口：全部时间归它（守恒）");
+const noStream = foldSessionModels([
+  mkAssistant(1, peakTime, "p", "m1", { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 }),
+  mkAssistant(2, peakTime, "p", "m2", { inputTokens: 3, outputTokens: 3, cacheReadTokens: 0, cacheWriteTokens: 0 }),
+], { sessionLlmMs: 1000 });
+ok(Math.abs(noStream.models["p/m1"].llmMs + noStream.models["p/m2"].llmMs - 1000) < 1e-9, "无流式数据时按请求数分摊（守恒）");
+const cny = resolvePricing({});
+ok(cny.currency === "CNY" && cny.asOf === DEFAULT_PRICING.asOf, "默认币种 CNY 且带 as-of");
+eq(costOf({ key: "deepseek-v4-flash", inPeak: 1e6, inOff: 1e6, outPeak: 1e6, outOff: 1e6, crPeak: 1e6, crOff: 1e6, cwOff: 0, cwPeak: 0 }, cny), 15.06, "flash 峰谷各半 1M×6 → ¥15.06");
+eq(costOf({ key: "moonshotai-cn/kimi-k3", inOff: 1e6 }, cny), null, "未配置单价的模型返回 null（不编数字）");
+eq(costOf({ key: "deepseek-official/deepseek-v4-pro", inOff: 1e6, outOff: 0, inPeak: 0, outPeak: 0, crOff: 0, crPeak: 0, cwOff: 0, cwPeak: 0 }, cny), 4.5, "带 provider 前缀的 key 也能命中价目（回退到裸模型名）");
+const usd = resolvePricing({ currency: "USD" });
+eq(costOf({ key: "deepseek-v4-flash", inOff: 1e6, crOff: 0, outOff: 0, inPeak: 0, crPeak: 0, outPeak: 0, cwOff: 0, cwPeak: 0 }, usd), 0.15, "USD 价目生效（$0.15/1M 未命中输入）");
+const overridden = resolvePricing({ overrides: { "moonshotai-cn/kimi-k3": { miss: { off: 2, peak: 4 }, output: { off: 8, peak: 16 } } } });
+eq(costOf({ key: "moonshotai-cn/kimi-k3", inOff: 1e6, outOff: 1e6, inPeak: 0, outPeak: 0, crOff: 0, crPeak: 0, cwOff: 0, cwPeak: 0 }, overridden), 10, "用户覆盖单价生效（2 + 8）");
+ok(cny.links.length >= 3 && cny.links[0].url.includes("deepseek"), "官方计费链接随价目一起下发");
+
+console.log("\n—— 模型维度接入聚合 ——");
+const modelRows = [
+  { ...makeRow({ id: "m1", cwd: "/Users/me/proj-a", createdAt: base, turns: 3, steps: 5, llmMs: 2000, toolMs: 1000, input: 3500, output: 350, cacheRead: 28000 }), models: folded.models },
+  { ...makeRow({ id: "m2", cwd: "/Users/me/proj-b", createdAt: base - 24 * HOUR, turns: 1, steps: 2, llmMs: 500, toolMs: 100, input: 100, output: 10, cacheRead: 900 }), models: { "moonshotai-cn/kimi-k3": { requests: 2, turns: 1, inOff: 100, inPeak: 0, outOff: 10, outPeak: 0, crOff: 900, crPeak: 0, cwOff: 0, cwPeak: 0, streamMs: 100, llmMs: 500, efforts: { high: 2 }, raw: { "moonshotai-cn/kimi-k3": 2 } } } },
+];
+const modelSnap = present(aggregate(modelRows, { days: 30, timeZone: "Asia/Shanghai", now: base, pricing: cny, activeModelMetric: "requests" }));
+eq(modelSnap.byModel.length, 3, "byModel 三行（flash / pro / kimi）");
+eq(modelSnap.byModel[0].key, "deepseek-v4-flash", "默认按请求数排序：flash 第一（3 次）");
+eq(modelSnap.topModel.key, "deepseek-v4-flash", "topModel = flash");
+eq(modelSnap.topModel.metric, "requests", "topModel 口径 = requests");
+ok(Math.abs(modelSnap.byModel.reduce((s, m) => s + m.tokensTotal, 0) - modelSnap.totals.tokensTotal) < 1e-9, "各模型 token 之和 = 总 Token（守恒）");
+ok(Math.abs(modelSnap.byModel.reduce((s, m) => s + m.share, 0) - 1) < 1e-9, "模型占比之和 = 1");
+const tokenSnap = present(aggregate(modelRows, { days: 30, timeZone: "Asia/Shanghai", now: base, pricing: cny, activeModelMetric: "tokens" }));
+eq(tokenSnap.topModel.key, "deepseek-v4-flash", "切到 tokens 口径后仍是 flash（量最大）");
+const llmSnap = present(aggregate(modelRows, { days: 30, timeZone: "Asia/Shanghai", now: base, pricing: cny, activeModelMetric: "activeMs" }));
+eq(llmSnap.topModel.metric, "llmMs", "activeMs 口径归一化为 llmMs");
+ok(modelSnap.modelDaily.length === modelSnap.byDay.length, "modelDaily 与 byDay 天数对齐");
+ok(modelSnap.modelDaily.every((day) => Object.keys(day.values).length >= 0), "modelDaily 每日结构完整");
+eq(modelSnap.pricing.costed.covered, 2, "费用覆盖度：2/3 有官方价（kimi 无价）");
+ok(modelSnap.pricing.totalCost !== null && modelSnap.pricing.totalCost > 0, "总费用为已知单价模型的合计（> 0）");
+
+console.log("\n—— 报告与路由中的模型维度 ——");
+const reportWithModels = renderReport(modelSnap, { theme: "light", title: "测试报告" });
+ok(reportWithModels.includes("模型用量"), "报告含「模型用量」一节");
+ok(reportWithModels.includes('class="treemap"'), "报告含 treemap 图");
+ok(reportWithModels.includes("模型占比") === false || reportWithModels.includes("面积 = Token 占比"), "treemap 带口径说明");
+ok(reportWithModels.includes("api-docs.deepseek.com"), "报告 footer 给出官方计费链接");
+ok(reportWithModels.includes("官方计费标准"), "报告 footer 标注官方计费标准");
+ok(reportWithModels.includes("deepseek-v4-flash"), "报告列出模型名");
+const snapRes = await call("/workload-report/v1/snapshot?days=30&tz=UTC");
+const snapJson = JSON.parse(snapRes.body);
+ok(Array.isArray(snapJson.byModel), "/snapshot 返回 byModel 数组");
+ok(Array.isArray(snapJson.modelDaily), "/snapshot 返回 modelDaily 数组");
+ok(snapJson.pricing !== undefined && Array.isArray(snapJson.pricing.links), "/snapshot 返回官方价目与链接");
+ok(snapJson.diagnostics.modelUsage === true, "诊断里带 modelUsage 开关状态");
 
 // 收尾：删掉本次的临时索引
 await rm(INDEX_PATH, { force: true }).catch(() => {});

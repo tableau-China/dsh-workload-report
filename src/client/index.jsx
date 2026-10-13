@@ -448,10 +448,300 @@ function DailyChart({ days, t }) {
   );
 }
 
+/**
+ * 模型区块（0.4.0）：
+ *   左 = 模型 treemap（面积 = 占比，口径可切：Token / 请求数 / 模型耗时）
+ *   右 = 按日模型趋势（堆叠柱）；点击左侧任一模型 → 右侧只显示该模型（可多选，再点取消）
+ *   下 = 模型明细表（请求、输入/输出/缓存、命中率、费用）+ 官方计费链接
+ * 会话记录里没有机器字段，模型的"机器归属"不在此处体现（多机方案见 docs/sync.md，已暂缓）。
+ */
+function ModelSection({ data, t }) {
+  const models = data.byModel ?? [];
+  const [metric, setMetric] = useState("tokens");
+  const [selected, setSelected] = useState([]);
+  const palette = [
+    "var(--dsw-static-deepseek-500, #4d6bfe)",
+    "var(--dsw-static-green-500, #10b981)",
+    "var(--dsw-static-amber-500, #f59e0b)",
+    "var(--dsw-static-blue-400, #60a5fa)",
+    "var(--dsw-static-red-400, #f25a5a)",
+    "var(--dsw-static-deepseek-300, #a9b8ff)",
+    "var(--dsw-static-neutral-300, #c7cbd1)",
+  ];
+  const metricValue = (item) =>
+    metric === "requests" ? item.requests : metric === "llmMs" ? item.llmMs : item.tokensTotal;
+  const fmtMetric = (value) => (metric === "requests" ? formatInt(value) : metric === "llmMs" ? formatDuration(value) : formatTokens(value));
+
+  const ranked = useMemo(() => [...models].sort((a, b) => metricValue(b) - metricValue(a)), [models, metric]);
+  const totalMetric = ranked.reduce((sum, item) => sum + metricValue(item), 0);
+  const colorOf = (key) => palette[Math.max(0, ranked.findIndex((item) => item.key === key)) % palette.length];
+
+  // 面积分布：Top 8 + 其他（保证 treemap 可读）
+  const cells = useMemo(() => {
+    const top = ranked.filter((item) => metricValue(item) > 0).slice(0, 8);
+    const rest = ranked.filter((item) => metricValue(item) > 0).slice(8);
+    const list = top.map((item) => ({ key: item.key, label: item.label, value: metricValue(item), item }));
+    if (rest.length > 0) {
+      list.push({ key: "__others", label: t("model.others", { count: rest.length }), value: rest.reduce((sum, item) => sum + metricValue(item), 0), item: null });
+    }
+    return list;
+  }, [ranked, metric, t]);
+
+  const rects = useMemo(() => layoutTreemap(cells, 0, 0, 100, 62), [cells]);
+
+  // 按日趋势：默认全部模型堆叠；选中后只显示选中的
+  const active = selected.length > 0 ? selected : null;
+  const trend = useMemo(() => {
+    const days = data.modelDaily ?? [];
+    const visibleKeys = active === null ? ranked.slice(0, 6).map((item) => item.key) : active;
+    const series = visibleKeys.map((key) => ({
+      key,
+      label: models.find((item) => item.key === key)?.label ?? key,
+      color: colorOf(key),
+    }));
+    const rows = days.map((day) => {
+      const values = series.map((s) => ({ ...s, value: active === null || active.includes(s.key) ? (day.values?.[s.key] ?? 0) : 0 }));
+      return { date: day.date, values, total: values.reduce((sum, v) => sum + v.value, 0) };
+    });
+    return { series, rows };
+  }, [data.modelDaily, models, ranked, selected, active]);
+
+  const toggle = (key) => {
+    if (key === "__others" || key === UNKNOWN_KEY) return;
+    setSelected((prev) => (prev.includes(key) ? prev.filter((item) => item !== key) : [...prev, key]));
+  };
+
+  const pricing = data.pricing ?? { currency: "CNY", links: [], costed: { covered: 0, total: 0 }, totalCost: null };
+  const currencySymbol = pricing.currency === "USD" ? "$" : "\u00a5";
+  const fmtCost = (value) => (value === null || value === undefined ? "\u2014" : `${currencySymbol}${value < 1 ? value.toFixed(4) : value.toFixed(2)}`);
+  const foldInfo = data.diagnostics?.modelFold;
+  const folding = foldInfo !== undefined && (foldInfo.running === true || (foldInfo.pending ?? 0) > 0);
+
+  if (models.length === 0) {
+    return (
+      <div className="wl-card">
+        <div className="wl-card-head"><div><h3>{t("model.title")}</h3></div></div>
+        <p className="wl-state">{folding ? t("model.folding") : t("model.empty")}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="wl-card">
+      <div className="wl-card-head">
+        <div>
+          <h3>{t("model.title")}</h3>
+          <p className="wl-hint">{t("model.hint")}</p>
+        </div>
+        <div className="wl-chips wl-chips-inline">
+          {[["tokens", "model.metric.tokens"], ["requests", "model.metric.requests"], ["llmMs", "model.metric.llmMs"]].map(([value, key]) => (
+            <button key={value} type="button" className={`wl-chip${metric === value ? " wl-chip-active" : ""}`} onClick={() => setMetric(value)}>
+              {t(key)}
+            </button>
+          ))}
+          {selected.length > 0 ? (
+            <button type="button" className="wl-chip wl-chip-active" onClick={() => setSelected([])}>{t("model.clear")}</button>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="wl-model-grid">
+        <div>
+          <svg viewBox="0 0 100 62" width="100%" height={210} role="img" aria-label={t("model.treemap")}>
+            {rects.map((rect) => {
+              const isSelected = selected.includes(rect.key);
+              const dimmed = selected.length > 0 && !isSelected;
+              const share = totalMetric > 0 ? rect.value / totalMetric : 0;
+              return (
+                <g key={rect.key} onClick={() => toggle(rect.key)} style={{ cursor: rect.key === "__others" ? "default" : "pointer", opacity: dimmed ? 0.35 : 1 }}>
+                  <rect
+                    x={rect.x} y={rect.y} width={Math.max(0.5, rect.w)} height={Math.max(0.5, rect.h)}
+                    fill={rect.key === "__others" ? "var(--dsw-static-neutral-300, #c7cbd1)" : colorOf(rect.key)}
+                    stroke={isSelected ? "var(--dsw-alias-label-primary, #111827)" : "var(--dsw-alias-bg-base, #fff)"}
+                    strokeWidth={isSelected ? 1.4 : 0.5}
+                    data-model={rect.key}
+                    data-kind={rect.item === null ? "others" : "model"}
+                  />
+                  {rect.w > 14 && rect.h > 8 ? (
+                    <text x={rect.x + 2} y={rect.y + 6} fontSize="3.4" fill="#fff" style={{ pointerEvents: "none" }}>
+                      {rect.label.length > 18 ? `${rect.label.slice(0, 17)}\u2026` : rect.label}
+                    </text>
+                  ) : null}
+                  {rect.w > 14 && rect.h > 14 ? (
+                    <text x={rect.x + 2} y={rect.y + 10.4} fontSize="3.1" fill="#fff" opacity="0.92" style={{ pointerEvents: "none" }}>
+                      {formatPercent(share)}
+                    </text>
+                  ) : null}
+                  <title>{`${rect.label}\n${t("model.requests")} ${formatInt(rect.item?.requests ?? 0)}\nToken ${formatInt(rect.item?.tokensTotal ?? rect.value)}\n${t("model.share")} ${formatPercent(share)}`}</title>
+                </g>
+              );
+            })}
+          </svg>
+          <p className="wl-hint wl-model-note">{t("model.clickHint")}</p>
+        </div>
+
+        <div>
+          <h4 className="wl-model-subtitle">{t("model.trend")}</h4>
+          <ModelTrend trend={trend} t={t} />
+          <div className="wl-legend">
+            {trend.series.map((s) => (
+              <span key={s.key} className="wl-legend-item">
+                <i style={{ background: s.color }} /> {s.label}
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <table className="wl-table wl-model-table">
+        <thead>
+          <tr>
+            <th>{t("model.col.model")}</th><th>{t("model.col.share")}</th><th>{t("model.col.requests")}</th>
+            <th>{t("table.input")}</th><th>{t("table.output")}</th><th>{t("table.cache")}</th>
+            <th>{t("model.col.hitRate")}</th><th>{t("model.col.cost")}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {ranked.map((item) => (
+            <tr key={item.key} style={{ opacity: selected.length > 0 && !selected.includes(item.key) ? 0.5 : 1 }}>
+              <td>
+                <button type="button" className="wl-model-name" onClick={() => toggle(item.key)}>
+                  <i style={{ background: colorOf(item.key) }} />
+                  {item.label}
+                </button>
+                {Object.keys(item.raw ?? {}).length > 1 ? (
+                  <span className="wl-hint wl-model-raw">{t("model.merged", { list: Object.keys(item.raw).map((k) => k.split("/").pop()).join(" + ") })}</span>
+                ) : null}
+              </td>
+              <td>{formatPercent(item.share)}</td>
+              <td>{formatInt(item.requests)}</td>
+              <td>{formatTokens(item.tokens.input)}</td>
+              <td>{formatTokens(item.tokens.output)}</td>
+              <td>{formatTokens(item.tokens.cacheRead)}</td>
+              <td>{item.cacheHitRate === null || item.cacheHitRate === undefined ? "\u2014" : formatPercent(item.cacheHitRate)}</td>
+              <td>{fmtCost(item.cost)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <p className="wl-hint wl-model-note">
+        {t("model.costNote", { asOf: pricing.asOf ?? "\u2014", covered: pricing.costed?.covered ?? 0, total: pricing.costed?.total ?? 0 })}
+        {pricing.totalCost === null || pricing.totalCost === undefined ? "" : ` · ${t("model.totalCost")} ${fmtCost(pricing.totalCost)}`}
+      </p>
+      <p className="wl-hint wl-model-links">
+        {t("model.priceLinks")}{" "}
+        {(pricing.links ?? []).map((link, index) => (
+          <span key={link.url}>
+            {index > 0 ? " · " : ""}
+            <a href={link.url} target="_blank" rel="noreferrer noopener">{link.label ?? link.provider}</a>
+          </span>
+        ))}
+      </p>
+    </div>
+  );
+}
+
+/** 按日模型趋势（堆叠柱，最多 6 个系列 + 其他）。 */
+function ModelTrend({ trend, t }) {
+  const geometry = useMemo(() => {
+    const width = 560;
+    const height = 210;
+    const pad = { top: 10, right: 6, bottom: 24, left: 6 };
+    const innerW = width - pad.left - pad.right;
+    const innerH = height - pad.top - pad.bottom;
+    const rows = trend.rows;
+    if (rows.length === 0) return null;
+    const max = Math.max(1, ...rows.map((row) => row.total));
+    const step = innerW / rows.length;
+    const barWidth = Math.max(1.5, Math.min(22, step * 0.66));
+    const bars = rows.map((row, index) => {
+      const centerX = pad.left + step * index + step / 2;
+      let y = pad.top + innerH;
+      const rects = [];
+      row.values.forEach((value, series) => {
+        const h = (value.value / max) * innerH;
+        if (h <= 0.3) return;
+        y -= h;
+        rects.push(<rect key={series} x={centerX - barWidth / 2} y={y} width={barWidth} height={h} rx="1.5" fill={value.color} />);
+      });
+      return (
+        <g key={row.date}>
+          <title>{`${row.date}\n${formatInt(row.total)} tokens`}</title>
+          {rects}
+        </g>
+      );
+    });
+    const every = Math.max(1, Math.ceil(rows.length / 8));
+    const labels = rows.map((row, index) =>
+      index % every === 0 || index === rows.length - 1 ? (
+        <text key={row.date} x={pad.left + step * index + step / 2} y={height - 8} textAnchor="middle" fontSize="9" fill="var(--dsw-alias-label-tertiary, #6b7280)">
+          {row.date.slice(5)}
+        </text>
+      ) : null,
+    );
+    return { width, height, bars, labels, baseline: pad.top + innerH, left: pad.left, innerW };
+  }, [trend]);
+
+  if (geometry === null) return <p className="wl-state">{t("state.empty")}</p>;
+  return (
+    <svg viewBox={`0 0 ${geometry.width} ${geometry.height}`} width="100%" height={geometry.height} role="img" aria-label={t("model.trend")}>
+      <line x1={geometry.left} y1={geometry.baseline} x2={geometry.left + geometry.innerW} y2={geometry.baseline} stroke="var(--dsw-alias-border-l2, #e5e7eb)" />
+      {geometry.bars}
+      {geometry.labels}
+    </svg>
+  );
+}
+
+/**
+ * 简易 treemap 布局：按累计值二分为两半，长边切分（交替方向）。
+ * 比 squarified 简单，但对"少数几个模型占绝大多数"的数据足够可读。
+ */
+function layoutTreemap(items, x, y, w, h, out = []) {
+  if (items.length === 0) return out;
+  if (items.length === 1) {
+    out.push({ ...items[0], x, y, w, h });
+    return out;
+  }
+  const total = items.reduce((sum, item) => sum + item.value, 0);
+  let acc = 0;
+  let split = 0;
+  for (let i = 0; i < items.length; i += 1) {
+    acc += items[i].value;
+    split = i + 1;
+    if (acc >= total / 2) break;
+  }
+  const first = items.slice(0, split);
+  const second = items.slice(split);
+  if (second.length === 0) {
+    out.push({ ...items[0], x, y, w, h });
+    return out;
+  }
+  const firstSum = first.reduce((sum, item) => sum + item.value, 0);
+  const ratio = total > 0 ? firstSum / total : 0.5;
+  if (w >= h) {
+    layoutTreemap(first, x, y, w * ratio, h, out);
+    layoutTreemap(second, x + w * ratio, y, w - w * ratio, h, out);
+  } else {
+    layoutTreemap(first, x, y, w, h * ratio, out);
+    layoutTreemap(second, x, y + h * ratio, w, h - h * ratio, out);
+  }
+  return out;
+}
+
+/** 未标注模型的 key（与宿主 src/models.js 保持一致）。 */
+const UNKNOWN_KEY = "(\u672a\u6807\u6ce8\u6a21\u578b)";
+
 /** KPI 卡片组。 */
 function Kpis({ data, t }) {
   const totals = data.totals;
   const derived = data.derived;
+  // 动态拼接会让"引用键必须存在 / 无死键"的静态校验看不到这些键，所以用字面量映射
+  const metricLabelKey = {
+    requests: "kpi.topModel.metric.requests",
+    tokens: "kpi.topModel.metric.tokens",
+    llmMs: "kpi.topModel.metric.llmMs",
+  };
   const cards = [
     ["kpi.active", formatDuration(totals.activeMs), t("kpi.active.sub", { llm: formatDuration(totals.llmMs), tool: formatDuration(totals.toolMs) })],
     // 总 Token 直接给完整整数（可核对的真实值），小字里才用 K/M/B 缩写
@@ -460,6 +750,17 @@ function Kpis({ data, t }) {
     ["kpi.conversations", formatInt(totals.conversations), t("kpi.conversations.sub", { sessions: formatInt(totals.sessions), empty: formatInt(totals.emptySessions) })],
     ["kpi.turns", `${formatInt(totals.turns)} / ${formatInt(totals.steps)}`, t("kpi.turns.sub", { main: formatInt(totals.mainSessions), subagent: formatInt(totals.subagentSessions) })],
     ["kpi.cache", formatPercent(derived.cacheHitRate), t("kpi.cache.sub", { output: formatTokens(derived.outputPerActiveHour) })],
+    // 第 7 张：最活跃模型（默认按请求数口径，可在配置里切换 tokens / activeMs）
+    data.topModel === null || data.topModel === undefined
+      ? ["kpi.topModel", "\u2014", t("kpi.topModel.none")]
+      : [
+          "kpi.topModel",
+          data.topModel.label,
+          t("kpi.topModel.sub", {
+            share: formatPercent(data.topModel.metricShare),
+            metric: t(metricLabelKey[data.topModel.metric] ?? "kpi.topModel.metric.requests"),
+          }),
+        ],
   ];
   return (
     <div className="wl-kpis">
@@ -551,6 +852,8 @@ function ByDayView({ data, t }) {
           <WorkspacePie items={data.byWorkspace} range={data.range} t={t} />
         </div>
       </div>
+
+      <ModelSection data={data} t={t} />
 
       <details className="wl-card wl-details">
         <summary>{t("detail.summary", { count: rows.length })}</summary>

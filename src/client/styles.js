@@ -158,4 +158,20 @@ export const STYLES = `
 .wl-details[open] summary { margin-bottom: 10px; }
 @media (max-width: 1080px) { .wl-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } .wl-grid-2 { grid-template-columns: 1fr; } }
 @media (max-width: 720px) { .wl-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .wl-name { max-width: 160px; } }
+
+
+/* ── 模型区块（0.4.0） ── */
+.wl-model-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+.wl-model-subtitle { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-secondary, #4b5563); }
+.wl-model-note { margin: 8px 0 0; }
+.wl-model-links a { color: var(--dsw-static-deepseek-500, #4d6bfe); text-decoration: none; }
+.wl-model-links a:hover { text-decoration: underline; }
+.wl-model-table { margin-top: 14px; }
+.wl-model-name { display: inline-flex; align-items: center; gap: 6px; background: none; border: 0; padding: 0; cursor: pointer; color: inherit; font: inherit; }
+.wl-model-name i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+.wl-model-raw { display: block; margin-top: 2px; }
+.wl-legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
+.wl-legend-item { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); }
+.wl-legend-item i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+@media (max-width: 900px) { .wl-model-grid { grid-template-columns: 1fr; } }
 `;

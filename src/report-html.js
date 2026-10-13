@@ -212,6 +212,123 @@ function workspacePie(items, palette) {
  * @param options - theme / title / note / anonymize / includeSessions / topSessions / generatedAt / timeZone。
  * @returns HTML 文本。
  */
+/** 模型系列色（与工作区图区分开）。 */
+function modelSeries(palette) {
+  return [palette.accent, palette.output, "#f59e0b", palette.input, "#f25a5a", "#a9b8ff", palette.cache];
+}
+
+/** 简易 treemap 布局：按累计值二分，长边切分。 */
+function layoutTreemap(items, x, y, w, h, out = []) {
+  if (items.length === 0) return out;
+  if (items.length === 1) {
+    out.push({ ...items[0], x, y, w, h });
+    return out;
+  }
+  const total = items.reduce((sum, item) => sum + item.value, 0);
+  let acc = 0;
+  let split = 0;
+  for (let i = 0; i < items.length; i += 1) {
+    acc += items[i].value;
+    split = i + 1;
+    if (acc >= total / 2) break;
+  }
+  const first = items.slice(0, split);
+  const second = items.slice(split);
+  if (second.length === 0) {
+    out.push({ ...items[0], x, y, w, h });
+    return out;
+  }
+  const firstSum = first.reduce((sum, item) => sum + item.value, 0);
+  const ratio = total > 0 ? firstSum / total : 0.5;
+  if (w >= h) {
+    layoutTreemap(first, x, y, w * ratio, h, out);
+    layoutTreemap(second, x + w * ratio, y, w - w * ratio, h, out);
+  } else {
+    layoutTreemap(first, x, y, w, h * ratio, out);
+    layoutTreemap(second, x, y + h * ratio, w, h - h * ratio, out);
+  }
+  return out;
+}
+
+/** 模型占比 treemap（面积 = 占比）。 */
+function modelTreemap(models, palette, metric = "tokens") {
+  const valueOf = (item) => (metric === "requests" ? item.requests : metric === "llmMs" ? item.llmMs : item.tokensTotal);
+  const sorted = [...models].filter((item) => valueOf(item) > 0).sort((a, b) => valueOf(b) - valueOf(a));
+  if (sorted.length === 0) return "";
+  const series = modelSeries(palette);
+  const top = sorted.slice(0, 8);
+  const rest = sorted.slice(8);
+  const cells = top.map((item, index) => ({ key: item.key, label: item.label, value: valueOf(item), color: series[index % series.length] }));
+  if (rest.length > 0) {
+    cells.push({ key: "__others", label: "其他 " + rest.length + " 个模型", value: rest.reduce((sum, item) => sum + valueOf(item), 0), color: palette.muted });
+  }
+  const total = cells.reduce((sum, cell) => sum + cell.value, 0);
+  const rects = layoutTreemap(cells, 0, 0, 100, 56);
+  const parts = rects.map((rect) => {
+    const share = total > 0 ? rect.value / total : 0;
+    const label = rect.label.length > 20 ? rect.label.slice(0, 19) + "…" : rect.label;
+    const name = rect.w > 16 && rect.h > 9 ? '<text x="' + (rect.x + 1.6).toFixed(2) + '" y="' + (rect.y + 5.4).toFixed(2) + '" font-size="3.1" fill="#fff">' + escapeHtml(label) + "</text>" : "";
+    const pct = rect.w > 16 && rect.h > 15 ? '<text x="' + (rect.x + 1.6).toFixed(2) + '" y="' + (rect.y + 9.4).toFixed(2) + '" font-size="2.8" fill="#fff" opacity="0.9">' + formatPercent(share) + "</text>" : "";
+    return '<g><title>' + escapeHtml(rect.label) + " · " + formatPercent(share) + '</title><rect x="' + rect.x.toFixed(2) + '" y="' + rect.y.toFixed(2) + '" width="' + Math.max(0.4, rect.w).toFixed(2) + '" height="' + Math.max(0.4, rect.h).toFixed(2) + '" fill="' + rect.color + '" stroke="' + palette.surface + '" stroke-width="0.4"/>' + name + pct + "</g>";
+  });
+  return '<svg class="treemap" viewBox="0 0 100 56" width="100%" height="200" role="img" aria-label="模型占比">' + parts.join("") + "</svg>";
+}
+
+/** 按日模型趋势（堆叠柱，取前 6 个模型）。 */
+function modelTrend(daily, models, palette) {
+  const rows = (daily ?? []).filter((day) => Object.values(day.values ?? {}).length > 0);
+  if (rows.length === 0) return "";
+  const paletteSeries = modelSeries(palette);
+  const series = models.filter((item) => item.tokensTotal > 0).slice(0, 6).map((item, index) => ({ key: item.key, label: item.label, color: paletteSeries[index % paletteSeries.length] }));
+  const width = 560;
+  const height = 190;
+  const pad = { top: 8, right: 6, bottom: 22, left: 6 };
+  const innerW = width - pad.left - pad.right;
+  const innerH = height - pad.top - pad.bottom;
+  const totalsPerDay = rows.map((day) => series.reduce((sum, s) => sum + (day.values?.[s.key] ?? 0), 0));
+  const max = Math.max(1, ...totalsPerDay);
+  const step = innerW / rows.length;
+  const barWidth = Math.max(1.4, Math.min(20, step * 0.66));
+  const bars = rows.map((day, index) => {
+    const centerX = pad.left + step * index + step / 2;
+    let y = pad.top + innerH;
+    const rects = series.map((s) => {
+      const value = day.values?.[s.key] ?? 0;
+      const h = (value / max) * innerH;
+      if (h <= 0.3) return "";
+      y -= h;
+      return '<rect x="' + (centerX - barWidth / 2).toFixed(2) + '" y="' + y.toFixed(2) + '" width="' + barWidth.toFixed(2) + '" height="' + h.toFixed(2) + '" rx="1.2" fill="' + s.color + '"/>';
+    });
+    return '<g><title>' + escapeHtml(day.date) + " · " + formatInt(totalsPerDay[index]) + " tokens</title>" + rects.join("") + "</g>";
+  });
+  const every = Math.max(1, Math.ceil(rows.length / 8));
+  const labels = rows.map((day, index) =>
+    index % every === 0 || index === rows.length - 1
+      ? '<text x="' + (pad.left + step * index + step / 2).toFixed(2) + '" y="' + (height - 6) + '" text-anchor="middle" font-size="9" fill="' + palette.muted + '">' + escapeHtml(day.date.slice(5)) + "</text>"
+      : "",
+  );
+  const legend = series.map((s) => '<span class="legend-item"><i style="background:' + s.color + '"></i>' + escapeHtml(s.label) + "</span>").join("");
+  return '<svg viewBox="0 0 ' + width + " " + height + '" width="100%" height="' + height + '" role="img" aria-label="按日模型趋势">' + bars.join("") + labels.join("") + '</svg><div class="legend">' + legend + "</div>";
+}
+
+/** 模型用量明细表 + 官方计费链接。 */
+function modelSection(snapshot, palette) {
+  const models = snapshot.byModel ?? [];
+  if (models.length === 0) return "";
+  const pricing = snapshot.pricing ?? { currency: "CNY", links: [], costed: { covered: 0, total: 0 }, totalCost: null, asOf: "" };
+  const symbol = pricing.currency === "USD" ? "$" : "¥";
+  const cost = (value) => (value === null || value === undefined ? "—" : symbol + (value < 1 ? value.toFixed(4) : value.toFixed(2)));
+  const rows = models
+    .map(
+      (item) => '<tr><td class="ws">' + escapeHtml(item.label) + "</td><td>" + formatPercent(item.share) + "</td><td>" + formatInt(item.requests) + "</td><td>" + formatTokens(item.tokens.input) + "</td><td>" + formatTokens(item.tokens.output) + "</td><td>" + formatTokens(item.tokens.cacheRead) + "</td><td>" + (item.cacheHitRate === null || item.cacheHitRate === undefined ? "—" : formatPercent(item.cacheHitRate)) + "</td><td>" + cost(item.cost) + "</td></tr>",
+    )
+    .join("");
+  const links = (pricing.links ?? []).map((link) => '<a href="' + escapeHtml(link.url) + '">' + escapeHtml(link.label ?? link.provider) + "</a>").join(" · ");
+  const totalText = pricing.totalCost === null || pricing.totalCost === undefined ? "" : " · 合计 " + cost(pricing.totalCost);
+  return '<section class="card">\n  <h2>模型用量</h2>\n  <div class="two-col">\n    <div>' + modelTreemap(models, palette, "tokens") + '<p class="note">面积 = Token 占比</p></div>\n    <div>' + modelTrend(snapshot.modelDaily, models, palette) + "</div>\n  </div>\n  <table>\n    <thead><tr><th>模型</th><th>占比</th><th>请求</th><th>输入</th><th>输出</th><th>缓存读</th><th>缓存命中</th><th>费用(估算)</th></tr></thead>\n    <tbody>" + rows + "</tbody>\n  </table>\n  <p class=\"note\">费用按官方公开单价估算（as-of " + escapeHtml(String(pricing.asOf ?? "")) + "，" + (pricing.costed?.covered ?? 0) + "/" + (pricing.costed?.total ?? 0) + " 个模型有官方价" + totalText + "）。官方计费标准：" + links + "</p>\n</section>";
+}
+
+/** 报告生成。 */
 export function renderReport(snapshot, options = {}) {
   const {
     theme = "light",
@@ -395,10 +512,14 @@ export function renderReport(snapshot, options = {}) {
       <tbody>${workspaceRows || `<tr><td colspan="10" class="empty">该区间没有数据</td></tr>`}</tbody>
     </table>
   </section>
+  ${modelSection(snapshot, palette)}
   ${sessionSection}
 
   <footer>
     活跃时长＝模型＋工具时间（累计，非墙钟）；对话＝有步骤的会话数；Token 取自官方投影；按会话创建日在 ${escapeHtml(range.timeZone)} 归属。
+    模型口径：一次 assistant/message = 一次请求；模型取自事件的 provider/model；各模型耗时按流式窗口占比分摊会话模型时间（守恒）。
+    费用＝按官方公开单价估算（DeepSeek 峰谷价：峰时 01:00-04:00 与 06:00-10:00 UTC 周一至周五，谷价为其半；中国法定节假日按峰价计入，略微高估），非官方账单。
+    官方计费标准：${(snapshot.pricing?.links ?? []).map((link) => `<a href="${escapeHtml(link.url)}">${escapeHtml(link.label ?? link.provider)}</a>`).join(" · ")}
     口径详见仓库 docs/metrics.md。数据全部来自本机。
   </footer>
 </main>

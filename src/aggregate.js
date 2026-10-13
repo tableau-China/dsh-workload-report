@@ -5,6 +5,7 @@
  *   - sessionStats → turns / steps / llmMs(模型时间) / toolMs(工具时间) / decodeTokens
  *   - tokenUsage   → uncachedInputTokens / outputTokens / cacheReadTokens / cacheWriteTokens
  *   - title        → 会话标题
+ *   - row.models   → 模型维度（由 src/models.js 从官方事件日志折叠，见 docs/models.md）
  * 会话身份（id / createdAt / cwd / 是否为子代理）来自 SessionHeader。
  *
  * 口径（写进 README，避免误读）：
@@ -13,6 +14,8 @@
  *   - 「对话次数」= 至少产生过 1 个步骤（step）的会话数；零步会话单列，不计入对话。
  *   - 归属日期用会话创建时间在所给时区下的自然日；跨天续聊的活动仍算创建那天。
  */
+
+import { cacheHitRate, costOf, mergeModelBuckets, modelLabel, modelTokens, emptyModelBucket, UNKNOWN_MODEL } from "./models.js";
 
 /** 需要向投影缓存/注册表读取的键。 */
 export const PROJECTION_KEYS = ["sessionStats", "tokenUsage", "title", "sessionListMetadata"];
@@ -236,6 +239,20 @@ function emptyBucket() {
   };
 }
 
+/** 模型桶：key 为归并组名。 */
+function addModelRow(modelMap, row) {
+  const models = row.models;
+  if (models === null || typeof models !== "object") return;
+  for (const [key, bucket] of Object.entries(models)) {
+    let target = modelMap.get(key);
+    if (target === undefined) {
+      target = { key, ...emptyModelBucket() };
+      modelMap.set(key, target);
+    }
+    mergeModelBuckets(target, bucket);
+  }
+}
+
 /** 把一行累加进桶。 */
 function addRow(bucket, row) {
   bucket.sessions += 1;
@@ -289,6 +306,9 @@ export function aggregate(rows, options = {}) {
     now = Date.now(),
     includeEmptyDays = true,
     all = false,
+    pricing = { currency: "CNY", asOf: "", links: [], table: {}, estimated: false },
+    modelAliases = {},
+    activeModelMetric = "requests",
   } = options;
 
   // 只看 scope 的集合：用来算"最早活跃日"，以及生成不受日期筛选影响的日历数据
@@ -313,6 +333,10 @@ export function aggregate(rows, options = {}) {
   const hourBuckets = Array.from({ length: 24 }, (_, hour) => ({ hour, activeMs: 0, sessions: 0, starts: 0, tokens: emptyTokens(), conversations: 0 }));
   /** 工作区 → 有活动的自然日集合（用于「活跃天数」这一列/这条 bar）。 */
   const workspaceDays = new Map();
+  /** 模型维度：归并组 → 桶。 */
+  const modelMap = new Map();
+  /** 模型 → 逐日 token 总量（treemap 右侧的按日趋势）。 */
+  const modelDayMap = new Map();
 
   // 先铺日历的全历史日序列（只按 scope，不受 range 影响）
   for (const row of scopedAll) {
@@ -361,6 +385,19 @@ export function aggregate(rows, options = {}) {
       workspaceDays.set(wkey, daySet);
     }
     daySet.add(key);
+
+    addModelRow(modelMap, row);
+    if (row.models !== null && typeof row.models === "object") {
+      let dayModels = modelDayMap.get(key);
+      if (dayModels === undefined) {
+        dayModels = new Map();
+        modelDayMap.set(key, dayModels);
+      }
+      for (const [modelKey, bucket] of Object.entries(row.models)) {
+        const tokens = modelTokens(bucket);
+        if (tokens > 0) dayModels.set(modelKey, (dayModels.get(modelKey) ?? 0) + tokens);
+      }
+    }
   }
 
   const withTotals = (bucket) => ({ ...bucket, tokensTotal: tokensTotal(bucket.tokens) });
@@ -387,6 +424,22 @@ export function aggregate(rows, options = {}) {
       .map((workspace) => withTotals({ ...workspace, activeDays: (workspaceDays.get(workspace.key) ?? new Set()).size }))
       .sort((a, b) => b.activeMs - a.activeMs || b.tokensTotal - a.tokensTotal || a.label.localeCompare(b.label)),
     byHour: hourBuckets.map((bucket) => ({ ...bucket, tokensTotal: tokensTotal(bucket.tokens) })),
+    // 模型维度（未启用 modelUsage 时为空数组）
+    byModel: buildByModel(modelMap, pricing, modelAliases, totals, activeModelMetric),
+    modelDaily: days.map((date) => {
+      const dayModels = modelDayMap.get(date);
+      const values = {};
+      if (dayModels !== undefined) for (const [modelKey, tokens] of dayModels) values[modelKey] = tokens;
+      return { date, values };
+    }),
+    topModel: pickTopModel(modelMap, modelAliases, activeModelMetric, totals),
+    pricing: {
+      currency: pricing.currency,
+      asOf: pricing.asOf,
+      links: pricing.links,
+      costed: costedModels(modelMap, pricing),
+      totalCost: totalModelCost(modelMap, pricing),
+    },
     // 日历图数据源：从最早活跃日到今天，全部有记录的日子的逐日明细（含 activeMs / tokens 等）
     calendar: {
       from: earliestKey === null ? range.to : dateKey(earliestKey, timeZone),
@@ -417,8 +470,90 @@ export function aggregate(rows, options = {}) {
   };
 }
 
-/**
- * 把快照压成适合 UI/报告的展示结构（补上占比与派生指标）。
+/** 归一化「最活跃模型」口径。 */
+function normalizeMetric(metric) {
+  if (metric === "tokens" || metric === "activeMs" || metric === "llmMs" || metric === "requests") return metric === "activeMs" ? "llmMs" : metric;
+  return "requests";
+}
+
+/** 取模型的排序值。 */
+function metricOf(bucket, metric) {
+  if (metric === "tokens") return modelTokens(bucket);
+  if (metric === "llmMs") return num(bucket.llmMs);
+  return num(bucket.requests);
+}
+
+/** 组装 byModel 列表（含占比、命中率与费用）。 */
+function buildByModel(modelMap, pricing, modelAliases, totals, metric) {
+  const metricKey = normalizeMetric(metric);
+  const totalTokens = modelTokens({ inOff: totals.tokens.input, inPeak: 0, crOff: totals.tokens.cacheRead, crPeak: 0, outOff: totals.tokens.output, outPeak: 0, cwOff: totals.tokens.cacheWrite, cwPeak: 0 }) || 1;
+  const list = [...modelMap.values()].map((bucket) => {
+    const tokens = modelTokens(bucket);
+    const input = bucket.inOff + bucket.inPeak;
+    const cacheRead = bucket.crOff + bucket.crPeak;
+    const output = bucket.outOff + bucket.outPeak;
+    const cacheWrite = bucket.cwOff + bucket.cwPeak;
+    return {
+      key: bucket.key,
+      label: modelLabel(bucket.key, modelAliases),
+      requests: num(bucket.requests),
+      llmMs: num(bucket.llmMs),
+      efforts: bucket.efforts ?? {},
+      raw: bucket.raw ?? {},
+      tokens: { input, output, cacheRead, cacheWrite },
+      tokensTotal: tokens,
+      share: tokens / totalTokens,
+      cacheHitRate: cacheHitRate(bucket),
+      cost: costOf(bucket, pricing),
+      metricValue: metricOf(bucket, metricKey),
+    };
+  });
+  const metricSum = list.reduce((sum, item) => sum + item.metricValue, 0) || 1;
+  return list
+    .map((item) => ({ ...item, metricShare: item.metricValue / metricSum }))
+    .sort((a, b) => b.metricValue - a.metricValue || b.tokensTotal - a.tokensTotal || a.label.localeCompare(b.label));
+}
+
+/** 「最活跃模型」：按配置口径取第一名。 */
+function pickTopModel(modelMap, modelAliases, metric, totals) {
+  const metricKey = normalizeMetric(metric);
+  const list = buildByModel(modelMap, { table: {} }, modelAliases, totals, metricKey);
+  if (list.length === 0) return null;
+  const first = list[0];
+  return {
+    key: first.key,
+    label: first.label,
+    metric: metricKey,
+    metricValue: first.metricValue,
+    metricShare: first.metricShare,
+    tokensTotal: first.tokensTotal,
+    share: first.share,
+    requests: first.requests,
+  };
+}
+
+/** 有官方单价的模型数 / 总数（用于界面提示"费用覆盖度"）。 */
+function costedModels(modelMap, pricing) {
+  const list = [...modelMap.values()];
+  const withPrice = list.filter((bucket) => costOf(bucket, pricing) !== null);
+  return { covered: withPrice.length, total: list.length };
+}
+
+/** 已知单价模型的总费用（未知单价的不计入，也不猜）。 */
+function totalModelCost(modelMap, pricing) {
+  let sum = 0;
+  let any = false;
+  for (const bucket of modelMap.values()) {
+    const cost = costOf(bucket, pricing);
+    if (cost !== null) {
+      sum += cost;
+      any = true;
+    }
+  }
+  return any ? sum : null;
+}
+
+/** 把快照压成适合 UI/报告的展示结构（补上占比与派生指标）。
  * @param snapshot - aggregate() 的结果。
  * @returns 展示结构。
  */
@@ -433,6 +568,11 @@ export function present(snapshot) {
       activeShare: item.activeMs / totalActive,
       avgTokensPerConversation: item.conversations > 0 ? item.tokensTotal / item.conversations : 0,
       avgActiveMsPerConversation: item.conversations > 0 ? item.activeMs / item.conversations : 0,
+    })),
+    byModel: (snapshot.byModel ?? []).map((item) => ({
+      ...item,
+      costPerRequest: item.cost !== null && item.requests > 0 ? item.cost / item.requests : null,
+      avgOutputPerRequest: item.requests > 0 ? item.tokens.output / item.requests : 0,
     })),
     derived: {
       avgTokensPerConversation:

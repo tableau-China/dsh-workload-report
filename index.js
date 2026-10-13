@@ -19,6 +19,7 @@ import { dirname, join } from "node:path";
 
 import { PROJECTION_KEYS, aggregate, present, rowFromSession } from "./src/aggregate.js";
 import { renderReport } from "./src/report-html.js";
+import { foldSessionModels, resolvePricing } from "./src/models.js";
 
 export const name = "workload-report";
 
@@ -47,8 +48,24 @@ const DEFAULTS = {
   indexConcurrency: 8,
   /** 本地索引行的有效期：过期后重新冷读校验（续聊过的会话靠它纠正）。 */
   revalidateMs: 12 * 3600 * 1000,
-  /** 索引文件路径；缺省 <DSH_HOME>/workload-report/index-v1.json。 */
+  /** 索引文件路径；缺省 <DSH_HOME>/workload-report/index-v<版本>.json。 */
   indexPath: "",
+  /** 模型维度：auto | off。off 时完全不读事件日志（行为与不含该功能一致）。 */
+  modelUsage: "auto",
+  /** 模型折叠并发（要读整份事件日志，比投影贵，默认低于 indexConcurrency）。 */
+  modelFoldConcurrency: 4,
+  /** 单会话事件数上限：超过则跳过该会话的模型维度并计入诊断（保护内存）。 */
+  modelFoldMaxEvents: 200000,
+  /** 模型归并自定义规则：{ group, match: [] }[] 或 { 组名: [模型…] }。 */
+  modelGroups: [],
+  /** 模型展示名别名（同 workspaceAliases）。 */
+  modelAliases: {},
+  /** 费用估算：{ currency, asOf, overrides, links }；缺省用官方公开价（不联网）。 */
+  pricing: {},
+  /** 「最活跃模型」口径：requests（= step 数）| tokens | activeMs（= llmMs）。 */
+  activeModelMetric: "requests",
+  /** 同一会话两次模型折叠的最小间隔（续聊后重新折叠）。 */
+  modelRefoldMs: 15 * 60 * 1000,
 };
 
 /** 把未知异常收敛成一行文本。 */
@@ -95,10 +112,11 @@ function sendHtml(res, status, html) {
  *   2. 活会话 `sessionProjections.snapshot()` + `session/event` 增量：同步、精确。
  *   3. 冷读 `sessionQuery.observeSession(id, { projectionMode: "all" })`：官方折叠整份日志
  *      （内部仍以检查点做捷径），只对"缓存未命中且本地索引里没有"的会话执行一次。
- *   4. 本地索引文件 `<DSH_HOME>/workload-report/index-v1.json`：让进程重启后不必重跑冷读；
+ *   4. 本地索引文件 `<DSH_HOME>/workload-report/index-v3.json`：让进程重启后不必重跑冷读；
+ *   5. 模型维度：`sessionQuery.readSession()` 读官方事件日志 → `src/models.js` 折叠（渐进回填，不阻塞首屏）；
  *      超过 `revalidateMs` 的行会重新校验一次（续聊过的冷会话靠这个纠正）。
  */
-const INDEX_VERSION = 2;
+const INDEX_VERSION = 3;
 
 /** 限制并发，避免几百个会话同时冷读把服务器压住。 */
 async function mapLimit(items, limit, worker) {
@@ -125,9 +143,13 @@ class WorkloadIndex {
     this.rowSavedAt = new Map();
     this.syncing = null;
     this.loadedFromDisk = false;
+    /** 模型维度回填状态（渐进：首屏先出总量，模型区随后补齐）。 */
+    this.modelFold = { running: false, done: 0, total: 0, folded: 0, skipped: 0, lastAt: 0, lastError: null };
+    this.resolvedPricing = undefined;
     this.diagnostics = {
       sessions: 0, cached: 0, reused: 0, live: 0, cold: 0, missing: 0,
       buildMs: 0, lastSyncAt: 0, lastError: null, persisted: false,
+      modelsFolded: 0, modelPending: 0, modelSkipped: 0,
     };
   }
 
@@ -324,9 +346,90 @@ class WorkloadIndex {
       diagnostics.sessions = nextRows.size;
     }
     diagnostics.buildMs = Date.now() - started;
+    diagnostics.modelPending = this.modelFoldTargets().length;
+    diagnostics.modelsFolded = this.modelFold.folded;
+    diagnostics.modelSkipped = this.modelFold.skipped;
     this.diagnostics = diagnostics;
     if (coldPerformed > 0) await this.saveToDisk();
+    // 投影数据已可用 → 立刻放行首屏；模型维度在后台渐进补齐
+    this.scheduleModelFold();
     return this;
+  }
+
+  /** 生效价目（内置官方公开价 + 用户覆盖；纯本地，不联网）。 */
+  pricingTable() {
+    if (this.resolvedPricing === undefined) this.resolvedPricing = resolvePricing(this.config.pricing);
+    return this.resolvedPricing;
+  }
+
+  /**
+   * 需要折叠模型的会话：还没折过（缺 models），或事件水位比折过的水位新（续聊过）。
+   * @returns {Array<{id: string, row: object}>}
+   */
+  modelFoldTargets() {
+    if (this.config.modelUsage === "off") return [];
+    const targets = [];
+    for (const [id, row] of this.rows) {
+      const foldedSeq = typeof row.modelFoldSeq === "number" ? row.modelFoldSeq : -1;
+      const asOf = typeof row.asOfSeq === "number" ? row.asOfSeq : 0;
+      if (row.models === undefined || asOf > foldedSeq) targets.push({ id, row });
+    }
+    return targets;
+  }
+
+  /**
+   * 后台折叠模型维度：官方 `readSession()` 读整份事件日志 → src/models.js 折叠。
+   * 结论写回内存行（并在结束时落盘），因此重启后不必重折。
+   */
+  async runModelFold() {
+    if (this.config.modelUsage === "off" || this.modelFold.running) return;
+    const targets = this.modelFoldTargets();
+    if (targets.length === 0) return;
+    this.modelFold = { running: true, done: 0, total: targets.length, folded: 0, skipped: 0, lastAt: Date.now(), lastError: null };
+    try {
+      await mapLimit(targets, Math.max(1, this.config.modelFoldConcurrency), async ({ id, row }) => {
+        try {
+          const snapshot = await this.ctx.sessionQuery.readSession(id);
+          const events = Array.isArray(snapshot?.events) ? snapshot.events : [];
+          const asOf = typeof row.asOfSeq === "number" ? row.asOfSeq : 0;
+          if (events.length > this.config.modelFoldMaxEvents) {
+            // 巨型会话：跳过并标记，避免把整份日志常驻内存
+            this.modelFold.skipped += 1;
+            row.models = row.models ?? {};
+            row.modelFoldSeq = asOf;
+            row.modelFoldSkipped = events.length;
+            this.modelFold.done += 1;
+            return;
+          }
+          const folded = foldSessionModels(events, { groups: this.config.modelGroups, sessionLlmMs: row.llmMs });
+          row.models = folded.models;
+          row.modelFoldSeq = asOf;
+          row.modelFoldAt = Date.now();
+          delete row.modelFoldSkipped;
+          this.modelFold.folded += 1;
+        } catch (error) {
+          this.modelFold.lastError = reasonOf(error);
+        }
+        this.modelFold.done += 1;
+        // 边折边落盘：进度可见，且重启后不白折
+        if (this.modelFold.done % 25 === 0) await this.saveToDisk();
+      });
+    } finally {
+      this.modelFold.running = false;
+      this.diagnostics.modelsFolded = this.modelFold.folded;
+      this.diagnostics.modelSkipped = this.modelFold.skipped;
+      this.diagnostics.modelPending = this.modelFoldTargets().length;
+      await this.saveToDisk();
+    }
+  }
+
+  /** 需要时后台启动模型回填（不 await，绝不阻塞请求）。 */
+  scheduleModelFold({ force = false } = {}) {
+    if (this.config.modelUsage === "off" || this.modelFold.running) return;
+    const idleMs = Date.now() - this.modelFold.lastAt;
+    if (!force && this.modelFold.lastAt > 0 && idleMs < this.config.modelRefoldMs) return;
+    if (this.modelFoldTargets().length === 0) return;
+    void this.runModelFold();
   }
 
   /**
@@ -362,6 +465,7 @@ class WorkloadIndex {
   /** 生成聚合快照（不阻塞：索引进度随诊断字段一起返回）。 */
   async snapshot(query) {
     this.ensureIndex({ force: query.refresh === true });
+    this.scheduleModelFold();
     const rows = [...this.rows.values()];
     const result = present(
       aggregate(rows, {
@@ -372,6 +476,9 @@ class WorkloadIndex {
         scope: query.scope,
         all: query.all === true,
         aliases: this.config.workspaceAliases,
+        pricing: this.pricingTable(),
+        modelAliases: this.config.modelAliases,
+        activeModelMetric: this.config.activeModelMetric,
       }),
     );
     return {
@@ -380,6 +487,8 @@ class WorkloadIndex {
         ...this.diagnostics,
         // 只有"首次全量建索引"才算补齐中；之后的增量重扫很快，不必打扰用户
         indexing: this.syncing !== null && this.firstBuildDone !== true,
+        modelUsage: this.config.modelUsage !== "off",
+        modelFold: { ...this.modelFold, pending: this.modelFoldTargets().length },
       },
     };
   }
@@ -438,7 +547,10 @@ export function apply(ctx, config = {}) {
       if (route === "/health") {
         // 非阻塞：同步可能持续数分钟（首次要冷读历史会话），只报进度。
         const indexing = index.syncing !== null && index.firstBuildDone !== true;
-        sendJson(res, 200, { ok: true, apiPath, indexing, diagnostics: { ...index.diagnostics, indexing } });
+        sendJson(res, 200, {
+          ok: true, apiPath, indexing,
+          diagnostics: { ...index.diagnostics, indexing, modelUsage: merged.modelUsage !== "off", modelFold: { ...index.modelFold, pending: index.modelFoldTargets().length } },
+        });
         return;
       }
       if (route === "/snapshot" || route === "/export.json") {
