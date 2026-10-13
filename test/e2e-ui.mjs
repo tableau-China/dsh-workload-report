@@ -283,7 +283,7 @@ try {
       hourCols: document.querySelectorAll(".wl-hour-col").length,
       peak: document.querySelectorAll(".wl-hour-col[data-peak]").length,
       hourTip: document.querySelector(".wl-hour-tip")?.textContent ?? "",
-      pieSlices: document.querySelectorAll(".wl-pie-wrap svg circle").length,
+      pieSlices: document.querySelectorAll(".wl-pie-wrap svg circle, .wl-pie-wrap svg path").length,
       pieLegend: [...document.querySelectorAll(".wl-pie-legend li")].map((n) => n.textContent).slice(0, 3),
     };
   });

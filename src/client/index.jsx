@@ -324,6 +324,29 @@ function HourChart({ hours, t }) {
   );
 }
 
+/**
+ * 环形扇区路径（外弧 → 内弧，闭合成一个扇区）。
+ * 白描边需要扇区的真实轮廓：stroke-dasharray 画的圆只有颜色、描不出两条半径边。
+ * 角度以 +x 轴为 0（调用方整体 rotate(-90)，让 0 点朝正上方）。
+ */
+export function sectorPath(outer, inner, from, to) {
+  const point = (radius, angle) => `${(radius * Math.cos(angle)).toFixed(2)} ${(radius * Math.sin(angle)).toFixed(2)}`;
+  const sweep = to - from;
+  if (sweep >= Math.PI * 2 - 1e-6) {
+    // 满环：A 命令的起点终点重合会导致不渲染，拆成两段半圆
+    const mid = from + Math.PI;
+    return `${sectorPath(outer, inner, from, mid)} ${sectorPath(outer, inner, mid, to)}`;
+  }
+  const large = sweep > Math.PI ? 1 : 0;
+  return [
+    `M ${point(outer, from)}`,
+    `A ${outer} ${outer} 0 ${large} 1 ${point(outer, to)}`,
+    `L ${point(inner, to)}`,
+    `A ${inner} ${inner} 0 ${large} 0 ${point(inner, from)}`,
+    "Z",
+  ].join(" ");
+}
+
 /** 工作区环形图（时长 / Token 可切换，Top N + 其他）。 */
 function WorkspacePie({ items, range, t }) {
   const [metric, setMetric] = useState("activeMs");
@@ -350,13 +373,14 @@ function WorkspacePie({ items, range, t }) {
 
   const radius = 62;
   const stroke = 24;
-  const circumference = 2 * Math.PI * radius;
-  let offset = 0;
+  const outer = radius + stroke / 2;
+  const inner = radius - stroke / 2;
+  let angle = 0;
   const arcs = slices.slices.map((slice, index) => {
     const share = slices.total > 0 ? slice.value / slices.total : 0;
-    const dash = share * circumference;
-    const arc = { ...slice, share, dash, offset, color: palette[index % palette.length] };
-    offset += dash;
+    const sweep = share * Math.PI * 2;
+    const arc = { ...slice, share, from: angle, to: angle + sweep, color: palette[index % palette.length] };
+    angle += sweep;
     return arc;
   });
   const formatValue = (value) => (metric === "activeMs" ? formatDuration(value) : formatInt(value));
@@ -371,17 +395,16 @@ function WorkspacePie({ items, range, t }) {
         <svg viewBox="0 0 160 160" width="160" height="160" role="img" aria-label={t("pie.title")}>
           <g transform="translate(80,80) rotate(-90)">
             {arcs.map((arc) => (
-              <circle
+              <path
                 key={arc.label}
-                r={radius}
-                fill="none"
-                stroke={arc.color}
-                strokeWidth={stroke}
-                strokeDasharray={`${arc.dash.toFixed(2)} ${(circumference - arc.dash).toFixed(2)}`}
-                strokeDashoffset={-arc.offset}
+                d={sectorPath(outer, inner, arc.from, arc.to)}
+                fill={arc.color}
+                stroke="var(--dsw-alias-bg-base, #ffffff)"
+                strokeWidth="1.6"
+                strokeLinejoin="round"
               >
                 <title>{`${arc.label}\n${formatValue(arc.value)}（${formatPercent(arc.share)}）`}</title>
-              </circle>
+              </path>
             ))}
           </g>
           <text x="80" y="76" textAnchor="middle" fontSize="15" fontWeight="650" fill="var(--dsw-alias-label-primary, #1a1d21)">
@@ -907,12 +930,7 @@ function ByDayView({ data, t }) {
           <HourChart hours={data.byHour} t={t} />
         </div>
         <div className="wl-card">
-          <div className="wl-card-head">
-            <div>
-              <h3>{t("pie.title")}</h3>
-              <p className="wl-hint">{t("pie.hint")}</p>
-            </div>
-          </div>
+          <h3>{t("pie.title")}</h3>
           <WorkspacePie items={data.byWorkspace} range={data.range} t={t} />
         </div>
       </div>

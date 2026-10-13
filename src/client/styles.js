@@ -128,8 +128,8 @@ export const STYLES = `
 /* 卡片头：标题 + 右侧切换 */
 .wl-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 6px; }
 .wl-chips-inline { margin-bottom: 10px; }
-/* 并排两图 */
-.wl-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
+/* 并排两图：列宽与上面「每日趋势 + 模型用量」完全一致，上下两行左右边界对齐 */
+.wl-grid-2 { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 14px; margin-bottom: 14px; }
 .wl-grid-2 .wl-card { margin-bottom: 0; }
 /* 日历热力图 */
 .wl-cal-scroll { overflow-x: auto; padding-bottom: 4px; }
