@@ -461,6 +461,8 @@ class WorkloadIndex {
       if (row === undefined) return;
       this.rows.set(String(session.id), row);
       this.rowSavedAt.set(String(session.id), Date.now());
+      // 行变了 → 快照缓存立即作废：否则 5s TTL 内仍会返回旧值，活会话事件"看起来没生效"
+      this.snapshotCache = undefined;
     } catch (error) {
       this.diagnostics.lastError = reasonOf(error);
     }
