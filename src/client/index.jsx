@@ -261,8 +261,8 @@ function CalendarHeatmap({ calendar, t }) {
                 if (entry === undefined) return null;
                 const activeMs = entry.day?.activeMs ?? 0;
                 const title = entry.day
-                  ? `${entry.date}\n活跃 ${formatDuration(activeMs)}\n对话 ${entry.day.conversations} · 轮次 ${entry.day.turns}`
-                  : `${entry.date}\n无记录`;
+                  ? t("tip.day", { date: entry.date, active: formatDuration(activeMs), conversations: entry.day.conversations, turns: entry.day.turns })
+                  : `${entry.date}\n${t("tip.noRecord")}`;
                 return (
                   <rect key={entry.date} x={x} y={topPad + row * (cell + gap)} width={cell} height={cell} rx="3" fill={fills[level(activeMs)]}>
                     <title>{title}</title>
@@ -290,7 +290,7 @@ function CalendarHeatmap({ calendar, t }) {
                 fill="var(--dsw-static-deepseek-400, #6b83ff)"
                 opacity="0.9"
               >
-                <title>{`${weekdayLabels[row]} 累计 ${formatDuration(total)}`}</title>
+                <title>{t("tip.weekday", { weekday: weekdayLabels[row], total: formatDuration(total) })}</title>
               </rect>
               <text x={barX + barArea + 5} y={y + cell * 0.78} fontSize="9" fill="var(--dsw-alias-label-tertiary, #6b7280)">
                 {total > 0 ? formatDuration(total) : ""}
@@ -307,25 +307,27 @@ function CalendarHeatmap({ calendar, t }) {
 function HourChart({ hours, t }) {
   const max = Math.max(1, ...hours.map((hour) => hour.activeMs));
   const peak = hours.reduce((best, hour) => (hour.activeMs > best.activeMs ? hour : best), hours[0]);
+  const tip = (hour) =>
+    t("hour.tip", {
+      hour: hour.hour,
+      active: formatDuration(hour.activeMs),
+      sessions: formatInt(hour.sessions),
+      starts: formatInt(hour.starts),
+    });
   return (
     <>
       <div className="wl-hour-grid">
         {hours.map((hour) => {
           const ratio = hour.activeMs / max;
+          const isPeak = hour.hour === peak?.hour;
           return (
-            <div className="wl-hour-col" key={hour.hour} data-peak={hour.hour === peak?.hour || undefined}>
+            // 原生 title 提示跟随鼠标（不再用固定在容器顶部的浮动层）
+            <div className="wl-hour-col" key={hour.hour} data-peak={isPeak || undefined} title={tip(hour)}>
+              {isPeak && hour.activeMs > 0 ? <div className="wl-hour-value">{formatDuration(hour.activeMs)}</div> : null}
               <div className="wl-hour-track">
                 <div className="wl-hour-fill" style={{ height: `${Math.max(ratio * 100, hour.activeMs > 0 ? 3 : 0).toFixed(1)}%` }} />
               </div>
               <div className="wl-hour-label">{hour.hour}</div>
-              <div className="wl-hour-tip">
-                {t("hour.tip", {
-                  hour: hour.hour,
-                  active: formatDuration(hour.activeMs),
-                  sessions: formatInt(hour.sessions),
-                  starts: formatInt(hour.starts),
-                })}
-              </div>
             </div>
           );
         })}
@@ -403,7 +405,7 @@ function WorkspacePie({ items, t, metric: fixedMetric = null, ariaLabel = null }
                 strokeWidth="1.6"
                 strokeLinejoin="round"
               >
-                <title>{`${arc.label}\n${formatValue(arc.value)}（${formatPercent(arc.share)}）`}</title>
+                <title>{t("tip.slice", { label: arc.label, value: formatValue(arc.value), share: formatPercent(arc.share) })}</title>
               </path>
             ))}
           </g>
@@ -495,6 +497,20 @@ function DailyChart({ days, t }) {
     const barWidth = Math.max(1.5, Math.min(24, step * 0.62));
     // 隔点标注：每个数值至少占 30px，相邻数值才不会叠在一起
     const labelStep = Math.max(1, Math.ceil(30 / step));
+    // 最大的那根柱始终标数值（即使落在隔点之外），一眼就能读到峰值
+    const peakIndex = days.reduce((best, day, index) => (day.activeMs > days[best].activeMs ? index : best), 0);
+    const peakDate = days[peakIndex]?.activeMs > 0 ? days[peakIndex].date : null;
+    const labeled = new Set();
+    days.forEach((day, index) => {
+      if (day.activeMs > 0 && index % labelStep === 0) labeled.add(index);
+    });
+    if (peakDate !== null) {
+      labeled.add(peakIndex);
+      // 峰值标签与邻近的隔点标签会叠字：撤掉峰值 30px 以内的其它标签
+      for (const index of [...labeled]) {
+        if (index !== peakIndex && Math.abs(index - peakIndex) * step < 30) labeled.delete(index);
+      }
+    }
     const bars = [];
     const values = [];
     days.forEach((day, index) => {
@@ -503,6 +519,7 @@ function DailyChart({ days, t }) {
       // 星期由本地日期串判定：补 T00:00:00 按本地时区解析，不会整体偏移一天
       const weekday = new Date(`${day.date}T00:00:00`).getDay();
       const weekend = weekday === 0 || weekday === 6;
+      const peak = index === peakIndex && peakDate !== null;
       // 每天都画柱（0 也留 1px）：悬停提示覆盖全部日期，柱 rect 数 = 天数
       bars.push(
         <rect
@@ -517,13 +534,13 @@ function DailyChart({ days, t }) {
           rx="2"
           fill={weekend ? "var(--dsw-static-amber-500, #f59e0b)" : "var(--dsw-static-deepseek-500, #4d6bfe)"}
         >
-          <title>{`${day.date}\n活跃 ${formatDuration(day.activeMs)}\n对话 ${day.conversations} · 轮次 ${day.turns}\nToken ${formatInt(day.tokensTotal)}`}</title>
+          <title>{t("tip.daily", { date: day.date.slice(5), active: formatDuration(day.activeMs), tokens: formatTokens(day.tokensTotal), conversations: day.conversations, turns: day.turns })}</title>
         </rect>,
       );
       // 0 不标：柱就落在轴上，标 "0" 只会和日期挤在一起；数值标在柱顶（h/m/s 小字号）
-      if (day.activeMs > 0 && index % labelStep === 0) {
+      if (labeled.has(index)) {
         values.push(
-          <text key={day.date} data-kind="bar-label" data-date={day.date} x={centerX} y={y - 5} textAnchor="middle" fontSize="9" fill="var(--dsw-alias-label-secondary, #4b5563)">
+          <text key={day.date} data-kind={peak ? "peak-label" : "bar-label"} data-date={day.date} x={centerX} y={y - 5} textAnchor="middle" fontSize="9" fontWeight={peak ? "650" : undefined} fill={peak ? "var(--dsw-alias-label-primary, #1a1d21)" : "var(--dsw-alias-label-secondary, #4b5563)"}>
             {formatDuration(day.activeMs)}
           </text>,
         );
@@ -1319,11 +1336,11 @@ function BySessionView({ data, t }) {
                 <td className="wl-name" title={row.title}>{row.title || "(无标题)"}</td>
                 <td className="wl-name">{row.workspaceLabel}</td>
                 <td>{row.date}</td>
-                {SESSION_METRICS.map(({ key, format }) => {
+                {SESSION_METRICS.map(({ key, labelKey, format }) => {
                   const value = sessionMetric(row, key);
                   return (
                     <td key={key}>
-                      <span className="wl-bar-cell">
+                      <span className="wl-bar-cell" title={`${t(labelKey)} ${format(value)}`}>
                         <span className="wl-bar-cell-fill" data-kind={key} style={{ width: `${((value / maxima[key]) * 100).toFixed(1)}%` }} />
                         <span className="wl-bar-cell-value">{format(value)}</span>
                       </span>

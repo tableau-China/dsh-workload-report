@@ -329,7 +329,8 @@ try {
       rects,
       hourCols: document.querySelectorAll(".wl-hour-col").length,
       peak: document.querySelectorAll(".wl-hour-col[data-peak]").length,
-      hourTip: document.querySelector(".wl-hour-tip")?.textContent ?? "",
+      hourTip: document.querySelector(".wl-hour-col[data-peak]")?.getAttribute("title") ?? "",
+      hourPeakValue: document.querySelector(".wl-hour-value")?.textContent ?? "",
       // 只数并排两图里的工作区环形图（首页右列的模型环形图不在 .wl-grid-2 内）
       pieSlices: document.querySelectorAll(".wl-grid-2 .wl-pie-wrap svg circle, .wl-grid-2 .wl-pie-wrap svg path").length,
       pieLegend: [...document.querySelectorAll(".wl-grid-2 .wl-pie-legend li")].map((n) => n.textContent).slice(0, 3),
@@ -340,7 +341,8 @@ try {
   ok(SC1 && SC2 && SC1.right <= SC2.left + 1 && Math.abs(SC1.top - SC2.top) < 4, "两张图水平并排（不是上下）", JSON.stringify(sideCharts.rects));
   ok(sideCharts.hourCols === 24, "时刻分析有 24 个小时柱", String(sideCharts.hourCols));
   ok(sideCharts.peak === 1, "最活跃时段被高亮", String(sideCharts.peak));
-  ok(/\d+:00/.test(sideCharts.hourTip), "时刻柱带 tooltip", sideCharts.hourTip.replace(/\n/g, " | "));
+  ok(/\d+:00/.test(sideCharts.hourTip), "时刻柱带原生 title tooltip（跟随鼠标）", sideCharts.hourTip.replace(/\n/g, " | "));
+  ok(/[hms]\b/.test(sideCharts.hourPeakValue), "最活跃时刻柱顶显示活跃时长标签", sideCharts.hourPeakValue);
   ok(sideCharts.pieSlices >= 2 && sideCharts.pieLegend.length >= 2, "工作区环形图有扇区与图例", JSON.stringify(sideCharts.pieLegend));
 
   // 环形图切换 按时长 / 按 Token

@@ -156,13 +156,12 @@ export const STYLES = `
 .wl-hour-fill { width: 100%; border-radius: 3px 3px 0 0; background: linear-gradient(180deg, var(--dsw-static-deepseek-400, #6b83ff), var(--dsw-static-deepseek-600, #3b57e0)); min-height: 2px; }
 .wl-hour-col[data-peak] .wl-hour-fill { background: linear-gradient(180deg, var(--dsw-static-amber-400, #f7ad31), var(--dsw-static-amber-600, #dd8629)); }
 .wl-hour-label { font-size: 9px; text-align: center; color: var(--dsw-alias-label-tertiary, #6b7280); margin-top: 3px; }
-.wl-hour-tip {
-  position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%);
-  background: var(--dsw-alias-bg-layer-2, #22242a); color: var(--dsw-alias-label-primary, #fff);
-  border: 1px solid var(--dsw-alias-border-l2, #333); border-radius: 8px; padding: 6px 9px; font-size: 11px;
-  white-space: nowrap; opacity: 0; pointer-events: none; transition: opacity .12s ease; z-index: 5;
+/* 峰值柱的数值标签：贴在柱顶、不占布局高度（tooltip 已改用原生 title，跟随鼠标） */
+.wl-hour-value {
+  position: absolute; left: 0; right: 0; top: 0; text-align: center;
+  font-size: 9px; line-height: 1.1; font-weight: 650; color: var(--dsw-alias-label-primary, #1a1d21);
+  font-variant-numeric: tabular-nums; pointer-events: none; white-space: nowrap;
 }
-.wl-hour-col:hover .wl-hour-tip { opacity: 1; }
 /* 工作区环形图 */
 .wl-pie-wrap { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
 .wl-pie-legend { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; flex: 1 1 220px; min-width: 200px; }
