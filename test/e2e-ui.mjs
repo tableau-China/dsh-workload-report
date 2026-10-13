@@ -277,14 +277,14 @@ try {
     polylines: document.querySelectorAll(".wl-card svg polyline").length,
     calendar: document.querySelector(".wl-cal-scroll") !== null,
   }));
-  ok(barMode.polylines > 0 && !barMode.calendar, "切到柱状图后渲染折线且日历消失", JSON.stringify(barMode));
+  ok(barMode.polylines === 0 && !barMode.calendar, "切到柱状图后只有柱（折线已删）且日历消失", JSON.stringify(barMode));
   await page.evaluate(() => {
     const chip = [...document.querySelectorAll(".wl-card-head .wl-chip")].find((node) => /日历|Calendar/i.test(node.textContent || ""));
     chip?.click();
   });
   await sleep(800);
 
-  // 每日趋势卡几何：与右侧模型卡等高、legend 在卡片内容区内、与下一行栅格不重叠
+  // 每日趋势卡几何：与右侧模型占比卡等高、legend 在卡片内容区内、与下一行栅格不重叠
   const dailyGeometry = await page.evaluate(() => {
     const [left, right] = [...document.querySelectorAll(".wl-grid-daily-model > .wl-card")];
     const legend = left.querySelector(".wl-legend");
@@ -298,7 +298,7 @@ try {
       gapToNext: next === null ? null : round(next.getBoundingClientRect().top - left.getBoundingClientRect().bottom),
     };
   });
-  ok(dailyGeometry.heightDiff === 0 && dailyGeometry.legendGap >= 0 && dailyGeometry.gapToNext !== null && dailyGeometry.gapToNext > 0, "每日趋势卡与模型卡等高、legend 在卡内、与下一行不重叠", JSON.stringify(dailyGeometry));
+  ok(dailyGeometry.heightDiff === 0 && dailyGeometry.legendGap >= 0 && dailyGeometry.gapToNext !== null && dailyGeometry.gapToNext > 0, "每日趋势卡与模型占比卡等高、legend 在卡内、与下一行不重叠", JSON.stringify(dailyGeometry));
 
   // ---- 并排两图：时刻分析 + 工作区占比 ----
   const sideCharts = await page.evaluate(() => {
@@ -314,8 +314,9 @@ try {
       hourCols: document.querySelectorAll(".wl-hour-col").length,
       peak: document.querySelectorAll(".wl-hour-col[data-peak]").length,
       hourTip: document.querySelector(".wl-hour-tip")?.textContent ?? "",
-      pieSlices: document.querySelectorAll(".wl-pie-wrap svg circle, .wl-pie-wrap svg path").length,
-      pieLegend: [...document.querySelectorAll(".wl-pie-legend li")].map((n) => n.textContent).slice(0, 3),
+      // 只数并排两图里的工作区环形图（首页右列的模型环形图不在 .wl-grid-2 内）
+      pieSlices: document.querySelectorAll(".wl-grid-2 .wl-pie-wrap svg circle, .wl-grid-2 .wl-pie-wrap svg path").length,
+      pieLegend: [...document.querySelectorAll(".wl-grid-2 .wl-pie-legend li")].map((n) => n.textContent).slice(0, 3),
     };
   });
   ok(sideCharts.count === 2, "每日用量下方有两张并排卡片", JSON.stringify(sideCharts.titles));
@@ -345,7 +346,12 @@ try {
   });
   ok(details !== null && details.open === false, "按日期明细默认折叠", JSON.stringify(details));
   ok(/明细|detail/i.test(details?.summary ?? ""), "折叠标题写明是明细", details?.summary);
-  // ---- 模型区块：treemap + 联动筛选 + 官方计费链接 ----
+  // ---- 模型区块：独立页签「模型用量」——treemap + 联动筛选 + 官方计费链接 ----
+  await page.evaluate(() => {
+    const tab = [...document.querySelectorAll(".wl-tab")].find((node) => /模型用量|Model usage/.test(node.textContent || ""));
+    tab?.click();
+  });
+  await sleep(600);
   // 模型维度是后台渐进回填的（要读事件日志），所以先等模型表出现
   await page.waitForFunction(() => document.querySelectorAll(".wl-model-table tbody tr").length > 0, { timeout: 900000 });
   const modelBlock = await page.evaluate(() => ({
@@ -397,6 +403,12 @@ try {
   const cleared = await page.evaluate(() => [...document.querySelectorAll(".wl-chip")].filter((n) => /清除|Clear/.test(n.textContent || "")).length);
   ok(cleared === 0, "清除筛选后回到全部模型", String(cleared));
 
+  // 回到「按日期」再截图（首页＝每日趋势 + 模型 Token 占比环形图）
+  await page.evaluate(() => {
+    const tab = [...document.querySelectorAll(".wl-tab")].find((node) => /按日期|By date/.test(node.textContent || ""));
+    tab?.click();
+  });
+  await sleep(800);
   await page.screenshot({ path: join(ARTIFACTS, "02-dashboard-by-day.png") });
 
   // 切到「按工作区」

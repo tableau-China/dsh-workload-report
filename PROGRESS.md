@@ -145,6 +145,22 @@
 **量测**：`.tmp/iso-harness.mjs`（临时、已 gitignore）用假 ctx + 假 fetch 把**真实客户端组件**交给无头 Chrome，无需 DSH 实例；
 读数：7 天 7 柱 / 30 天 30 柱、`otherRects = 0`（单序列）、数值标签两两 0 重叠、图底到图例 3.5px、日历与柱状容器高度差 0。
 
+## 2026-10-13 第四轮：模型用量独立页签 + 首页模型环形图 + 柱状图去折线（v0.4.0 内）
+
+| 需求 | 实现要点 |
+| --- | --- |
+| 模型用量拆独立页签 | 页签数组改为 `["byDay", "model", "byWorkspace", "bySession"]`（文案走 `tab.*` 动态族，新键 `tab.model`）；`ModelSection` 原样搬到该页签，首页不再渲染 treemap / 明细表 / 计费链接；骨架屏右列同步换成模型环形图占位 |
+| 首页模型占比环形图 | **复用 `WorkspacePie`**（新增固定口径 `metric` 与 `ariaLabel` 两个可选 prop；固定口径时不渲染切换 chips），不复制第二套画法；数据 `data.byModel` → `{label, tokensTotal}`，固定 Token 占比 |
+| 每日趋势去折线 + 周末异色 | 删 polyline 与 points；`day.date` 补 `T00:00:00` 本地解析取星期，0/6 用 `--dsw-static-amber-500`，柱上带 `data-date` / `data-weekend` 便于断言；数值仍 9px 标在柱顶（`data-kind="bar-label"`）；`chart.hint` 文案同步去掉「折线」 |
+
+**量测**：`.tmp/iso-ui.mjs`（临时、已 gitignore）——真实客户端组件 + 真实 aggregate 快照 + 无头 Chrome 1560×1000，
+23 项断言全过：页签顺序、7/30 天柱数 = 天数且 `polyline=0`、周末 / 工作日各 1 种 fill、首页环形图扇区 ≥1 且无 `circle`、
+描边 = `--dsw-alias-bg-base` 1.6、首页无 treemap / 模型明细表、模型页签内容齐全。
+
+**踩坑（重要）**：DSH 的 client-modules 扫描是**增量**的，插件 bundle 只在 Loader 扫描（启动 / 装插件）或 HMR `rebuilt()` 时读盘
+（源码注释："Versioned code is immutable"）；`node build.mjs` 改了 `lib/client.js` 后，**已在运行的实例仍发旧 bundle**。
+所以：① 验证新 UI 用同构量测（直接 bundle src，不经过实例）；② 对运行中实例跑 E2E 前必须重启，否则测的是旧代码。
+
 ## 待办
 
 - [x] 安装进真实 web profile（2026-10-10 由用户执行 `dsh plugin --profile web add link:$PWD`）。
