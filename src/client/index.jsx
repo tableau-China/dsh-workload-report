@@ -341,9 +341,13 @@ function HourChart({ hours, t }) {
 // 这里保留既有导出，客户端模块的对外形状不变。
 export { sectorPath };
 
-/** 工作区环形图（时长 / Token 可切换，Top N + others）。 */
-function WorkspacePie({ items, range, t }) {
-  const [metric, setMetric] = useState("activeMs");
+/**
+ * 环形占比图（Top N + others）：工作区按时长 / Token 可切换；模型固定 Token（不切换）。
+ * 首页「模型 Token 占比」直接复用本组件——几何、色板、描边只有这一份实现。
+ */
+function WorkspacePie({ items, t, metric: fixedMetric = null, ariaLabel = null }) {
+  const [metricState, setMetricState] = useState("activeMs");
+  const metric = fixedMetric ?? metricState;
   const slices = useMemo(() => {
     const valueOf = (item) => (metric === "activeMs" ? item.activeMs : item.tokensTotal);
     const sorted = [...items].filter((item) => valueOf(item) > 0).sort((a, b) => valueOf(b) - valueOf(a));
@@ -353,7 +357,7 @@ function WorkspacePie({ items, range, t }) {
     if (rest.length > 0) slicesOut.push({ label: "others", value: rest.reduce((sum, item) => sum + valueOf(item), 0), item: null });
     const total = slicesOut.reduce((sum, slice) => sum + slice.value, 0);
     return { slices: slicesOut, total };
-  }, [items, metric, t]);
+  }, [items, metric]);
 
   const palette = [
     "var(--dsw-static-deepseek-500, #4d6bfe)",
@@ -381,12 +385,14 @@ function WorkspacePie({ items, range, t }) {
 
   return (
     <>
-      <div className="wl-chips wl-chips-inline">
-        <button type="button" className="wl-chip" data-active={metric === "activeMs"} onClick={() => setMetric("activeMs")}>{t("pie.byTime")}</button>
-        <button type="button" className="wl-chip" data-active={metric === "tokens"} onClick={() => setMetric("tokens")}>{t("pie.byTokens")}</button>
-      </div>
+      {fixedMetric === null ? (
+        <div className="wl-chips wl-chips-inline">
+          <button type="button" className="wl-chip" data-active={metricState === "activeMs"} onClick={() => setMetricState("activeMs")}>{t("pie.byTime")}</button>
+          <button type="button" className="wl-chip" data-active={metricState === "tokens"} onClick={() => setMetricState("tokens")}>{t("pie.byTokens")}</button>
+        </div>
+      ) : null}
       <div className="wl-pie-wrap">
-        <svg viewBox="0 0 160 160" width="160" height="160" role="img" aria-label={t("pie.title")}>
+        <svg viewBox="0 0 160 160" width="160" height="160" role="img" aria-label={ariaLabel ?? t("pie.title")}>
           <g transform="translate(80,80) rotate(-90)">
             {arcs.map((arc) => (
               <path
@@ -548,8 +554,14 @@ function DailyChart({ days, t }) {
   );
 }
 
+/** 模型维度是否仍在后台回填（首次要读事件日志，回填完自动出数）。 */
+function isModelFolding(data) {
+  const fold = data?.diagnostics?.modelFold;
+  return fold !== undefined && (fold.running === true || (fold.pending ?? 0) > 0);
+}
+
 /**
- * 模型区块（0.4.0）：
+ * 模型用量视图（独立页签「模型用量」，0.4.0）：
  *   左 = 模型 treemap（面积 = 占比，口径可切：Token / 请求数 / 模型耗时）
  *   右 = 按日模型趋势（堆叠柱）；点击左侧任一模型 → 右侧只显示该模型（可多选，再点取消）
  *   下 = 模型明细表（请求、输入/输出/缓存、命中率、费用）+ 官方计费链接
@@ -614,7 +626,7 @@ function ModelSection({ data, t }) {
   const pricing = data.pricing ?? { currency: "CNY", links: [], costed: { covered: 0, total: 0 }, totalCost: null };
   const fmtCost = (value) => formatCost(value, pricing.currency);
   const foldInfo = data.diagnostics?.modelFold;
-  const folding = foldInfo !== undefined && (foldInfo.running === true || (foldInfo.pending ?? 0) > 0);
+  const folding = isModelFolding(data);
 
   if (models.length === 0) {
     return (
@@ -917,7 +929,7 @@ function SkeletonBody({ t }) {
     <div className="wl-skeleton" data-kind="skeleton" aria-busy="true">
       <Kpis data={null} t={t} />
       <div className="wl-tabs" aria-hidden="true">
-        {["byDay", "byWorkspace", "bySession"].map((key, index) => (
+        {["byDay", "model", "byWorkspace", "bySession"].map((key, index) => (
           <span key={key} className="wl-tab" data-active={index === 0}>{t(`tab.${key}`)}</span>
         ))}
       </div>
@@ -937,13 +949,11 @@ function SkeletonBody({ t }) {
         <div className="wl-card">
           <div className="wl-card-head">
             <div>
-              <h3>{t("model.title")}</h3>
-              <p className="wl-hint">{t("model.hint")}</p>
+              <h3>{t("pie.model")}</h3>
+              <p className="wl-hint">{t("pie.modelHint")}</p>
             </div>
           </div>
-          <div className="wl-skeleton-area wl-skeleton-treemap" />
-          <h4 className="wl-model-subtitle">{t("model.trend")}</h4>
-          <div className="wl-skeleton-area wl-skeleton-trend" />
+          <div className="wl-skeleton-area wl-skeleton-mid" />
         </div>
       </div>
       <div className="wl-grid-2">
@@ -975,11 +985,14 @@ function SkeletonBody({ t }) {
 /**
  * 按日期视图（首页主视图）：
  *   1) 每日用量：默认「日历热力图」（周一~周日 × Year-Week，颜色＝活跃时长），可切「柱状图」
- *   2) 并排两图：左「时刻分析」（0–23 点谁更活跃） 右「工作区占比」（环形图，时长/Token 可切）
- *   3) 「按日期明细」默认折叠
+ *   2) 右列「模型 Token 占比」：紧凑环形图（复用 WorkspacePie，固定 Token 口径）
+ *   3) 并排两图：左「时刻分析」（0–23 点谁更活跃） 右「工作区占比」（环形图，时长/Token 可切）
+ *   4) 「按日期明细」默认折叠
+ * 模型明细 / treemap / 按日趋势已移到独立页签「模型用量」。
  */
 function ByDayView({ data, t }) {
   const [dailyMode, setDailyMode] = useState("calendar");
+  const models = data.byModel ?? [];
   const rows = [...data.byDay].filter((day) => day.sessions > 0).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 31);
 
   return (
@@ -1029,7 +1042,15 @@ function ByDayView({ data, t }) {
         </div>
       </div>
 
-      <ModelSection data={data} t={t} />
+      <div className="wl-card">
+        <h3>{t("pie.model")}</h3>
+        <p className="wl-hint">{t("pie.modelHint")}</p>
+        {models.length === 0 ? (
+          <p className="wl-state">{isModelFolding(data) ? t("model.folding") : t("state.empty")}</p>
+        ) : (
+          <WorkspacePie items={models} t={t} metric="tokens" ariaLabel={t("pie.model")} />
+        )}
+      </div>
       </div>
 
       <div className="wl-grid-2">
@@ -1040,7 +1061,7 @@ function ByDayView({ data, t }) {
         </div>
         <div className="wl-card">
           <h3>{t("pie.title")}</h3>
-          <WorkspacePie items={data.byWorkspace} range={data.range} t={t} />
+          <WorkspacePie items={data.byWorkspace} t={t} />
         </div>
       </div>
 
@@ -1364,13 +1385,14 @@ function Overlay({ control }) {
               ) : null}
               <Kpis data={state.data} t={t} />
               <div className="wl-tabs">
-                {["byDay", "byWorkspace", "bySession"].map((key) => (
+                {["byDay", "model", "byWorkspace", "bySession"].map((key) => (
                   <button key={key} type="button" className="wl-tab" data-active={tab === key} onClick={() => setTab(key)}>
                     {t(`tab.${key}`)}
                   </button>
                 ))}
               </div>
               {tab === "byDay" ? <ByDayView data={state.data} t={t} /> : null}
+              {tab === "model" ? <ModelSection data={state.data} t={t} /> : null}
               {tab === "byWorkspace" ? <ByWorkspaceView data={state.data} t={t} /> : null}
               {tab === "bySession" ? <BySessionView data={state.data} t={t} /> : null}
               <p className="wl-note">
