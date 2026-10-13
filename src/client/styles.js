@@ -201,9 +201,9 @@ export const STYLES = `
 /* treemap 容器：固定高度 + 真实像素 viewBox（矩形铺满，最左/最右到边缘 0px，目标 ≤ 8px） */
 .wl-treemap-fill { height: 210px; }
 .wl-treemap-fill > svg { display: block; }
-/* 模型回填失败提示：短句 + title 全文；用宿主 token，不新增色值 */
+/* 模型读日志失败提示：卡片底部小字，可读短句 + title 简化原因；用宿主 token，不新增色值 */
 .wl-fold-error {
-  margin: 0 0 10px; font-size: 11px; line-height: 1.5; color: var(--dsw-alias-label-error, #f25a5a);
+  margin: 10px 0 0; font-size: 11px; line-height: 1.5; color: var(--dsw-alias-label-error, #f25a5a);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .wl-model-subtitle { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-secondary, #4b5563); }

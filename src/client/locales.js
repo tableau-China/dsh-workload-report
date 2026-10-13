@@ -122,7 +122,8 @@ export const zh = {
   "model.empty": "暂无模型数据",
   "model.folding": "模型维度正在回填…（首次需要读事件日志，稍后自动完成）",
   "model.foldingShort": "模型回填中 {done}/{total}",
-  "model.foldError": "{count} 个会话读日志失败：{message}",
+  "model.foldError": "{count} 个早期会话（旧格式）无法读取，未计入模型统计",
+  "model.foldError.why": "旧版日志格式不受支持；完整诊断见 /health",
   "note.title": "口径",
   "note.body": "口径详见 docs/metrics.md；数据全部来自本机，插件不联网、不外发。",
 };
@@ -247,7 +248,8 @@ export const en = {
   "model.empty": "No model data yet",
   "model.folding": "Filling in model usage… (first pass reads event logs; completes automatically)",
   "model.foldingShort": "Backfilling models {done}/{total}",
-  "model.foldError": "{count} sessions failed to read logs: {message}",
+  "model.foldError": "{count} legacy sessions (old format) unreadable — excluded from model stats",
+  "model.foldError.why": "Legacy log format is unsupported; full diagnostics in /health",
   "note.title": "Definitions",
   "note.body": "Metric definitions: docs/metrics.md. All data stays local.",
 };

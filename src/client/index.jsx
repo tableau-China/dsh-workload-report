@@ -686,16 +686,17 @@ function ModelSection({ data, t }) {
   const pricing = data.pricing ?? { currency: "CNY", links: [], costed: { covered: 0, total: 0 }, totalCost: null };
   const fmtCost = (value) => formatCost(value, pricing.currency);
   const fold = modelFoldState(data);
-  // 失败原因可能很长：界面只给一眼能看懂的短句，完整原文放 title（同时 /health 有全量）
-  const foldError = fold.lastError === null ? null : `${fold.lastError.slice(0, 96)}${fold.lastError.length > 96 ? "…" : ""}`;
+  // 读日志失败：界面只给可读短句 + 简化原因；原始英文异常只留在 /health，不在界面暴露
+  const foldErrorReason = t("model.foldError.why");
+  const foldError = fold.lastError === null ? null : t("model.foldError", { count: formatInt(fold.failedRows) });
 
   if (models.length === 0) {
     return (
       <div className="wl-card">
         <p className="wl-state">{fold.pending > 0 ? t("model.folding") : t("model.empty")}</p>
         {foldError === null ? null : (
-          <p className="wl-fold-error" data-kind="model-fold-error" title={fold.lastError}>
-            {t("model.foldError", { count: formatInt(fold.failedRows), message: foldError })}
+          <p className="wl-fold-error" data-kind="model-fold-error" title={foldErrorReason}>
+            {foldError}
           </p>
         )}
       </div>
@@ -719,13 +720,6 @@ function ModelSection({ data, t }) {
           ) : null}
         </div>
       </div>
-
-      {/* 读日志失败的会话不进 pending（否则提示常驻），但原因要摆在界面上：短句 + title 全文 */}
-      {foldError === null ? null : (
-        <p className="wl-fold-error" data-kind="model-fold-error" title={fold.lastError}>
-          {t("model.foldError", { count: formatInt(fold.failedRows), message: foldError })}
-        </p>
-      )}
 
       <div className="wl-model-grid">
         <div>
@@ -825,6 +819,12 @@ function ModelSection({ data, t }) {
           </span>
         ))}
       </p>
+      {/* 读取失败的会话：卡片底部的小字说明，不占顶部醒目位置；原因只给简化版（原文在 /health） */}
+      {foldError === null ? null : (
+        <p className="wl-fold-error" data-kind="model-fold-error" title={foldErrorReason}>
+          {foldError}
+        </p>
+      )}
     </div>
   );
 }
