@@ -1158,8 +1158,6 @@ function ByWorkspaceView({ data, t }) {
   return (
     <>
       <div className="wl-card">
-        <h3>{t("tab.byWorkspace")}</h3>
-        <p className="wl-hint">{t("ws.hint")}</p>
         {items.length === 0 ? (
           <p className="wl-state">{t("state.empty")}</p>
         ) : (
