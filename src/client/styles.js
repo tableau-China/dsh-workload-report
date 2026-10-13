@@ -160,6 +160,11 @@ export const STYLES = `
 @media (max-width: 720px) { .wl-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .wl-name { max-width: 160px; } }
 
 
+/* ── 每日用量趋势（左）与模型用量（右）并排 ── */
+.wl-grid-daily-model { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 14px; align-items: start; margin-bottom: 14px; }
+/* 右列较窄：模型卡内部改为上下堆叠（treemap 在上、趋势在下） */
+.wl-model-grid { grid-template-columns: 1fr; gap: 10px; }
+@media (max-width: 1080px) { .wl-grid-daily-model { grid-template-columns: 1fr; } .wl-model-grid { grid-template-columns: 1fr; } }
 /* ── 模型区块（0.4.0） ── */
 .wl-model-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 18px; align-items: start; }
 .wl-model-subtitle { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-secondary, #4b5563); }

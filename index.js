@@ -62,6 +62,8 @@ const DEFAULTS = {
   modelAliases: {},
   /** 费用估算：{ currency, asOf, overrides, links }；缺省用官方公开价（不联网）。 */
   pricing: {},
+  /** 聚合快照的内存缓存时长：面板反复打开时直接复用，避免重复聚合与序列化。 */
+  snapshotCacheMs: 5000,
   /** 「最活跃模型」口径：requests（= step 数）| tokens | activeMs（= llmMs）。 */
   activeModelMetric: "requests",
   /** 同一会话两次模型折叠的最小间隔（续聊后重新折叠）。 */
@@ -350,6 +352,7 @@ class WorkloadIndex {
     diagnostics.modelsFolded = this.modelFold.folded;
     diagnostics.modelSkipped = this.modelFold.skipped;
     this.diagnostics = diagnostics;
+    this.snapshotCache = undefined; // 索引刷新后缓存作废
     if (coldPerformed > 0) await this.saveToDisk();
     // 投影数据已可用 → 立刻放行首屏；模型维度在后台渐进补齐
     this.scheduleModelFold();
@@ -419,6 +422,7 @@ class WorkloadIndex {
       this.diagnostics.modelsFolded = this.modelFold.folded;
       this.diagnostics.modelSkipped = this.modelFold.skipped;
       this.diagnostics.modelPending = this.modelFoldTargets().length;
+      this.snapshotCache = undefined; // 模型数据变了，缓存作废
       await this.saveToDisk();
     }
   }
@@ -466,6 +470,12 @@ class WorkloadIndex {
   async snapshot(query) {
     this.ensureIndex({ force: query.refresh === true });
     this.scheduleModelFold();
+    // 同参数短 TTL 复用：面板反复打开时省掉"聚合 + 大 JSON 序列化"
+    const cacheKey = JSON.stringify({ from: query.from, to: query.to, days: query.days, tz: query.timeZone, scope: query.scope, all: query.all === true });
+    const cached = this.snapshotCache;
+    if (cached !== undefined && cached.key === cacheKey && Date.now() - cached.at < this.config.snapshotCacheMs) {
+      return { ...cached.value, diagnostics: this.diagnosticsFor() };
+    }
     const rows = [...this.rows.values()];
     const result = present(
       aggregate(rows, {
@@ -481,15 +491,18 @@ class WorkloadIndex {
         activeModelMetric: this.config.activeModelMetric,
       }),
     );
+    this.snapshotCache = { key: cacheKey, at: Date.now(), value: result };
+    return { ...result, diagnostics: this.diagnosticsFor() };
+  }
+
+  /** 诊断信息（含索引进度与模型回填进度）。 */
+  diagnosticsFor() {
     return {
-      ...result,
-      diagnostics: {
-        ...this.diagnostics,
-        // 只有"首次全量建索引"才算补齐中；之后的增量重扫很快，不必打扰用户
-        indexing: this.syncing !== null && this.firstBuildDone !== true,
-        modelUsage: this.config.modelUsage !== "off",
-        modelFold: { ...this.modelFold, pending: this.modelFoldTargets().length },
-      },
+      ...this.diagnostics,
+      // 只有"首次全量建索引"才算补齐中；之后的增量重扫很快，不必打扰用户
+      indexing: this.syncing !== null && this.firstBuildDone !== true,
+      modelUsage: this.config.modelUsage !== "off",
+      modelFold: { ...this.modelFold, pending: this.modelFoldTargets().length },
     };
   }
 }

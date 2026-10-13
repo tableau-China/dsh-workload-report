@@ -79,12 +79,30 @@ function isDarkTheme() {
 }
 
 /** 拉取聚合快照。 */
+/**
+ * 快照内存缓存（面板关闭后仍保留）：再次打开时**先用上次结果立即渲染**，随后后台刷新。
+ * 这是"每次打开都要等一会儿"的主要解法——数据通常没变，先渲染旧值体感就是秒开。
+ */
+const SNAPSHOT_CACHE = new Map();
+const snapshotKey = ({ days, scope, all }) => `${days}|${scope}|${all === true ? "all" : "range"}`;
+
 function useSnapshot({ days, scope, refreshKey, enabled, all }) {
-  const [state, setState] = useState({ status: "loading", data: null, error: null });
+  const key = snapshotKey({ days, scope, all });
+  const [state, setState] = useState(() => {
+    const cached = SNAPSHOT_CACHE.get(key);
+    return cached === undefined
+      ? { status: "loading", data: null, error: null, key }
+      : { status: "refreshing", data: cached, error: null, key };
+  });
   useEffect(() => {
     if (!enabled) return undefined;
     const abort = new AbortController();
-    setState((previous) => ({ ...previous, status: previous.data === null ? "loading" : "refreshing" }));
+    const cached = SNAPSHOT_CACHE.get(key);
+    setState((previous) => {
+      if (previous.key === key && previous.data !== null) return { ...previous, status: "refreshing" };
+      if (cached === undefined) return { status: "loading", data: null, error: null, key };
+      return { status: "refreshing", data: cached, error: null, key };
+    });
     const query = new URLSearchParams({
       days: String(days),
       scope,
@@ -96,13 +114,16 @@ function useSnapshot({ days, scope, refreshKey, enabled, all }) {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         return response.json();
       })
-      .then((data) => setState({ status: "ready", data, error: null }))
+      .then((data) => {
+        SNAPSHOT_CACHE.set(key, data);
+        setState({ status: "ready", data, error: null, key });
+      })
       .catch((error) => {
         if (error?.name === "AbortError") return;
         setState((previous) => ({ status: "error", data: previous.data, error: String(error?.message ?? error) }));
       });
     return () => abort.abort();
-  }, [days, scope, refreshKey, enabled, all]);
+  }, [days, scope, refreshKey, enabled, all, key]);
   return state;
 }
 
@@ -788,6 +809,7 @@ function ByDayView({ data, t }) {
 
   return (
     <>
+      <div className="wl-grid-daily-model">
       <div className="wl-card">
         <div className="wl-card-head">
           <div>
@@ -837,6 +859,9 @@ function ByDayView({ data, t }) {
         )}
       </div>
 
+      <ModelSection data={data} t={t} />
+      </div>
+
       <div className="wl-grid-2">
         <div className="wl-card">
           <h3>{t("hour.title")}</h3>
@@ -853,8 +878,6 @@ function ByDayView({ data, t }) {
           <WorkspacePie items={data.byWorkspace} range={data.range} t={t} />
         </div>
       </div>
-
-      <ModelSection data={data} t={t} />
 
       <details className="wl-card wl-details">
         <summary>{t("detail.summary", { count: rows.length })}</summary>
