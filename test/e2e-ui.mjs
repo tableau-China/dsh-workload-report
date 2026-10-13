@@ -170,7 +170,7 @@ try {
   await sleep(1500);
 
   const kpis = await page.evaluate(() => [...document.querySelectorAll(".wl-kpi-value")].map((node) => node.textContent));
-  ok(kpis.length === 7, "看板渲染 7 张 KPI 卡（含「最活跃模型」）", JSON.stringify(kpis));
+  ok(kpis.length === 8, "看板渲染 8 张 KPI 卡（含「模型费用」「最活跃模型」）", JSON.stringify(kpis));
   ok(kpis.some((value) => /[1-9]/.test(value ?? "")), "KPI 有真实数值（非全 0）", JSON.stringify(kpis));
   ok(/^[\d,]*[1-9][\d,]*$/.test(kpis[1] ?? ""), "「总 Token」KPI 非零且为完整整数（能识别官方 wire 形状）", kpis[1]);
   ok(/[1-9]/.test(kpis[0] ?? ""), "「活跃时长」KPI 非零", kpis[0]);
@@ -179,12 +179,25 @@ try {
   // ---- KPI：顺序 + 总 Token 必须是完整整数 ----
   const kpiLabels = await page.evaluate(() => [...document.querySelectorAll(".wl-kpi-label")].map((n) => n.textContent));
   ok(
-    /活跃|active/i.test(kpiLabels[0] ?? "") && /token/i.test(kpiLabels[1] ?? "") && /天|day/i.test(kpiLabels[2] ?? "") && /对话|conversation/i.test(kpiLabels[3] ?? ""),
-    "KPI 顺序：活跃时长 → 总 Token → 活跃天数 → 对话次数",
+    /活跃|active/i.test(kpiLabels[0] ?? "") && /token/i.test(kpiLabels[1] ?? "") && /费用|cost/i.test(kpiLabels[2] ?? "") && /天|day/i.test(kpiLabels[3] ?? "") && /对话|conversation/i.test(kpiLabels[4] ?? ""),
+    "KPI 顺序：活跃时长 → 总 Token → 模型费用 → 活跃天数 → 对话次数",
     JSON.stringify(kpiLabels),
   );
   ok(/^[\d,]+$/.test(kpis[1] ?? "") && (kpis[1] ?? "").length >= 6, "总 Token 是完整整数（非 K/M/B 缩写）", kpis[1]);
-  ok(/模型|model/i.test(kpiLabels[6] ?? ""), "第 7 张 KPI 是「最活跃模型」", JSON.stringify(kpiLabels[6]));
+  ok(/模型|model/i.test(kpiLabels[7] ?? ""), "第 8 张 KPI 是「最活跃模型」", JSON.stringify(kpiLabels[7]));
+  // 8 张卡正好 2 行排满：Tokens / 模型费用各跨 2 列，值不溢出
+  const kpiLayout = await page.evaluate(() => {
+    const cards = [...document.querySelectorAll(".wl-kpis .wl-kpi")];
+    return {
+      rows: new Set(cards.map((card) => Math.round(card.getBoundingClientRect().top))).size,
+      spans: cards.filter((card) => getComputedStyle(card).gridColumnEnd === "span 2").map((card) => card.dataset.kpi),
+      overflow: cards.some((card) => {
+        const value = card.querySelector(".wl-kpi-value");
+        return value === null || value.scrollWidth > value.clientWidth + 1;
+      }),
+    };
+  });
+  ok(kpiLayout.rows === 2 && kpiLayout.spans.includes("kpi.tokens") && kpiLayout.spans.includes("kpi.modelCost") && !kpiLayout.overflow, "KPI 8 张卡 2 行排满（Tokens / 模型费用跨 2 列）且值不溢出", JSON.stringify(kpiLayout));
 
   // ---- 单位统一小写 h/m/s + 备注足够短（降低多语言工作量）----
   const copyCheck = await page.evaluate(() => ({
@@ -440,8 +453,8 @@ try {
     kpis: [...document.querySelectorAll(".wl-kpi-value")].map((n) => n.textContent),
     subtitle: document.querySelector(".wl-subtitle")?.textContent ?? "",
   }));
-  const denominator = Number((allTime.kpis[2] ?? "").replace(/[^\d/]/g, "").split("/")[1] ?? "0");
-  ok(denominator > 0 && denominator < 400, "「全部」档活跃天数分母＝真实历史跨度（不是 3650）", allTime.kpis[2]);
+  const denominator = Number((allTime.kpis[3] ?? "").replace(/[^\d/]/g, "").split("/")[1] ?? "0");
+  ok(denominator > 0 && denominator < 400, "「全部」档活跃天数分母＝真实历史跨度（不是 3650）", allTime.kpis[3]);
   ok(/2026-0[89]/.test(allTime.subtitle), "「全部」档区间从最早活跃日开始", allTime.subtitle);
 
   // 导出 HTML 报告（直接访问路由，等价于按钮行为）

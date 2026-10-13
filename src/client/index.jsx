@@ -78,6 +78,12 @@ function isDarkTheme() {
   return document.body?.hasAttribute("data-ds-dark-theme") === true;
 }
 
+/** 费用显示：CNY 用 ¥、USD 用 $；金额 ≥1 保留 2 位、<1 保留 4 位小数；没有值时显示 —（不编数字）。 */
+export function formatCost(value, currency) {
+  if (value === null || value === undefined) return "\u2014";
+  return `${currency === "USD" ? "$" : "\u00a5"}${value < 1 ? value.toFixed(4) : value.toFixed(2)}`;
+}
+
 /** 拉取聚合快照。 */
 /**
  * 快照内存缓存（面板关闭后仍保留）：再次打开时**先用上次结果立即渲染**，随后后台刷新。
@@ -584,8 +590,7 @@ function ModelSection({ data, t }) {
   };
 
   const pricing = data.pricing ?? { currency: "CNY", links: [], costed: { covered: 0, total: 0 }, totalCost: null };
-  const currencySymbol = pricing.currency === "USD" ? "$" : "\u00a5";
-  const fmtCost = (value) => (value === null || value === undefined ? "\u2014" : `${currencySymbol}${value < 1 ? value.toFixed(4) : value.toFixed(2)}`);
+  const fmtCost = (value) => formatCost(value, pricing.currency);
   const foldInfo = data.diagnostics?.modelFold;
   const folding = foldInfo !== undefined && (foldInfo.running === true || (foldInfo.pending ?? 0) > 0);
 
@@ -809,6 +814,14 @@ const UNKNOWN_KEY = "(\u672a\u6807\u6ce8\u6a21\u578b)";
 function Kpis({ data, t }) {
   const totals = data.totals;
   const derived = data.derived;
+  // 模型费用：只统计有官方单价的模型；一个都没有时显示 —（不编数字），副标题给出覆盖度与价目日期
+  const pricing = data.pricing;
+  const costed = pricing?.costed ?? { covered: 0, total: 0 };
+  const costValue = formatCost(pricing?.totalCost, pricing?.currency);
+  const costSub =
+    costed.total > 0
+      ? t("kpi.modelCost.sub", { covered: formatInt(costed.covered), total: formatInt(costed.total), asOf: pricing?.asOf ?? "\u2014" })
+      : t("kpi.modelCost.none");
   // 动态拼接会让"引用键必须存在 / 无死键"的静态校验看不到这些键，所以用字面量映射
   const metricLabelKey = {
     requests: "kpi.topModel.metric.requests",
@@ -820,6 +833,8 @@ function Kpis({ data, t }) {
     ["kpi.active", formatKpiDuration(totals.activeMs), t("kpi.active.sub", { llm: formatKpiDuration(totals.llmMs), tool: formatKpiDuration(totals.toolMs) })],
     // 总 Token 直接给完整整数（可核对的真实值），小字里才用 K/M/B 缩写
     ["kpi.tokens", formatInt(totals.tokensTotal), t("kpi.tokens.sub", { input: formatTokens(totals.tokens.input), output: formatTokens(totals.tokens.output), cache: formatTokens(totals.tokens.cacheRead) })],
+    // 第 8 张：模型费用（插在活跃天数前，与 Tokens 卡一样跨 2 列，两行正好排满）
+    ["kpi.modelCost", costValue, costSub],
     ["kpi.activeDays", `${formatInt(totals.activeDays)} / ${formatInt(data.range.days)}`, t("kpi.activeDays.sub", { workspaces: formatInt(totals.workspaces) })],
     ["kpi.conversations", formatInt(totals.conversations), t("kpi.conversations.sub", { sessions: formatInt(totals.sessions), empty: formatInt(totals.emptySessions) })],
     // 步骤数字比轮次小 2px，整行不换行（与 Tokens 卡一样靠栅格给足宽度）
@@ -833,7 +848,7 @@ function Kpis({ data, t }) {
       t("kpi.turns.sub", { main: formatInt(totals.mainSessions), subagent: formatInt(totals.subagentSessions) }),
     ],
     ["kpi.cache", formatPercent(derived.cacheHitRate), t("kpi.cache.sub", { output: formatTokens(derived.outputPerActiveHour) })],
-    // 第 7 张：最活跃模型（默认按请求数口径，可在配置里切换 tokens / activeMs）
+    // 第 8 张：最活跃模型（默认按请求数口径，可在配置里切换 tokens / activeMs）
     data.topModel === null || data.topModel === undefined
       ? ["kpi.topModel", "\u2014", t("kpi.topModel.none")]
       : [

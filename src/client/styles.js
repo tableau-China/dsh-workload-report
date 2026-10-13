@@ -64,10 +64,11 @@ export const STYLES = `
 }
 .wl-btn[data-kind="primary"]:hover { filter: brightness(1.05); color: #fff; }
 .wl-body { padding: 18px 20px 24px; overflow: auto; }
-/* KPI：4 列等宽栅格；Tokens 卡跨 2 列（11,819,500,252 这类完整整数很长），不换行、不溢出 */
-.wl-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
+/* KPI：5 列等宽栅格；Tokens / 模型费用各跨 2 列 —— 8 张卡 = 10 格，正好排满 2 行 */
+.wl-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
 .wl-kpi { background: var(--dsw-alias-bg-layer-2, #f7f8fa); border: 1px solid var(--dsw-alias-border-l2, #eceef1); border-radius: 12px; padding: 12px 14px; min-width: 0; }
 .wl-kpi[data-kpi="kpi.tokens"] { grid-column: span 2; }
+.wl-kpi[data-kpi="kpi.modelCost"] { grid-column: span 2; }
 .wl-kpi-label { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); margin-bottom: 6px; }
 .wl-kpi-value { font-size: 20px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* 模型名可能很长，只有这张卡允许换行 */
@@ -176,7 +177,7 @@ export const STYLES = `
 .wl-details[open] summary::before { content: "▾ "; }
 .wl-details[open] summary { margin-bottom: 10px; }
 @media (max-width: 1080px) { .wl-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } .wl-grid-2 { grid-template-columns: 1fr; } }
-@media (max-width: 720px) { .wl-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .wl-kpi[data-kpi="kpi.tokens"] { grid-column: auto; } .wl-name { max-width: 160px; } }
+@media (max-width: 720px) { .wl-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .wl-kpi[data-kpi="kpi.tokens"], .wl-kpi[data-kpi="kpi.modelCost"] { grid-column: auto; } .wl-name { max-width: 160px; } }
 
 
 /* ── 每日用量趋势（左）与模型用量（右）并排 ── */
