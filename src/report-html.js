@@ -58,12 +58,14 @@ function dailyChart(days, palette) {
       const weekend = isWeekend(day.date);
       const fill = weekend ? palette.weekend : palette.input;
       const title = `${day.date}${weekend ? "（周末）" : ""}\n活跃 ${formatDuration(day.activeMs)}\nToken ${formatInt(day.tokensTotal)}\n对话 ${day.conversations} · 轮次 ${day.turns}`;
-      const bar = `<rect x="${(x - barW / 2).toFixed(2)}" y="${y.toFixed(2)}" width="${barW.toFixed(2)}" height="${Math.max(h, 1).toFixed(2)}" rx="2" fill="${fill}" />`;
+      // tooltip 必须挂在柱本身（<rect> 的直接子节点）：挂在 <g> 上时部分浏览器不弹
+      // （原生 SVG tooltip 以实际命中的形状为准）；0 值日也保留 ≥1px 的柱，天天可悬停。
+      const bar = `<rect x="${(x - barW / 2).toFixed(2)}" y="${y.toFixed(2)}" width="${barW.toFixed(2)}" height="${Math.max(h, 1).toFixed(2)}" rx="2" fill="${fill}"><title>${escapeHtml(title)}</title></rect>`;
       const value =
         day.activeMs > 0 && index % valueEvery === 0
           ? `<text x="${x.toFixed(1)}" y="${(y - 5).toFixed(1)}" text-anchor="middle" font-size="10" fill="${palette.muted}">${escapeHtml(formatDuration(day.activeMs))}</text>`
           : "";
-      return `<g><title>${escapeHtml(title)}</title>${bar}${value}</g>`;
+      return `<g>${bar}${value}</g>`;
     })
     .join("");
 
@@ -146,7 +148,9 @@ function hourChart(hours, palette) {
       const y = pad.top + innerH - h;
       const fill = hour.hour === peak?.hour ? palette.accent : palette.input;
       const title = `${hour.hour}:00–${hour.hour}:59\n活跃 ${formatDuration(hour.activeMs)}\n覆盖 ${hour.sessions} 个会话 · ${hour.starts} 次开始`;
-      return `<g><title>${escapeHtml(title)}</title>${h > 0.5 ? `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${barW.toFixed(2)}" height="${h.toFixed(2)}" rx="2" fill="${fill}" />` : ""}</g>`;
+      // 柱自带 tooltip，且 24 根柱恒存在（0 值给 1px）：原来 h ≤ 0.5 时整根柱被删掉，
+      // 该小时连可命中的形状都没有 → 悬停无任何提示。
+      return `<g><rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${barW.toFixed(2)}" height="${Math.max(h, 1).toFixed(2)}" rx="2" fill="${fill}"><title>${escapeHtml(title)}</title></rect></g>`;
     })
     .join("");
   const labels = hours
