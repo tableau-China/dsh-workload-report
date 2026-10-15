@@ -14,12 +14,16 @@
  */
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { PROJECTION_KEYS, aggregate, present, rowFromSession } from "./src/aggregate.js";
 import { renderReport } from "./src/report-html.js";
 import { foldSessionModels, resolvePricing } from "./src/models.js";
+
+/** 插件版本：getBalance 的客户端元数据（x-client-version）用它，避免手写常量与 package.json 漂移。 */
+const PLUGIN_VERSION = createRequire(import.meta.url)("./package.json").version ?? "0.0.0";
 
 export const name = "workload-report";
 
@@ -72,6 +76,13 @@ const DEFAULTS = {
   modelRefoldDelta: 50,
   /** 折叠失败的会话隔多久再试一次（失败不算 pending，只影响重试节奏）。 */
   modelRetryMs: 15 * 60 * 1000,
+  /**
+   * 余额显示：**默认关闭**。
+   * 关闭时宿主一次服务调用都不发（零外发请求），界面完全不渲染余额 chip；
+   * 开启（enabled: true）后宿主会通过官方 deepseekAccount 服务访问 platform.deepseek.com，
+   * 结果按 refreshMs 缓存。详见 README 的隐私章节。
+   */
+  balance: { enabled: false, refreshMs: 300000 },
 };
 
 /** 把未知异常收敛成一行文本。 */
@@ -160,6 +171,169 @@ async function mapLimit(items, limit, worker) {
   return results;
 }
 
+/**
+ * 余额查询超时：宿主 getBalance 会出网（platform.deepseek.com），绝不能拖住 /balance 或 /snapshot。
+ */
+const BALANCE_TIMEOUT_MS = 8000;
+
+/** 未启用 / 未查询时的空余额状态（形状 = 快照里的 balance 字段）。 */
+function emptyBalance(enabled) {
+  return {
+    enabled,
+    supported: false,
+    loggedIn: false,
+    currency: null,
+    amount: null,
+    bonus: null,
+    updatedAt: 0,
+    topUpUrl: null,
+    usageUrl: null,
+    error: null,
+  };
+}
+
+/** 给 Promise 加超时；宿主服务卡住时按失败处理，请求绝不悬挂。 */
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label}超时（${ms}ms）`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+/** 挑主钱包：优先 CNY，其次第一个；空数组 → undefined。 */
+function pickWallet(wallets) {
+  if (!Array.isArray(wallets) || wallets.length === 0) return undefined;
+  return wallets.find((wallet) => wallet?.currency === "CNY") ?? wallets[0];
+}
+
+/** 汇总赠送余额（同币种求和）；没有赠送返回 null（界面才能区分"没有"与"0"）。 */
+function bonusTotal(wallets, currency) {
+  if (!Array.isArray(wallets) || currency === null || currency === undefined) return null;
+  const matching = wallets.filter((wallet) => wallet?.currency === currency);
+  if (matching.length === 0) return null;
+  const sum = matching.reduce((total, wallet) => total + (Number(wallet.balance) || 0), 0);
+  return Number.isFinite(sum) ? sum : null;
+}
+
+/** 系统语言（只用于 getBalance 的请求头）。 */
+function systemLocale() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().locale || "en-US";
+  } catch {
+    return "en-US";
+  }
+}
+
+/**
+ * 余额查询（宿主官方服务的**可选依赖**）。
+ *
+ * 铁律（与 README 的隐私章节一致）：
+ *   · 默认关闭（DEFAULTS.balance.enabled === false）→ 一次服务调用都不发，界面完全不渲染；
+ *   · 服务用 `ctx.get("deepseekAccount")` 取，**不写进 inject**——cordis 的 inject 是"必需依赖"，
+ *     写进去会在老版 DSH（没有该服务）上让 fiber 挂起等待、甚至抛 "without inject"；
+ *     ctx.get() 是官方 ReflectService.get 的混入方法（"without the inject requirement"），
+ *     服务不存在时返回 undefined，插件照常加载；
+ *   · 只有 enabled + 服务存在时才出网，带超时与 try/catch，失败只写进 balance.error，不影响快照。
+ */
+class BalanceTracker {
+  constructor(ctx, config = {}) {
+    this.ctx = ctx;
+    this.enabled = config.enabled === true;
+    this.refreshMs = Number.isFinite(config.refreshMs) && config.refreshMs > 0 ? config.refreshMs : 300000;
+    this.value = emptyBalance(this.enabled);
+    this.lastAt = 0;
+    this.inflight = null;
+    /** 供离线断言：真正调用宿主 getBalance 的次数（默认关闭时必须为 0）。 */
+    this.calls = 0;
+  }
+
+  /** 可选服务：不存在 / 未提供时返回 undefined（不抛错、不阻塞）。 */
+  service() {
+    try {
+      if (typeof this.ctx?.get !== "function") return undefined;
+      return this.ctx.get("deepseekAccount") ?? undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** 当前余额状态（同步；快照直接读取）。 */
+  state() {
+    return this.value;
+  }
+
+  /** 本地链接（getState 只读本地凭据，不出网；未登录也拿得到）。 */
+  async linksOf(service) {
+    if (typeof service?.getState !== "function") return { topUpUrl: null, usageUrl: null };
+    try {
+      const view = await service.getState();
+      return {
+        topUpUrl: typeof view?.links?.topUpUrl === "string" ? view.links.topUpUrl : null,
+        usageUrl: typeof view?.links?.usageUrl === "string" ? view.links.usageUrl : null,
+      };
+    } catch {
+      return { topUpUrl: null, usageUrl: null };
+    }
+  }
+
+  /** 确保余额可用（refreshMs 内复用缓存；force 时强制刷新；并发共享同一次查询）。 */
+  ensure({ force = false } = {}) {
+    if (!this.enabled) return Promise.resolve(this.value);
+    if (!force && this.lastAt > 0 && Date.now() - this.lastAt < this.refreshMs) return Promise.resolve(this.value);
+    if (this.inflight === null) this.inflight = this.refresh();
+    return this.inflight;
+  }
+
+  /** 真正查询：先取本地链接，再（可选）出网取余额。 */
+  async refresh() {
+    let links = { topUpUrl: null, usageUrl: null };
+    try {
+      if (!this.enabled) {
+        this.value = emptyBalance(false);
+        return this.value;
+      }
+      const service = this.service();
+      if (service === undefined || typeof service.getBalance !== "function") {
+        // 服务不存在（老版 DSH）：只报"不支持"，不报错、不外发请求。
+        this.value = { ...emptyBalance(true), supported: false, updatedAt: Date.now() };
+        return this.value;
+      }
+      links = await this.linksOf(service);
+      const base = { ...emptyBalance(true), supported: true, ...links, updatedAt: Date.now() };
+      this.calls += 1;
+      const result = await withTimeout(
+        service.getBalance({ version: PLUGIN_VERSION, locale: systemLocale(), timezoneOffsetSeconds: -new Date().getTimezoneOffset() * 60 }),
+        BALANCE_TIMEOUT_MS,
+        "余额查询",
+      );
+      if (result === null || result === undefined) {
+        // 未登录：宿主官方接口返回 null（不是错误）
+        this.value = { ...base, loggedIn: false };
+      } else if (result.status === "ready") {
+        const wallet = pickWallet(result.value);
+        this.value = {
+          ...base,
+          loggedIn: true,
+          currency: wallet?.currency ?? null,
+          amount: wallet === undefined ? null : Number(wallet.balance),
+          bonus: bonusTotal(result.bonusWallets, wallet?.currency),
+        };
+      } else {
+        this.value = { ...base, loggedIn: false, error: "余额查询失败" };
+      }
+      return this.value;
+    } catch (error) {
+      // 出错也要给出本地链接，界面显示 "—" + 充值入口（不弹错）
+      this.value = { ...emptyBalance(true), supported: true, ...links, updatedAt: Date.now(), error: reasonOf(error) };
+      return this.value;
+    } finally {
+      this.lastAt = Date.now();
+      this.inflight = null;
+    }
+  }
+}
+
 class WorkloadIndex {
   constructor(ctx, config) {
     this.ctx = ctx;
@@ -177,6 +351,8 @@ class WorkloadIndex {
       running: false, done: 0, total: 0, folded: 0, skipped: 0, failed: 0,
       pending: 0, refold: 0, lastAt: 0, lastError: null, lastErrorAt: null,
     };
+    /** 余额（默认关闭；可选依赖 deepseekAccount，见 BalanceTracker）。 */
+    this.balance = new BalanceTracker(ctx, config.balance ?? {});
     this.resolvedPricing = undefined;
     this.diagnostics = {
       sessions: 0, cached: 0, reused: 0, live: 0, cold: 0, missing: 0,
@@ -602,11 +778,13 @@ class WorkloadIndex {
   async snapshot(query) {
     this.ensureIndex({ force: query.refresh === true });
     this.scheduleModelFold();
+    // 余额：只在启用时真的查询；不 await（快照绝不因出网变慢），结果下次请求即生效
+    void this.balance.ensure();
     // 同参数短 TTL 复用：面板反复打开时省掉"聚合 + 大 JSON 序列化"
     const cacheKey = JSON.stringify({ from: query.from, to: query.to, days: query.days, tz: query.timeZone, scope: query.scope, all: query.all === true });
     const cached = this.snapshotCache;
     if (cached !== undefined && cached.key === cacheKey && Date.now() - cached.at < this.config.snapshotCacheMs) {
-      return { ...cached.value, diagnostics: this.diagnosticsFor() };
+      return { ...cached.value, balance: this.balanceState(), diagnostics: this.diagnosticsFor() };
     }
     const rows = [...this.rows.values()];
     const result = present(
@@ -624,7 +802,12 @@ class WorkloadIndex {
       }),
     );
     this.snapshotCache = { key: cacheKey, at: Date.now(), value: result };
-    return { ...result, diagnostics: this.diagnosticsFor() };
+    return { ...result, balance: this.balanceState(), diagnostics: this.diagnosticsFor() };
+  }
+
+  /** 余额状态（快照的 balance 字段；未启用时 enabled=false，客户端据此完全不渲染）。 */
+  balanceState() {
+    return this.balance.state();
   }
 
   /** 诊断信息（含索引进度与模型回填进度）；顶层 modelPending/Stale/Failed 与 modelFold 同源刷新。 */
@@ -649,6 +832,10 @@ class WorkloadIndex {
  */
 export function apply(ctx, config = {}) {
   const merged = { ...DEFAULTS, ...config };
+  // 嵌套配置浅合并：只写 balance.enabled 时不能把默认 refreshMs 丢掉
+  if (config.balance !== undefined && config.balance !== null) {
+    merged.balance = { ...DEFAULTS.balance, ...config.balance };
+  }
   const apiPath = typeof merged.apiPath === "string" && merged.apiPath.startsWith("/") ? merged.apiPath.replace(/\/+$/, "") : DEFAULTS.apiPath;
   const index = new WorkloadIndex(ctx, { ...merged, apiPath });
 
@@ -692,6 +879,12 @@ export function apply(ctx, config = {}) {
         refresh: params.get("refresh") === "1",
       };
 
+      if (route === "/balance") {
+        // 轻量路由：顶部工具栏 chip 专用（不触发索引同步）；默认关闭时立即返回 enabled:false。
+        const balance = await index.balance.ensure({ force: params.get("refresh") === "1" });
+        sendJson(res, 200, { balance });
+        return;
+      }
       if (route === "/health") {
         // 非阻塞：同步可能持续数分钟（首次要冷读历史会话），只报进度。
         // diagnostics 与 /snapshot 用同一份口径（indexing / syncing / modelUsage / modelFold 都在里面）。
@@ -730,7 +923,7 @@ export function apply(ctx, config = {}) {
         sendHtml(res, 200, html);
         return;
       }
-      sendJson(res, 404, { error: `未知路由 ${route}`, routes: ["/snapshot", "/export.json", "/report.html", "/health"] });
+      sendJson(res, 404, { error: `未知路由 ${route}`, routes: ["/snapshot", "/export.json", "/report.html", "/health", "/balance"] });
     } catch (error) {
       sendJson(res, 500, { error: reasonOf(error) });
     }
@@ -742,4 +935,9 @@ export function apply(ctx, config = {}) {
   );
 
   ctx.logger.info(`[workload-report] 只读接口就绪: ${apiPath}`);
+  ctx.logger.info(
+    merged.balance.enabled === true
+      ? "[workload-report] 余额显示已启用：宿主将访问 platform.deepseek.com（可在配置里设 balance.enabled=false 关闭）"
+      : "[workload-report] 余额显示默认关闭：不查询、不外发请求",
+  );
 }
