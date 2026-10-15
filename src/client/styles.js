@@ -115,20 +115,25 @@ export const STYLES = `
 .wl-bar-fill[data-kind="days"] { background: linear-gradient(90deg, var(--dsw-static-green-400, #34d399), var(--dsw-static-green-500, #10b981)); }
 .wl-bar-head-second { margin-top: 8px; }
 .wl-bar-label { font-size: 12px; color: var(--dsw-alias-label-secondary, #4b5563); }
-/* 列头只出现一次，和每行的两栏对齐 */
-.wl-metrics-head { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); margin-bottom: 10px; }
-/* 工作区一行：左「付出」右「消耗」并排 */
-.wl-ws-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
-.wl-ws-name { font-size: 13px; font-weight: 600; }
-.wl-ws-meta { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); white-space: nowrap; }
-.wl-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+/* 工作区行：左独立名称列 + 右侧两条同口径 bar。列宽用变量，列头按同一套变量对齐 */
+.wl-bars, .wl-metrics-head { --wl-ws-left: 156px; --wl-ws-gap: 18px; }
+/* 列头只出现一次，和右侧两栏对齐（左侧名称列用 margin-left 留白，不占额外 grid 单元） */
+.wl-metrics-head { display: grid; grid-template-columns: 1fr 1fr; gap: var(--wl-ws-gap); margin-left: calc(var(--wl-ws-left) + var(--wl-ws-gap)); font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); margin-bottom: 10px; }
+/* 一行 = 名称列 + 两条 bar；minmax(0,1fr) 保证窄屏可收缩、不溢出 */
+.wl-ws-row { display: grid; grid-template-columns: var(--wl-ws-left) minmax(0, 1fr) minmax(0, 1fr); gap: var(--wl-ws-gap); align-items: start; }
+/* 名称列：名称 → 活跃 N 天 → 最近使用；窄屏省略号截断，title 保留全路径 */
+.wl-ws-left { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.wl-ws-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wl-ws-days { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); white-space: nowrap; }
+.wl-ws-meta { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wl-metric { min-width: 0; }
 .wl-metric-label { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); margin-bottom: 3px; }
 .wl-metric-value { font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; margin-bottom: 5px; }
 .wl-metric-share { font-size: 11px; font-weight: 400; color: var(--dsw-alias-label-tertiary, #6b7280); margin-left: 7px; }
 .wl-metric-sub { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); margin-top: 5px; line-height: 1.5; }
 .wl-ws-foot { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); margin-top: 9px; padding-top: 7px; border-top: 1px dashed var(--dsw-alias-border-l2, #eceef1); }
-@media (max-width: 720px) { .wl-metrics { grid-template-columns: 1fr; gap: 12px; } }
+/* 窄屏：名称列收窄（名称截断、title 留全文），两条 bar 继续并排，整行不溢出 */
+@media (max-width: 720px) { .wl-bars, .wl-metrics-head { --wl-ws-left: 104px; --wl-ws-gap: 12px; } }
 .wl-bar-sub { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); margin-top: 4px; }
 .wl-state { padding: 28px; text-align: center; color: var(--dsw-alias-label-tertiary, #6b7280); font-size: 13px; }
 .wl-note { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); line-height: 1.65; border-top: 1px solid var(--dsw-alias-border-l2, #eceef1); padding-top: 12px; margin-top: 4px; }

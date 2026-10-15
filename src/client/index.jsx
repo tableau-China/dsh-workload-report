@@ -1192,10 +1192,10 @@ function ByDayView({ data, t }) {
 }
 
 /**
- * 按工作区视图：每行左右两块——
- *   左「我的付出」= 活跃时长（bar 按占全部的比例）+ 活跃天数 / 轮次 / 步骤
- *   右「Token 消耗」= 总 Token（bar 同样按占比）+ 输出 / 缓存读取
- * 两条 bar 用同一口径（占全部的比例），所以任意两行、左右两块都可比。
+ * 按工作区视图：每行 =
+ *   左「独立名称列」= 工作区名（窄屏省略号，title 保留全路径）+ 活跃总天数 + 最近使用
+ *   右「我的付出 / Token 消耗」= 两条同口径 bar（各占全部的比例）+ 明细小字
+ * 名称不占用 bar 上方的纵向空间，项目名更突出；两条 bar 口径一致，可比较性不变。
  */
 function ByWorkspaceView({ data, t }) {
   const items = data.byWorkspace;
@@ -1217,11 +1217,13 @@ function ByWorkspaceView({ data, t }) {
             <ul className="wl-bars">
             {items.map((item) => (
               <li key={item.key}>
-                <div className="wl-ws-head">
-                  <span className="wl-ws-name" title={item.path}>{item.label}</span>
-                  <span className="wl-ws-meta">{t("ws.lastUsed", { date: dateOf(item.lastUsedAt) })}</span>
-                </div>
-                <div className="wl-metrics">
+                {/* 名称独立成左列：与右侧两条 bar 同处一行，名称不再压在 bar 上方 */}
+                <div className="wl-ws-row" data-kind="ws-row">
+                  <div className="wl-ws-left">
+                    <span className="wl-ws-name" title={item.path}>{item.label}</span>
+                    <span className="wl-ws-days">{t("ws.activeDays", { days: formatInt(item.activeDays ?? 0) })}</span>
+                    <span className="wl-ws-meta">{t("ws.lastUsed", { date: dateOf(item.lastUsedAt) })}</span>
+                  </div>
                   <div className="wl-metric">
                     <div className="wl-metric-value">
                       {formatDuration(item.activeMs)}
