@@ -4,8 +4,10 @@
 import { readFile, rm } from "node:fs/promises";
 
 import { aggregate, dateKey, present, resolveRange, rowFromSession, workspaceLabel } from "../src/aggregate.js";
-import { formatDuration, formatTokens, escapeHtml } from "../src/format.js";
+import { formatDuration, formatMoney, formatTokens, escapeHtml } from "../src/format.js";
 import { renderReport } from "../src/report-html.js";
+import { balanceChip } from "../src/client/balance.js";
+import { translate } from "../src/client/locales.js";
 import {
   DEFAULT_PRICING, allocateLlmMs, cacheHitRate, costOf, emptyModelBucket, foldSessionModels,
   groupKeyFor, isPeak, modelLabel, modelTokens, resolvePricing, UNKNOWN_MODEL,
@@ -189,7 +191,11 @@ ok(!/https?:\/\//.test(html.replace(/https?:\/\/www\.w3\.org/g, "")), "无外部
 console.log("\n—— 文案（i18n）一致性 ——");
 {
   const localesSource = await readFile(new URL("../src/client/locales.js", import.meta.url), "utf8");
-  const clientSource = await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8");
+  // 文案引用可能出现在 index.jsx 或拆分出去的客户端模块（balance.js）；一起扫描，死键检查才完整
+  const clientSource = [
+    await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8"),
+    await readFile(new URL("../src/client/balance.js", import.meta.url), "utf8"),
+  ].join("\n");
   const zhStart = localesSource.indexOf("export const zh = {");
   const enStart = localesSource.indexOf("export const en = {");
   const keyOf = (block) => [...block.matchAll(/^\s*"([^"]+)":/gm)].map((match) => match[1]);
@@ -237,6 +243,7 @@ const { apply } = hostModule;
   const undeclared = [...accessed].filter((name) => !builtins.has(name) && !declared.has(name));
   ok(undeclared.length === 0, "index.js 访问的 ctx 服务都已声明在 inject 里", `未声明: ${undeclared.join(", ")}`);
   ok(declared.has("sessionProjections") && declared.has("sessions"), "声明了实时路径所需服务（sessionProjections / sessions）");
+  ok(!declared.has("deepseekAccount"), "deepseekAccount 用 ctx.get 可选获取，不写进必需 inject（老版 DSH 不会挂起等待）");
 }
 const records = [
   { header: { id: "session-1", createdAt: base, cwd: "/Users/me/proj-a", isSeeded: false, version: 4 }, live: false, persisted: true },
@@ -664,6 +671,169 @@ ok(
   String(restartSnap.diagnostics.modelFold.lastError),
 );
 await rm(LIFECYCLE_INDEX, { force: true }).catch(() => {});
+
+// ---------------------------------------------------------------- 余额显示（0.5.0，默认关闭 + 可选依赖）
+console.log("\n—— 余额显示（默认关闭 / 可选依赖）——");
+
+/** 宿主 deepseekAccount 服务桩：getState / getBalance 都是本地桩，不联网。 */
+function walletService({ balance, fail = false } = {}) {
+  const spy = { balanceCalls: 0, stateCalls: 0 };
+  return {
+    spy,
+    service: {
+      async getState() {
+        spy.stateCalls += 1;
+        return { status: "credential-stored", attempt: null, links: { topUpUrl: "https://platform.deepseek.com/top_up", usageUrl: "https://platform.deepseek.com/usage" } };
+      },
+      async getBalance() {
+        spy.balanceCalls += 1;
+        if (fail) throw new Error("platform 502");
+        return balance;
+      },
+    },
+  };
+}
+
+/** 起一个隔离宿主实例；service 为 undefined = 老版 DSH（ctx.get 返回 undefined）。 */
+function bootBalance({ enabled, refreshMs, service } = {}) {
+  const routeList = [];
+  const bRecords = [{ header: { id: "b1", createdAt: base, cwd: "/tmp/bal", isSeeded: false, version: 4 }, live: false, persisted: true }];
+  const bCtx = {
+    logger: { info() {}, warn() {} },
+    effect(fn) { fn(); return () => {}; },
+    on() { return () => {}; },
+    get: (name) => (name === "deepseekAccount" ? service : undefined),
+    sessions: { get: () => undefined },
+    sessionProjections: { snapshot: () => undefined },
+    sessionQuery: {
+      listSessions: async () => bRecords,
+      observeSession: async () => ({ header: bRecords[0].header, projections: { asOfSeq: 1, values: {} }, dispose() {} }),
+      readSession: async () => ({ session: {}, inheritedEventCount: 0, events: [] }),
+    },
+    sessionProjectionCache: { cachedSnapshot: () => undefined },
+    webServer: { register(spec) { routeList.push(spec); return () => {}; } },
+  };
+  const config = { indexPath: "/tmp/wl-verify-balance-" + process.pid + "-" + (bootBalance.seq++) + ".json" };
+  if (enabled !== undefined) config.balance = { enabled };
+  if (refreshMs !== undefined) config.balance.refreshMs = refreshMs;
+  apply(bCtx, config);
+  return { routeList, indexPath: config.indexPath };
+}
+bootBalance.seq = 1;
+
+/** 打一条路由并解析 JSON。 */
+async function routeJson(routeList, url) {
+  const response = await callOn(routeList, url);
+  return { status: response.status, body: JSON.parse(response.body) };
+}
+
+// 1) 默认关闭：服务在场也一次都不调用（spy = 0）
+{
+  const spy = walletService({ balance: { status: "ready", value: [{ currency: "CNY", balance: "12.34" }], bonusWallets: [] } });
+  const host = bootBalance({ service: spy.service });
+  await waitHealth(host.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "默认关闭实例索引完成");
+  const snap = await routeJson(host.routeList, "/workload-report/v1/snapshot?days=30&tz=UTC");
+  eq(snap.body.balance.enabled, false, "默认关闭：快照 balance.enabled=false");
+  eq(snap.body.balance.supported, false, "默认关闭：连服务都不探测（supported=false）");
+  eq(spy.spy.balanceCalls, 0, "默认关闭：getBalance 调用次数 = 0（零外发请求）");
+  eq(spy.spy.stateCalls, 0, "默认关闭：getState 也一次不调");
+  const bal = await routeJson(host.routeList, "/workload-report/v1/balance");
+  eq(bal.status, 200, "默认关闭：/balance 仍返回 200");
+  eq(bal.body.balance.enabled, false, "默认关闭：/balance 的 enabled=false");
+  eq(spy.spy.balanceCalls, 0, "默认关闭：命中也 /balance 不调用 getBalance");
+  await rm(host.indexPath, { force: true }).catch(() => {});
+}
+
+// 2) 已登录 ready：金额 / 赠送 / 本地链接 + refreshMs 缓存
+{
+  const spy = walletService({ balance: { status: "ready", value: [{ currency: "CNY", balance: "12.34" }], bonusWallets: [{ currency: "CNY", balance: "5.00" }] } });
+  const host = bootBalance({ enabled: true, service: spy.service });
+  const bal = await routeJson(host.routeList, "/workload-report/v1/balance");
+  eq(bal.body.balance.enabled, true, "启用 + 已登录：enabled=true");
+  eq(bal.body.balance.supported, true, "启用 + 服务在场：supported=true");
+  eq(bal.body.balance.loggedIn, true, "启用 + ready：loggedIn=true");
+  eq(bal.body.balance.currency, "CNY", "余额币种 CNY");
+  eq(bal.body.balance.amount, 12.34, "余额金额 12.34");
+  eq(bal.body.balance.bonus, 5, "赠送余额 5.00");
+  eq(bal.body.balance.topUpUrl, "https://platform.deepseek.com/top_up", "充值链接来自本地 getState（不出网）");
+  eq(bal.body.balance.usageUrl, "https://platform.deepseek.com/usage", "用量链接来自本地 getState");
+  eq(bal.body.balance.error, null, "成功时 error=null");
+  eq(spy.spy.balanceCalls, 1, "启用后 getBalance 恰好调用 1 次");
+  await routeJson(host.routeList, "/workload-report/v1/balance");
+  eq(spy.spy.balanceCalls, 1, "refreshMs 内复用缓存（不重复出网）");
+  await routeJson(host.routeList, "/workload-report/v1/balance?refresh=1");
+  eq(spy.spy.balanceCalls, 2, "refresh=1 强制刷新");
+  const snap = await routeJson(host.routeList, "/workload-report/v1/snapshot?days=30&tz=UTC");
+  ok(snap.body.balance !== undefined && snap.body.balance.loggedIn === true, "快照带 balance 字段（与 /balance 同源）");
+  await rm(host.indexPath, { force: true }).catch(() => {});
+}
+
+// 3) 未登录：getBalance 返回 null（不是错误），本地链接照给
+{
+  const spy = walletService({ balance: null });
+  const host = bootBalance({ enabled: true, service: spy.service });
+  const bal = await routeJson(host.routeList, "/workload-report/v1/balance");
+  eq(bal.body.balance.loggedIn, false, "未登录：loggedIn=false");
+  eq(bal.body.balance.amount, null, "未登录：金额为 null");
+  eq(bal.body.balance.error, null, "未登录：不是错误（error=null）");
+  eq(bal.body.balance.topUpUrl, "https://platform.deepseek.com/top_up", "未登录：仍给充值链接");
+  await rm(host.indexPath, { force: true }).catch(() => {});
+}
+
+// 4) getBalance 抛错：只写 error，不影响快照
+{
+  const spy = walletService({ fail: true });
+  const host = bootBalance({ enabled: true, service: spy.service });
+  await waitHealth(host.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "抛错场景索引完成");
+  const bal = await routeJson(host.routeList, "/workload-report/v1/balance");
+  ok(String(bal.body.balance.error ?? "").includes("platform 502"), "请求失败：error 记下原始原因", String(bal.body.balance.error));
+  eq(bal.body.balance.loggedIn, false, "请求失败：loggedIn=false");
+  eq(bal.body.balance.amount, null, "请求失败：金额为 null（不编数字）");
+  eq(bal.body.balance.topUpUrl, "https://platform.deepseek.com/top_up", "请求失败：仍给充值链接（不弹错）");
+  const snap = await routeJson(host.routeList, "/workload-report/v1/snapshot?days=30&tz=UTC");
+  eq(snap.status, 200, "请求失败：快照照常返回 200");
+  eq(snap.body.totals.sessions, 1, "请求失败：快照数据不受影响");
+  await rm(host.indexPath, { force: true }).catch(() => {});
+}
+
+// 5) 服务不存在（老版 DSH）：可选依赖不写进 inject，插件完成 apply / sync / 快照
+{
+  const host = bootBalance({ enabled: true, service: undefined });
+  const health = await waitHealth(host.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "服务不存在实例索引完成");
+  ok(health.ok === true, "服务不存在：/health 正常（插件没有挂起等待 inject）");
+  const snap = await routeJson(host.routeList, "/workload-report/v1/snapshot?days=30&tz=UTC");
+  eq(snap.status, 200, "服务不存在：快照仍返回 200（不抛 without inject）");
+  eq(snap.body.totals.sessions, 1, "服务不存在：sync / 聚合照常完成");
+  eq(snap.body.balance.enabled, true, "服务不存在：enabled 如实反映配置");
+  eq(snap.body.balance.supported, false, "服务不存在：supported=false（界面显示「当前 DSH 不支持」）");
+  const bal = await routeJson(host.routeList, "/workload-report/v1/balance");
+  eq(bal.body.balance.error, null, "服务不存在：不是错误，只是不支持");
+  await rm(host.indexPath, { force: true }).catch(() => {});
+}
+
+// 6) chip 文案：同构量测（客户端组件与测试共用 balanceChip）
+console.log("\n—— 余额 chip 文案（同构量测）——");
+const tBalance = (key, vars) => translate("zh", key, vars);
+const disabledChip = balanceChip({ enabled: false, supported: true, loggedIn: true, currency: "CNY", amount: 12.34, bonus: 5, topUpUrl: "https://x", usageUrl: null, error: null }, tBalance);
+eq(disabledChip, null, "未启用：balanceChip 返回 null（chip 完全不渲染）");
+const readyChip = balanceChip({ enabled: true, supported: true, loggedIn: true, currency: "CNY", amount: 12.34, bonus: 5, topUpUrl: "https://x", usageUrl: null, error: null }, tBalance);
+eq(readyChip.text, "余额 ¥12.34", "已登录：主文案「余额 ¥12.34」");
+eq(readyChip.sub, "赠送 ¥5.00", "已登录：副文本「赠送 ¥5.00」");
+eq(readyChip.link, null, "已登录：不显示充值链接");
+eq(balanceChip({ enabled: true, supported: true, loggedIn: true, currency: "USD", amount: 12.34, bonus: null }, tBalance).text, "余额 $12.34", "已登录：USD 用 $ 符号");
+const signedOutChip = balanceChip({ enabled: true, supported: true, loggedIn: false, currency: null, amount: null, bonus: null, topUpUrl: "https://platform.deepseek.com/top_up", usageUrl: null, error: null }, tBalance);
+eq(signedOutChip.text, "未登录", "未登录：主文案「未登录」");
+eq(signedOutChip.link.href, "https://platform.deepseek.com/top_up", "未登录：带充值链接");
+eq(signedOutChip.link.label, "充值", "未登录：链接文案「充值」");
+const errorChip = balanceChip({ enabled: true, supported: true, loggedIn: false, currency: null, amount: null, bonus: null, topUpUrl: "https://platform.deepseek.com/top_up", usageUrl: null, error: "余额查询超时（8000ms）" }, tBalance);
+eq(errorChip.text, "\u2014", "请求失败：主文案「—」");
+ok(errorChip.link !== null && errorChip.link.href.includes("top_up"), "请求失败：仍给充值链接（不弹错）");
+const unsupportedChip = balanceChip({ enabled: true, supported: false, loggedIn: false, currency: null, amount: null, bonus: null, topUpUrl: null, usageUrl: null, error: null }, tBalance);
+eq(unsupportedChip.text, "当前 DSH 不支持", "服务不存在：主文案「当前 DSH 不支持」");
+eq(unsupportedChip.link, null, "服务不存在：没有链接可给");
+eq(formatMoney(12.34, "CNY"), "¥12.34", "金额格式化：¥ 两位小数");
+eq(formatMoney(0.5, "USD"), "$0.5000", "金额格式化：<1 用四位小数");
+eq(formatMoney(null, "CNY"), "\u2014", "金额格式化：没有值显示 —");
 
 // 收尾：删掉本次的临时索引
 await rm(INDEX_PATH, { force: true }).catch(() => {});

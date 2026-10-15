@@ -139,6 +139,17 @@ export const STYLES = `
 }
 .wl-footer-item:hover { background: var(--dsw-alias-interactive-bg-hover, #f2f3f5); color: var(--dsw-alias-label-primary, #111); }
 .wl-icon { flex: 0 0 auto; display: block; }
+/* 顶部工具栏余额 chip：紧凑、只用宿主主题 token；未启用时组件根本不渲染（无外壳） */
+.wl-balance {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 220px;
+  padding: 3px 9px; border-radius: 999px; font-size: 12px; line-height: 1.4;
+  background: var(--dsw-alias-bg-layer-2, #f2f3f5); color: var(--dsw-alias-label-secondary, #4b5563);
+}
+.wl-balance-text { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.wl-balance-sub { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); white-space: nowrap; }
+.wl-balance-link { color: var(--dsw-static-deepseek-500, #4d6bfe); text-decoration: none; white-space: nowrap; }
+.wl-balance-link:hover { text-decoration: underline; }
+.wl-balance[data-kind="error"] .wl-balance-text { color: var(--dsw-alias-label-tertiary, #6b7280); }
 /* 卡片头：标题 + 右侧切换 */
 .wl-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 6px; }
 .wl-chips-inline { margin-bottom: 10px; }

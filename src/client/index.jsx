@@ -9,7 +9,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { STYLES } from "./styles.js";
 import { NS, en, languageOf, translate, zh } from "./locales.js";
-import { formatDuration, formatInt, formatKpiDuration, formatPercent, formatTokens } from "../format.js";
+import { formatDuration, formatInt, formatKpiDuration, formatMoney, formatPercent, formatTokens } from "../format.js";
+import { balanceChip } from "./balance.js";
 import { sectorPath } from "../sector-path.js";
 
 /** 宿主半部注册的只读接口前缀（与 index.js 的默认 apiPath 一致）。 */
@@ -85,11 +86,8 @@ function isDarkTheme() {
   return document.body?.hasAttribute("data-ds-dark-theme") === true;
 }
 
-/** 费用显示：CNY 用 ¥、USD 用 $；金额 ≥1 保留 2 位、<1 保留 4 位小数；没有值时显示 —（不编数字）。 */
-export function formatCost(value, currency) {
-  if (value === null || value === undefined) return "\u2014";
-  return `${currency === "USD" ? "$" : "\u00a5"}${value < 1 ? value.toFixed(4) : value.toFixed(2)}`;
-}
+/** 费用显示（与金额同口径；保留历史导出名，实现见 src/format.js 的 formatMoney）。 */
+export const formatCost = formatMoney;
 
 /** 拉取聚合快照。 */
 /**
@@ -160,6 +158,54 @@ function FooterAction({ control, wide }) {
   );
 }
 
+/** 余额轮询间隔：宿主按 refreshMs 缓存，客户端 5 分钟拉一次足够（打的是本机路由，不是外网）。 */
+const BALANCE_POLL_MS = 5 * 60 * 1000;
+
+/**
+ * 顶部工具栏余额数据：只打宿主本机 /balance。
+ * 默认关闭时宿主立即返回 enabled:false → balanceChip 返回 null → 完全不渲染；
+ * 本机路由失败时保持上一次结果（不制造假状态）。
+ */
+function useBalance() {
+  const [balance, setBalance] = useState(null);
+  useEffect(() => {
+    const abort = new AbortController();
+    const load = () => {
+      fetch(`${API_PATH}/balance?tz=${encodeURIComponent(localTimeZone())}`, { signal: abort.signal, headers: { accept: "application/json" } })
+        .then((response) => (response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`))))
+        .then((data) => setBalance(data?.balance ?? null))
+        .catch(() => { /* 本机路由失败：保持上一次结果，chip 不弹错 */ });
+    };
+    load();
+    const timer = setInterval(load, BALANCE_POLL_MS);
+    return () => {
+      abort.abort();
+      clearInterval(timer);
+    };
+  }, []);
+  return balance;
+}
+
+/**
+ * 顶部工具栏的紧凑余额 chip。
+ * 四种状态由 balanceChip（src/client/balance.js）统一决定，组件只负责渲染；
+ * 未启用时 balanceChip 返回 null，整个 chip 不渲染（含外壳）。
+ */
+function BalanceChip() {
+  const { t } = useLocale();
+  const balance = useBalance();
+  const chip = balanceChip(balance, t);
+  if (chip === null) return null;
+  return (
+    <div className="wl-balance" data-kind={chip.kind} title={t("balance.title")}>
+      <span className="wl-balance-text">{chip.text}</span>
+      {chip.sub === null ? null : <span className="wl-balance-sub">{chip.sub}</span>}
+      {chip.link === null ? null : (
+        <a className="wl-balance-link" href={chip.link.href} target="_blank" rel="noreferrer noopener">{chip.link.label}</a>
+      )}
+    </div>
+  );
+}
 
 /** ISO 周（周一为一周起点），返回 { year, week }。 */
 function isoWeek(dateKey) {
@@ -1477,5 +1523,9 @@ export function apply(ctx) {
   );
   ctx.slots.inject("shell.overlay", () =>
     ctx.slots.register({ name: "shell.overlay", id: "workload-report", order: 30, inject: injectProps }, Overlay),
+  );
+  // 顶部工具栏（会话头部右侧动作区）的余额 chip：默认配置下不渲染
+  ctx.slots.inject("conversation.session.header.actions", () =>
+    ctx.slots.register({ name: "conversation.session.header.actions", id: "workload-report-balance", order: 40, inject: () => ({}) }, BalanceChip),
   );
 }

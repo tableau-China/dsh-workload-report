@@ -63,6 +63,19 @@ export function formatPercent(value, digits = 1) {
   return `${(n * 100).toFixed(digits)}%`;
 }
 
+/**
+ * 金额显示：CNY 用 ¥、USD 用 $；金额 ≥1 保留 2 位、<1 保留 4 位小数；没有值时显示 —（不编数字）。
+ * 看板的费用 KPI 与余额 chip 共用这一份口径。
+ * @param value - 金额（number）；null / undefined / 非数字 → "—"。
+ * @param currency - "CNY" | "USD"。
+ * @returns 例如 "¥12.34" / "$0.1500" / "—"。
+ */
+export function formatMoney(value, currency) {
+  const n = Number(value);
+  if (value === null || value === undefined || !Number.isFinite(n)) return "\u2014";
+  return `${currency === "USD" ? "$" : "\u00a5"}${n < 1 ? n.toFixed(4) : n.toFixed(2)}`;
+}
+
 /** HTML 转义（报告是字符串拼接生成，必须转义一切外部文本）。 */
 export function escapeHtml(value) {
   return String(value ?? "")
