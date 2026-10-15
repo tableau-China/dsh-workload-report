@@ -2,6 +2,35 @@
 
 日期用 `YYYY-MM-DD`；只记录影响后续决策的事实。
 
+## 2026-10-15 余额 chip（v0.5.0，默认关闭）
+
+### 铁律补充
+
+- **默认零外发**：余额显示默认关闭；关闭时宿主一次 `deepseekAccount` 调用都不发（`BalanceTracker.ensure` 在 `enabled !== true` 时直接返回）。
+- **可选依赖必须用 `ctx.get`，不能写进 `inject`**：cordis v4（`@deepseek-ai/cordis@4.0.5-alpha.2`）的 `inject` 只有"必需依赖"语义——
+  `Fiber._refresh()` 要求 `Object.keys(this.inject)` 里每个服务都有实现，否则 fiber 停在 PENDING；`ctx.deepseekAccount` 未 inject 还会抛
+  `cannot get property "deepseekAccount" without inject`。`ctx.get(name)` 是 `ReflectService.get` 的混入方法（注释原文
+  "Read a service from the store without the inject requirement"），也是官方插件 `dsh-session-log-export` 用 `ctx.get("feedbackUi")` 的同款写法。
+  因此 `index.js` 不声明该服务，用 `ctx.get("deepseekAccount")` 取；老版 DSH 返回 undefined → chip 显示「当前 DSH 不支持」。
+
+### 已完成
+
+- 宿主：`DEFAULTS.balance = { enabled: false, refreshMs: 300000 }`；`BalanceTracker`（可选服务 / 8s 超时 `withTimeout` / refreshMs 缓存 /
+  并发合并 / try-catch）；快照加 `balance` 字段；新增只读 `GET /balance`（不触发索引）。
+- 客户端：`src/client/balance.js` 的纯函数 `balanceChip()` 统一决定四种状态；`BalanceChip` 注册到
+  `conversation.session.header.actions`（顶部工具栏动作区）；`useBalance` 每 5 分钟打一次本机 `/balance`。
+- i18n `balance.*` 6 键；样式全部用宿主 token；金额格式化 `formatMoney` 上提到 `src/format.js`。
+- 离线断言 215 → 267（连跑 2 次 exit 0）。
+
+### 关键决策
+
+| 问题 | 结论 |
+| --- | --- |
+| 为什么默认关闭 | 出网会把"本机在用 DSH 且有登录态"暴露给 platform.deepseek.com；插件其余部分完全本地，不能因为一个装饰性 chip 破坏声明，故默认关闭、显式 `balance.enabled: true` 才开 |
+| chip 数据从哪来 | 专门加 `/balance` 轻量路由：工具栏常驻，不能为余额去拉整份 `/snapshot`（会触发索引同步/聚合） |
+| 未登录 / 失败怎么显示 | 未登录「未登录」+ 充值链接；失败「—」+ 充值链接（不弹错）；链接来自本地 `getState()`，不依赖余额查询成功 |
+| 报告要不要带余额 | 不带。报告要能外发，余额是私密信息；且报告的自包含断言只允许官方计费外链 |
+
 ## 2026-10-10 初版（v0.1.0）
 
 ### 铁律（本项目的硬约束）

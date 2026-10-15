@@ -1,5 +1,36 @@
 # CHANGELOG — dsh-workload-report
 
+## v0.5.0（2026-10-15）— 顶部工具栏余额 chip（默认关闭）
+
+### 新增
+
+- **可选余额 chip（默认关闭）**：顶部工具栏（会话头部动作区）新增一个紧凑余额 chip。
+  - 配置 `balance: { enabled: false, refreshMs: 300000 }` 加进 `DEFAULTS`；关闭时**一次服务调用都不发**（界面完全不渲染）。
+  - 开启后宿主调用官方 `ctx.deepseekAccount`：`getBalance()` 会让宿主访问 `platform.deepseek.com`，
+    结果按 `refreshMs` 缓存，带 8s 超时与 try/catch——失败只写 `balance.error`，不影响快照。
+  - `topUpUrl` / `usageUrl` 来自服务的本地 `getState().links`，未登录也给。
+  - 快照新增 `balance` 字段：`{ enabled, supported, loggedIn, currency, amount, bonus, updatedAt, topUpUrl, usageUrl, error }`；
+    新增轻量只读路由 `GET {apiPath}/balance`（不触发索引同步）。
+  - 四种界面状态：已登录「余额 ¥12.34」+ 副文本「赠送 ¥5.00」；未登录「未登录」+ 充值链接；
+    请求失败「—」+ 充值链接（不弹错）；服务不存在「当前 DSH 不支持」；未启用完全不渲染。
+- **可选依赖而非必需注入**：`deepseekAccount` **不写进 `inject`**，改用 `ctx.get("deepseekAccount")`（cordis ReflectService 的
+  "without the inject requirement" 取法）。老版 DSH 没有该服务时插件照常加载、sync/快照照常完成，
+  不会出现 `cannot get property "deepseekAccount" without inject`，也不会让 fiber 挂起等待。
+- i18n 新增 `balance.*` 6 键（zh/en 逐键对齐，文案短）；金额格式化 `formatMoney` 提到 `src/format.js`（`formatCost` 保留为别名）。
+
+### 文档 / 隐私原则
+
+- README（中英）隐私章节明确：**启用余额显示会让宿主服务访问 `platform.deepseek.com`**，默认关闭、按 refreshMs 缓存、
+  失败只在 chip 上显示「—」，余额**绝不写入**导出的 HTML 报告。
+- 只读接口表补 `GET {apiPath}/balance`；配置示例补 `balance:`（含 `enabled` / `refreshMs`）。
+
+### 测试
+
+- 离线断言 215 → 267（连跑 2 次 exit 0）：新增「余额显示（默认关闭 / 可选依赖）」一节——
+  默认关闭时用 spy 断言 `getBalance` / `getState` 调用次数均为 0、已登录 ready（金额/赠送/链接 + refreshMs 缓存 + `refresh=1` 强制）、
+  未登录 `null`、`getBalance` 抛错（error 入快照且快照 200）、**服务不存在时插件仍完成 apply/sync/快照**（supported=false）；
+  新增 chip 同构量测（五种状态文案，未启用返回 null）。
+
 ## v0.4.1（2026-10-13）— 模型回填常驻缺陷 + 报告对齐看板
 
 ### UI / 图表打磨（同版本内）

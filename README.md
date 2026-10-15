@@ -33,7 +33,7 @@ DSH itself only shows a stats line for the **current session**; the cross-sessio
 - ✅ **Workspace donut**: Top 6 + others, switchable between time and tokens.
 - ✅ **Shareable HTML report**: a single file with inline CSS and inline SVG, no scripts and no external links; light/dark themes, custom title and note, and `anonymize=1` to hide workspace names and session titles.
 - ✅ **Six KPIs**: active time / total tokens (as a full integer you can verify) / active days / conversations / turns·steps / cache-read share.
-- ✅ **Official interfaces only**: no log-format parsing, no business data written, no outbound requests. Values come from zero-I/O projection-checkpoint reads, with an official cold-read fallback and a reusable local index.
+- ✅ **Official interfaces only**: no log-format parsing, no business data written, **no outbound requests by default**. Values come from zero-I/O projection-checkpoint reads, with an official cold-read fallback and a reusable local index. The one opt-in exception is the optional balance chip (off by default) — see Privacy.
 - ✅ **Theme and locale aware**: every colour comes from host theme tokens (`--dsw-*`), so it follows the harness's light/dark theme and Chinese/English locale.
 
 ## Screenshots
@@ -100,6 +100,9 @@ Override any of these in your profile's `cordis.patch.yml` (all optional):
     workspaceAliases:                   # display names (very handy for client-facing reports)
       my-shop-app: Retail Order System
       data-platform: Data Platform
+    balance:                            # optional balance chip — OFF by default
+      enabled: false                    # true = host calls platform.deepseek.com (see Privacy)
+      refreshMs: 300000                 # cache TTL for the balance query (ms)
 ```
 
 ## Read-only API
@@ -110,6 +113,7 @@ Override any of these in your profile's `cordis.patch.yml` (all optional):
 | `GET {apiPath}/export.json?...` | Same payload, sent with `content-disposition` for download |
 | `GET {apiPath}/report.html?days=90&theme=dark&anonymize=1&title=...` | Self-contained HTML report |
 | `GET {apiPath}/health` | Index diagnostics (session count, checkpoint hits, cold reads, read failures, duration) |
+| `GET {apiPath}/balance` | Cached balance state for the toolbar chip (enabled / supported / loggedIn / amount / bonus / top-up & usage links); never touches the index |
 
 Parameters: `from`/`to` (YYYY-MM-DD, take precedence over `days`), `days`, `all=1` (earliest active day → today), `tz` (IANA time zone), `scope`.
 
@@ -123,9 +127,11 @@ The full definitions live in **[docs/metrics.md](./docs/metrics.md)**. Durations
 
 ## Privacy
 
-All statistics stay on your machine. The plugin registers **read-only** HTTP routes only: no outbound requests, no telemetry, no user content collected.
+All statistics stay on your machine. The plugin registers **read-only** HTTP routes only: by default no outbound requests, no telemetry, no user content collected.
 The single file it writes is its own index cache at `<DSH_HOME>/workload-report/index-v*.json` — delete it and the plugin rebuilds by cold-reading; nothing else in your harness data is touched.
 Whether the exported HTML report contains session titles is your call (`anonymize=1` hides them).
+
+**Optional balance chip — off by default.** Only when you set `balance.enabled: true` does the host call the official `deepseekAccount` service: `getBalance()` makes the **host** request `https://platform.deepseek.com/api/v0/users/get_user_summary` (the account balance endpoint). That is the only outbound request this plugin can ever trigger, it is opt-in, and it is cached for `balance.refreshMs`. The top-up/usage links come from the service's local `getState()` and need no network. A failed or timed-out query is shown as an em dash with a top-up link — never as an error dialog. The balance is rendered only in your own toolbar chip; it is **never** written into the exported HTML report.
 
 ## Development
 
@@ -133,7 +139,7 @@ Whether the exported HTML report contains session titles is your call (`anonymiz
 | --- | --- |
 | `pnpm add -D esbuild puppeteer-core` | Install build and E2E dependencies (or point `ESBUILD_PATH` / `WL_PUPPETEER_DIR` at existing installs) |
 | `node build.mjs` | Bundle `src/client/` into `lib/client.js` (ModuleLoader factory format) with esbuild |
-| `node test/verify.mjs` | 124 offline assertions: aggregation semantics, time zones, hour-spread conservation, "all-time" start, calendar data source, HTML escaping, both token shapes, cold-read fallback, `inject` declaration check, host routes |
+| `node test/verify.mjs` | 267 offline assertions: aggregation semantics, time zones, hour-spread conservation, "all-time" start, calendar data source, HTML escaping, both token shapes, cold-read fallback, `inject` declaration check, host routes, and the balance states (off by default / signed in / signed out / failed / service absent) with isomorphic chip text |
 | `./test/e2e-boot.sh 3299` | Boot an **isolated instance** (own DSH_HOME and port, copied projection data) without touching your running GUI |
 | `node test/e2e-ui.mjs` | 61 real-browser assertions: calendar/bar switching, side-by-side geometry, weekday bars, donut switching, collapsed detail, report export |
 

@@ -31,7 +31,7 @@ DSH 自己只提供**单会话**的统计行；跨会话、跨项目、跨时间
 - ✅ **工作区占比环形图**：Top 6 + 其他，可在「按时长 / 按 Token」之间切换。
 - ✅ **可外发的 HTML 报告**：单文件、内联 CSS + 内联 SVG、无脚本无外链；支持浅/深色、自定义标题与备注、`anonymize=1` 匿名化工作区与会话标题。
 - ✅ **KPI 一览**：活跃时长 / 总 Token（完整整数，可核对）/ 活跃天数 / 对话次数 / 轮次·步骤 / 缓存读取占比。
-- ✅ **官方接口读数据**：不解析日志格式、不写业务数据、不联网；结果零 I/O 读投影检查点，冷读兜底 + 本地索引复用。
+- ✅ **官方接口读数据**：不解析日志格式、不写业务数据、**默认不联网**；结果零 I/O 读投影检查点，冷读兜底 + 本地索引复用。唯一例外是可选余额 chip（默认关闭），见「隐私」。
 - ✅ **主题与语言自适应**：全部使用宿主主题 token（--dsw-*），自动跟随浅/深色与中/英文。
 
 ## 界面
@@ -98,6 +98,9 @@ dsh plugin --profile web add dsh-workload-report
     workspaceAliases:                   # 工作区显示名（给客户看时非常有用）
       my-shop-app: 零售订单系统
       data-platform: 数据中台
+    balance:                            # 可选余额 chip —— 默认关闭
+      enabled: false                    # true 时宿主会访问 platform.deepseek.com（见「隐私」）
+      refreshMs: 300000                 # 余额查询缓存时长（毫秒）
 ```
 
 ## 只读接口
@@ -108,6 +111,7 @@ dsh plugin --profile web add dsh-workload-report
 | `GET {apiPath}/export.json?...` | 同上，带 `content-disposition` 下载 |
 | `GET {apiPath}/report.html?days=90&theme=dark&anonymize=1&title=...` | 自包含 HTML 报告 |
 | `GET {apiPath}/health` | 索引诊断（会话数、检查点命中、冷读、读取失败、耗时） |
+| `GET {apiPath}/balance` | 顶部工具栏 chip 用的余额状态（enabled / supported / loggedIn / 金额 / 赠送 / 充值·用量链接）；不触发索引 |
 
 参数：`from`/`to`（YYYY-MM-DD，优先于 `days`）、`days`、`all=1`（＝最早的活跃日 → 今天）、`tz`（IANA 时区）、`scope`。
 
@@ -121,9 +125,11 @@ dsh plugin --profile web add dsh-workload-report
 
 ## 隐私
 
-统计数据全部留在本机；插件只注册**只读** HTTP 路由，不联网、不采集任何用户内容。
+统计数据全部留在本机；插件只注册**只读** HTTP 路由，**默认不联网**、不采集任何用户内容。
 唯一写入的是自己的索引缓存 `<DSH_HOME>/workload-report/index-v*.json`（删掉即回到冷读重建，不影响任何 Harness 数据）。
 导出的 HTML 报告是否包含会话标题由你决定（`anonymize=1` 可隐藏）。
+
+**可选余额 chip —— 默认关闭。** 只有显式设置 `balance.enabled: true` 后，宿主才会调用官方 `deepseekAccount` 服务：`getBalance()` 会让**宿主**请求 `https://platform.deepseek.com/api/v0/users/get_user_summary`（账户余额接口）。这是本插件唯一可能触发的出网请求，默认关闭、按 `balance.refreshMs` 缓存；充值 / 用量链接来自服务的本地 `getState()`，不需要网络。查询失败或超时只在 chip 上显示「—」+ 充值链接，不弹错误。余额只渲染在你本机的工具栏 chip 里，**绝不写入**导出的 HTML 报告。
 
 ## 开发
 
@@ -131,7 +137,7 @@ dsh plugin --profile web add dsh-workload-report
 | --- | --- |
 | `pnpm add -D esbuild puppeteer-core` | 安装构建与 E2E 依赖（也可用 `ESBUILD_PATH` / `WL_PUPPETEER_DIR` 指向已有安装） |
 | `node build.mjs` | 用 esbuild 把 `src/client/` 打成 `lib/client.js`（ModuleLoader 工厂格式） |
-| `node test/verify.mjs` | 离线验证 124 项：聚合口径、时区、时刻分摊守恒、全部档起点、日历数据源、HTML 转义、token 两种形状、冷读兜底、inject 声明、宿主路由 |
+| `node test/verify.mjs` | 离线验证 267 项：聚合口径、时区、时刻分摊守恒、全部档起点、日历数据源、HTML 转义、token 两种形状、冷读兜底、inject 声明、宿主路由，以及余额五种情形（默认关闭 / 已登录 / 未登录 / 失败 / 服务不存在）与 chip 同构文案 |
 | `./test/e2e-boot.sh 3299` | 起一个**隔离实例**（独立 DSH_HOME + 端口，复制真实投影数据），不影响正在用的 GUI |
 | `node test/e2e-ui.mjs` | 真实浏览器 E2E 61 项：日历/柱状图切换、并排几何校验、周几条、环形图切换、明细折叠、导出报告 |
 
