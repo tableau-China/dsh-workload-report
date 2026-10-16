@@ -29,7 +29,7 @@ DSH itself only shows a stats line for the **current session**; the cross-sessio
 
 - ✅ **Effort vs. spend per workspace**: each row shows "My effort" on the left (active time + active days + turns/steps) and "Token spend" on the right (total + output/cache). Both bars use the same scale, so they compare directly.
 - ✅ **Calendar heatmap**: rows Mon–Sun, columns Year-Week, colour = active time. It always shows the **full history**, with 7 per-weekday totals glued to the right edge — you can see at a glance which weekday you are busiest.
-- ✅ **Time-of-day analysis**: who is active from 0–23, with the peak hour highlighted (definition: each session's active window is spread across the covered hours by wall-clock share).
+- ✅ **Time-of-day analysis**: who is active from 0–23, with the peak hour highlighted (definition: bucketed by real event timestamps — model `request/header → assistant/message`, tool `tool/call → tool/result` — strictly conserving total active time; sessions not yet backfilled fall back to wall-clock share).
 - ✅ **Workspace donut**: Top 6 + others, switchable between time and tokens.
 - ✅ **Shareable HTML report**: a single file with inline CSS and inline SVG, no scripts and no external links; light/dark themes, custom title and note, and `anonymize=1` to hide workspace names and session titles.
 - ✅ **Six KPIs**: active time / total tokens (as a full integer you can verify) / active days / conversations / turns·steps / cache-read share.
@@ -139,7 +139,7 @@ Whether the exported HTML report contains session titles is your call (`anonymiz
 | --- | --- |
 | `pnpm add -D esbuild puppeteer-core` | Install build and E2E dependencies (or point `ESBUILD_PATH` / `WL_PUPPETEER_DIR` at existing installs) |
 | `node build.mjs` | Bundle `src/client/` into `lib/client.js` (ModuleLoader factory format) with esbuild |
-| `node test/verify.mjs` | 267 offline assertions: aggregation semantics, time zones, hour-spread conservation, "all-time" start, calendar data source, HTML escaping, both token shapes, cold-read fallback, `inject` declaration check, host routes, and the balance states (off by default / signed in / signed out / failed / service absent) with isomorphic chip text |
+| `node test/verify.mjs` | 308 offline assertions: aggregation semantics, time zones, event-timestamp hour bucketing and conservation (cross-hour split / cross-time-zone / no flattening on long windows / apportion fallback), "all-time" start, calendar data source, HTML escaping, both token shapes, cold-read fallback, `inject` declaration check, host routes, and the balance states (off by default / signed in / signed out / failed / service absent) with isomorphic chip text |
 | `./test/e2e-boot.sh 3299` | Boot an **isolated instance** (own DSH_HOME and port, copied projection data) without touching your running GUI |
 | `node test/e2e-ui.mjs` | 61 real-browser assertions: calendar/bar switching, side-by-side geometry, weekday bars, donut switching, collapsed detail, report export |
 

@@ -46,7 +46,7 @@ DSH 里**模型与 token 都在事件日志**里，官方有读取接口，不�
    已折过的，只有 `asOfSeq - modelFoldSeq > modelRefoldDelta`（默认 50）或会话**已非 live** 时才重折。
    `readSession` 失败的行把原因记在行上（`modelFoldError / modelFoldErrorAt`，计入 `failedRows`，**不算 pending**），
    过了 `modelRetryMs` 再试。活会话的 `asOfSeq` 每个事件 +1，**不能**拿"水位前进"直接当"要重折"——这是 0.4.0 的线上缺陷。
-3. **结果落盘**：`models` 与 `modelFoldSeq` 随行写进 `index-v3.json`，重启读回 → 重启后不重折（实测 `/health.modelFold.done = 0`）；
+3. **结果落盘**：`models`、`hours`（时刻分布的 UTC 24 桶）与 `modelFoldSeq` 随行写进 `index-v4.json`，重启读回 → 重启后不重折（实测 `/health.modelFold.done = 0`）；
    行被投影重建（活会话 / 检查点命中 / 冷读）时由 `carryModelFields()` 整组搬运，不会丢。
 4. **成本控制**：并发 4（可配）；`modelFoldMaxEvents` 超限的巨型会话跳过并计入 `diagnostics`；`modelUsage: off` 完全关闭
 5. **渐进**：模型维度后台回填，看板先出总量，模型区显示「回填中 x/y」；折完 `pending = 0`、提示自动消失

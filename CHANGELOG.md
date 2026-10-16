@@ -1,5 +1,32 @@
 # CHANGELOG — dsh-workload-report
 
+## v0.5.1（2026-10-16）— 时刻分析改按事件真实时间戳
+
+### 变更
+
+- **时刻分析（0–23）** 从「按 `[createdAt, lastPromptAt]` 墙钟窗口均匀摊销」改为**按事件真实时间戳落桶**：
+  - 模型时间 = `request/header.time → assistant/message.time`（无 header 退化为该 message 的 stream 首末时间戳）；
+  - 工具时间 = 按 `callId` 配对 `tool/call.time → tool/result.time`；**未配对 / 未结束的调用不计**；
+  - 区间跨小时按边界切分；落桶用 **UTC 小时**（折叠在后台、无查询时区，结果要持久化复用；聚合时再按请求时区平移）。
+- **守恒**：`sum(hours)` 恰等于事件累计；若与官方 activeMs（`llmMs + toolMs`）不等（未闭合步 / crash 恢复补写），
+  按比例缩放到官方 activeMs，行上记 `hoursSource: 'events' | 'events-scaled' | 'apportioned'`。聚合时再按当前 activeMs 回正一次，
+  保证 `sum(byHour[i].activeMs) === totals.activeMs`（±1ms）。
+- **聚合**：`byHour` 有 `row.hours` 就用它，未回填 / `modelUsage: off` 才退回旧 `distributeHours()` 摊销；
+  快照新增 `hourSource: { events, scaled, apportioned }`（并进 `/snapshot` 的 `diagnostics`）。
+- **索引**：`INDEX_VERSION` 3 → 4（旧索引自动重建）；`hours` / `hoursSource` 随行持久化，行换代时与 `models` 一起搬运。
+
+### 修复
+
+- 新环境下少数超长会话不再把少量活跃时长摊平到十几小时（**假平峰**）；
+  `lastPromptAt` 缺失时也不再全部砸在创建小时（**假尖峰**）。
+
+### 测试
+
+- 离线断言 **267 → 308**（连跑 2 次 exit 0）：新增「时刻分析（事件时间戳，新口径）」一节——
+  单会话跨 3 小时逐小时精确（50 / 80 / 20min）、`00:50–01:10` 跨边界各 10min、`sum(hours) === llmMs + toolMs`、
+  同一批事件在 `Asia/Shanghai` 与 `UTC` 下落桶不同且各自守恒、创建于 10 小时前仅 20min 活跃不被摊平（对比旧法峰值 ≈2min）、
+  未回填仍走旧法且总数守恒、`events-scaled` 缩放路径、宿主 `/snapshot` 顶层 `hourSource` 与 `diagnostics.hourSource` 同源。
+
 ## v0.5.0（2026-10-15）— 顶部工具栏余额 chip（默认关闭）
 
 ### 新增

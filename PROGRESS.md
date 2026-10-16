@@ -2,6 +2,31 @@
 
 日期用 `YYYY-MM-DD`；只记录影响后续决策的事实。
 
+## 2026-10-16 时刻分析改按事件时间戳（v0.5.1）
+
+### 背景
+
+- 旧法把每个会话的 `activeMs = llmMs + toolMs` 按 `[createdAt, lastPromptAt]` 墙钟窗口均匀摊销到 30 分钟切片再归小时：
+  新环境下少数超长会话会把少量活跃时长摊平到十几小时（**假平峰**）；`lastPromptAt` 缺失时窗口退化成 1ms →
+  全部砸在创建小时（**假尖峰**）。引擎时间本就不等于墙钟时间，这是近似值。
+
+### 关键决策
+
+| 问题 | 结论 |
+| --- | --- |
+| 事件桶用哪个时区 | **UTC**。折叠（`runModelFold`）在后台运行、不携带查询时区，结果还要写 `index-v4.json` 跨查询/重启复用；UTC 是唯一时区无关的稳定表示。聚合时 `localHoursFromUtc()` 按请求时区平移：固定偏移（Asia/Shanghai、UTC）精确；带夏令时的时区用参考时刻偏移，切换周可能有 ±1h 误差（已在注释/文档写明） |
+| 事件累计与官方 activeMs 不一致 | 整体按比例缩放到官方 activeMs（`hoursSource: 'events-scaled'`），保证 `sum(hours) === row.activeMs`（±1ms）；聚合时再按当前 activeMs 回正一次，覆盖"折叠后活会话续聊"的漂移 |
+| 未配对 / 未结束的工具调用 | **不计**（悬空调用没有可信的结束时间，宁可少算）；已在 `foldSessionHours` 注释写明 |
+| 未回填 / `modelUsage: off` | 退回旧 `distributeHours()` 摊销；快照 `hourSource` 区分 `events` / `scaled` / `apportioned`，两条来源不混算 |
+
+### 已完成
+
+- `src/models.js`：新增 `foldSessionHours()`；`foldSessionModels()` 在同一份 events 上顺带返回 `hours / hoursSource`。
+- `src/aggregate.js`：新增 `localHoursFromUtc()` / `zoneOffsetMinutes()`；`byHour` 优先事件桶、回退摊销；`hourSource` 诊断；
+  `starts` 从 `distributeHours` 上提到聚合循环统一记（避免两条来源重复计数）。
+- `index.js`：`INDEX_VERSION` 3 → 4；`hours / hoursSource` 随行持久化并随行换代搬运；`/snapshot` 的 `diagnostics.hourSource`。
+- 离线断言 267 → 308（连跑 2 次 exit 0）。
+
 ## 2026-10-15 余额 chip（v0.5.0，默认关闭）
 
 ### 铁律补充
@@ -261,7 +286,7 @@ E2E（`test/e2e-ui.mjs`，真实实例）全过；离线断言 184 → **215**�
 - `ps` 被沙箱拦：找实例进程用 `lsof -nP -iTCP:3299 -sTCP:LISTEN -t` 再 `kill`。
 - puppeteer-core 不在本仓库：`WL_PUPPETEER_DIR=/Users/xilejun/WorkBuddy/ds_Harness/tableau-twb-viewer/node_modules`。
 - 面板语言可能是**英文**（本实例就是）：E2E 里凡断言文案的地方都要中英都认，本轮踩过一次。
-- 需要"重启后仍带模型数据"的证据时，用 `E2E_KEEP=1` 复用同一个 `E2E_HOME`（索引文件在 `$E2E_HOME/workload-report/index-v3.json`）。
+- 需要"重启后仍带模型数据"的证据时，用 `E2E_KEEP=1` 复用同一个 `E2E_HOME`（索引文件在 `$E2E_HOME/workload-report/index-v4.json`）。
 
 ## 待办
 
