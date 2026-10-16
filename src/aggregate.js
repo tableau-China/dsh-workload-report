@@ -109,17 +109,89 @@ export function hourOf(ms, timeZone) {
   );
 }
 
+/**
+ * 请求时区相对 UTC 的偏移（分钟）。用 Intl 的本地日历字段与 UTC 对比得出，
+ * 支持半小时/45 分钟偏移（如 Asia/Kolkata=+330、Asia/Kathmandu=+345）。
+ * @param timeZone - IANA 时区名。
+ * @param referenceMs - 参考时刻（带夏令时的时区，偏移随日期变化）。
+ * @returns 偏移分钟；时区非法时返回 0。
+ */
+export function zoneOffsetMinutes(timeZone, referenceMs = Date.now()) {
+  try {
+    const formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hour12: false,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    const parts = {};
+    for (const part of formatter.formatToParts(new Date(referenceMs))) parts[part.type] = part.value;
+    const asUTC = Date.UTC(
+      Number(parts.year),
+      Number(parts.month) - 1,
+      Number(parts.day),
+      Number(parts.hour) % 24,
+      Number(parts.minute),
+      Number(parts.second),
+    );
+    return Number.isFinite(asUTC) ? Math.round((asUTC - referenceMs) / 60000) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * 把 **UTC 小时桶** 换算成请求时区的小时桶。
+ *
+ * 折叠（src/models.js 的 foldSessionHours）在后台运行、不携带查询时区，且结果要持久化复用，
+ * 因此按 UTC 落桶；这里再按请求时区平移。平移量取参考时刻的偏移：
+ *   · 固定偏移时区（Asia/Shanghai=+8、UTC=0）精确；
+ *   · 带夏令时的时区在切换周可能有 ±1h 误差（时刻分析是统计视图，可接受）；
+ *   · 半小时/45 分钟偏移按分钟比例切到相邻两个本地小时，仍保持总和守恒。
+ * @param utcHours - 24 个 UTC 小时桶（毫秒）。
+ * @param timeZone - IANA 时区名。
+ * @param referenceMs - 计算偏移的参考时刻（默认 now）。
+ * @returns 24 个请求时区的小时桶（毫秒）。
+ */
+export function localHoursFromUtc(utcHours, timeZone, referenceMs = Date.now()) {
+  const out = new Array(24).fill(0);
+  if (!Array.isArray(utcHours)) return out;
+  const shift = zoneOffsetMinutes(timeZone, referenceMs);
+  for (let h = 0; h < 24; h++) {
+    const value = num(utcHours[h]);
+    if (value === 0) continue;
+    // UTC 的 [h:00, h+1:00) 整体平移 shift 分钟；带小数偏移时切到相邻本地小时
+    let cursor = h * 60 + shift;
+    const end = cursor + 60;
+    while (cursor < end) {
+      const index = Math.floor(cursor / 60);
+      const stop = Math.min((index + 1) * 60, end);
+      const localHour = ((index % 24) + 24) % 24;
+      out[localHour] += value * ((stop - cursor) / 60);
+      cursor = stop;
+    }
+  }
+  return out;
+}
+
 /** 时刻分析的切片粒度：半小时。 */
 const HOUR_SLICE_MS = 30 * 60000;
 /** 窗口保护：极端跨月的会话最多参与 90 天的分摊，避免拖慢聚合。 */
 const HOUR_WINDOW_CAP_MS = 90 * 86400000;
 
 /**
- * 把一个会话的活跃时长分摊到 24 个小时桶里。
+ * 把一个会话的活跃时长分摊到 24 个小时桶里（**旧法兜底**）。
  *
+ * 只在行上没有事件时间分布（row.hours，未回填 / modelUsage=off）时使用。
  * 口径：会话的活跃窗口 = [createdAt, lastPromptAt]（lastPromptAt 是最后一次用户提问）。
  * 把该会话的引擎活跃时长按"墙钟重叠比例"平摊到覆盖的小时；同一会话同一小时只记一次覆盖。
- * 这是近似——引擎时间不等于墙钟时间，长窗口会话会被摊薄——但用来回答"我一般几点在干活"足够稳。
+ * 这是近似——引擎时间不等于墙钟时间，长窗口会话会被摊薄（假平峰）——所以优先用事件时间戳。
+ * 注意："开始小时"（starts）由调用方统一记，避免事件/摊销两条来源重复计数。
  * @param buckets - 24 个桶。
  * @param row - 会话行。
  * @param timeZone - IANA 时区。
@@ -147,8 +219,37 @@ export function distributeHours(buckets, row, timeZone) {
     }
     cursor = next;
   }
-  const startBucket = buckets[hourOf(start, timeZone)];
-  if (startBucket !== undefined) startBucket.starts += 1;
+}
+
+/**
+ * 优先用**事件时间戳分布**（row.hours，UTC 桶）落小时；没有可用分布时返回 false，交给旧法摊销。
+ *
+ * row.hours 在折叠时已守恒到当时的官方 activeMs；但活会话续聊后 row.activeMs 可能已增长，
+ * 这里再按 activeMs / sum(local) 回正一次，保证全局 sum(byHour) === totals.activeMs（±1ms）。
+ * @param buckets - 24 个桶。
+ * @param row - 会话行（带 hours / hoursSource）。
+ * @param timeZone - 请求时区。
+ * @param referenceMs - 计算时区偏移的参考时刻。
+ * @returns 是否使用了事件分布。
+ */
+function distributeEventHours(buckets, row, timeZone, referenceMs) {
+  if (!Array.isArray(row.hours) || row.hours.length !== 24) return false;
+  const active = activeMs(row);
+  if (!(active > 0)) return false;
+  const local = localHoursFromUtc(row.hours, timeZone, referenceMs);
+  let sum = 0;
+  for (const value of local) sum += value;
+  if (!(sum > 0)) return false;
+  const factor = active / sum;
+  for (let hour = 0; hour < 24; hour++) {
+    const value = local[hour] * factor;
+    const bucket = buckets[hour];
+    if (bucket === undefined || !(value > 0)) continue;
+    bucket.activeMs += value;
+    // 「覆盖 N 个会话」：该小时有活跃即记一次
+    bucket.sessions += 1;
+  }
+  return true;
 }
 
 /**
@@ -331,6 +432,8 @@ export function aggregate(rows, options = {}) {
   const workspaceMap = new Map();
   /** 0–23 点的时刻分布（用于"我哪个时间段更活跃"）。 */
   const hourBuckets = Array.from({ length: 24 }, (_, hour) => ({ hour, activeMs: 0, sessions: 0, starts: 0, tokens: emptyTokens(), conversations: 0 }));
+  /** 时刻分布来源诊断：事件时间戳 / 事件缩放 / 旧法摊销 各命中多少行。 */
+  const hourSource = { events: 0, scaled: 0, apportioned: 0 };
   /** 工作区 → 有活动的自然日集合（用于「活跃天数」这一列/这条 bar）。 */
   const workspaceDays = new Map();
   /** 模型维度：归并组 → 桶。 */
@@ -369,15 +472,22 @@ export function aggregate(rows, options = {}) {
     if (row.createdAt > workspace.lastUsedAt) workspace.lastUsedAt = row.createdAt;
     addRow(workspace, row);
 
-    const hourBucket = hourBuckets[hourOf(row.createdAt, timeZone)];
-    if (hourBucket !== undefined) {
-      if (row.steps > 0) hourBucket.conversations += 1;
-      hourBucket.tokens.input += row.tokens.input;
-      hourBucket.tokens.output += row.tokens.output;
-      hourBucket.tokens.cacheRead += row.tokens.cacheRead;
-      hourBucket.tokens.cacheWrite += row.tokens.cacheWrite;
+    const startBucket = hourBuckets[hourOf(row.createdAt, timeZone)];
+    if (startBucket !== undefined) {
+      // 「开始小时」两种来源共用：会话按创建时间只记一次
+      startBucket.starts += 1;
+      if (row.steps > 0) startBucket.conversations += 1;
+      startBucket.tokens.input += row.tokens.input;
+      startBucket.tokens.output += row.tokens.output;
+      startBucket.tokens.cacheRead += row.tokens.cacheRead;
+      startBucket.tokens.cacheWrite += row.tokens.cacheWrite;
     }
-    distributeHours(hourBuckets, row, timeZone);
+    if (distributeEventHours(hourBuckets, row, timeZone, now)) {
+      hourSource[row.hoursSource === "events-scaled" ? "scaled" : "events"] += 1;
+    } else {
+      distributeHours(hourBuckets, row, timeZone);
+      hourSource.apportioned += 1;
+    }
 
     let daySet = workspaceDays.get(wkey);
     if (daySet === undefined) {
@@ -424,6 +534,8 @@ export function aggregate(rows, options = {}) {
       .map((workspace) => withTotals({ ...workspace, activeDays: (workspaceDays.get(workspace.key) ?? new Set()).size }))
       .sort((a, b) => b.activeMs - a.activeMs || b.tokensTotal - a.tokensTotal || a.label.localeCompare(b.label)),
     byHour: hourBuckets.map((bucket) => ({ ...bucket, tokensTotal: tokensTotal(bucket.tokens) })),
+    // 时刻分布来源诊断：events（事件时间戳）/ scaled（事件缩放）/ apportioned（旧法摊销）
+    hourSource,
     // 模型维度（未启用 modelUsage 时为空数组）
     byModel: buildByModel(modelMap, pricing, modelAliases, totals, activeModelMetric),
     modelDaily: days.map((date) => {

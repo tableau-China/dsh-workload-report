@@ -100,7 +100,7 @@ const MODEL_FOLD_ERROR_MAX = 200;
  *   · pending 永远 > 0 → 界面永远停在"模型维度正在回填…"；
  *   · 重启后又要从头折一遍。
  */
-const MODEL_ROW_FIELDS = ["models", "modelFoldSeq", "modelFoldAt", "modelFoldSkipped", "modelFoldError", "modelFoldErrorAt"];
+const MODEL_ROW_FIELDS = ["models", "hours", "hoursSource", "modelFoldSeq", "modelFoldAt", "modelFoldSkipped", "modelFoldError", "modelFoldErrorAt"];
 
 /** 把上一版行的模型折叠结果搬到新行上（新行缺的字段才补，不覆盖）。 */
 function carryModelFields(row, previous) {
@@ -150,11 +150,11 @@ function sendHtml(res, status, html) {
  *   2. 活会话 `sessionProjections.snapshot()` + `session/event` 增量：同步、精确。
  *   3. 冷读 `sessionQuery.observeSession(id, { projectionMode: "all" })`：官方折叠整份日志
  *      （内部仍以检查点做捷径），只对"缓存未命中且本地索引里没有"的会话执行一次。
- *   4. 本地索引文件 `<DSH_HOME>/workload-report/index-v3.json`：让进程重启后不必重跑冷读；
+ *   4. 本地索引文件 `<DSH_HOME>/workload-report/index-v4.json`：让进程重启后不必重跑冷读；
  *   5. 模型维度：`sessionQuery.readSession()` 读官方事件日志 → `src/models.js` 折叠（渐进回填，不阻塞首屏）；
  *      超过 `revalidateMs` 的行会重新校验一次（续聊过的冷会话靠这个纠正）。
  */
-const INDEX_VERSION = 3;
+const INDEX_VERSION = 4;
 
 /** 限制并发，避免几百个会话同时冷读把服务器压住。 */
 async function mapLimit(items, limit, worker) {
@@ -692,8 +692,20 @@ class WorkloadIndex {
             this.modelFold.done += 1;
             return;
           }
-          const folded = foldSessionModels(events, { groups: this.config.modelGroups, sessionLlmMs: target.llmMs });
+          const folded = foldSessionModels(events, {
+            groups: this.config.modelGroups,
+            sessionLlmMs: target.llmMs,
+            sessionToolMs: target.toolMs,
+          });
           target.models = folded.models;
+          // 时刻分布：事件时间戳（UTC 桶）随索引持久化；没有可用事件时留给聚合层摊销
+          if (folded.hours !== null) {
+            target.hours = folded.hours;
+            target.hoursSource = folded.hoursSource;
+          } else {
+            delete target.hours;
+            target.hoursSource = "apportioned";
+          }
           target.modelFoldSeq = asOf;
           target.modelFoldAt = Date.now();
           delete target.modelFoldSkipped;
@@ -784,7 +796,11 @@ class WorkloadIndex {
     const cacheKey = JSON.stringify({ from: query.from, to: query.to, days: query.days, tz: query.timeZone, scope: query.scope, all: query.all === true });
     const cached = this.snapshotCache;
     if (cached !== undefined && cached.key === cacheKey && Date.now() - cached.at < this.config.snapshotCacheMs) {
-      return { ...cached.value, balance: this.balanceState(), diagnostics: this.diagnosticsFor() };
+      return {
+        ...cached.value,
+        balance: this.balanceState(),
+        diagnostics: { ...this.diagnosticsFor(), hourSource: cached.value.hourSource ?? null },
+      };
     }
     const rows = [...this.rows.values()];
     const result = present(
@@ -802,7 +818,11 @@ class WorkloadIndex {
       }),
     );
     this.snapshotCache = { key: cacheKey, at: Date.now(), value: result };
-    return { ...result, balance: this.balanceState(), diagnostics: this.diagnosticsFor() };
+    return {
+      ...result,
+      balance: this.balanceState(),
+      diagnostics: { ...this.diagnosticsFor(), hourSource: result.hourSource ?? null },
+    };
   }
 
   /** 余额状态（快照的 balance 字段；未启用时 enabled=false，客户端据此完全不渲染）。 */
