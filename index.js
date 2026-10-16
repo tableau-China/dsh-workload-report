@@ -150,11 +150,11 @@ function sendHtml(res, status, html) {
  *   2. 活会话 `sessionProjections.snapshot()` + `session/event` 增量：同步、精确。
  *   3. 冷读 `sessionQuery.observeSession(id, { projectionMode: "all" })`：官方折叠整份日志
  *      （内部仍以检查点做捷径），只对"缓存未命中且本地索引里没有"的会话执行一次。
- *   4. 本地索引文件 `<DSH_HOME>/workload-report/index-v4.json`：让进程重启后不必重跑冷读；
+ *   4. 本地索引文件 `<DSH_HOME>/workload-report/index-v5.json`：让进程重启后不必重跑冷读；
  *   5. 模型维度：`sessionQuery.readSession()` 读官方事件日志 → `src/models.js` 折叠（渐进回填，不阻塞首屏）；
  *      超过 `revalidateMs` 的行会重新校验一次（续聊过的冷会话靠这个纠正）。
  */
-const INDEX_VERSION = 4;
+const INDEX_VERSION = 5;
 
 /** 限制并发，避免几百个会话同时冷读把服务器压住。 */
 async function mapLimit(items, limit, worker) {
@@ -696,6 +696,8 @@ class WorkloadIndex {
             groups: this.config.modelGroups,
             sessionLlmMs: target.llmMs,
             sessionToolMs: target.toolMs,
+            // 会话级兜底：事件没有轮次信息时，活跃时长记到会话创建时刻所在整点
+            sessionStartMs: target.createdAt,
           });
           target.models = folded.models;
           // 时刻分布：事件时间戳（UTC 桶）随索引持久化；没有可用事件时留给聚合层摊销

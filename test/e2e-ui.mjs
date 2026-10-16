@@ -348,6 +348,30 @@ try {
   ok(sideCharts.peak === 1, "最活跃时段被高亮", String(sideCharts.peak));
   ok(/\d+:00/.test(sideCharts.hourTip), "时刻柱带原生 title tooltip（跟随鼠标）", sideCharts.hourTip.replace(/\n/g, " | "));
   ok(/[hms]\b/.test(sideCharts.hourPeakValue), "最活跃时刻柱顶显示活跃时长标签", sideCharts.hourPeakValue);
+  // 柱/标签索引对齐：第 i 根柱的标签、tooltip 小时都必须是 i（防"柱画在 i、标签写着 i+1"这类渲染错位）
+  const hourAlign = await page.evaluate(() => {
+    const cols = [...document.querySelectorAll(".wl-hour-col")];
+    return cols.map((col, index) => ({
+      index,
+      label: (col.querySelector(".wl-hour-label")?.textContent ?? "").trim(),
+      tooltipHour: Number.parseInt((col.getAttribute("title") ?? "").split(":")[0], 10),
+      fill: Math.round((col.querySelector(".wl-hour-fill")?.getBoundingClientRect().height ?? 0) * 10) / 10,
+      peak: col.hasAttribute("data-peak"),
+    }));
+  });
+  const misaligned = hourAlign.filter((col) => col.label !== String(col.index) || col.tooltipHour !== col.index);
+  ok(
+    hourAlign.length === 24 && misaligned.length === 0,
+    "时刻柱与 0–23 标签逐柱对齐（第 i 根柱的标签与 tooltip 小时都为 i）",
+    JSON.stringify(misaligned.slice(0, 3)),
+  );
+  const peakCols = hourAlign.filter((col) => col.peak);
+  const tallest = hourAlign.reduce((best, col) => (col.fill > best.fill ? col : best), { fill: -1, index: -1 });
+  ok(
+    peakCols.length === 1 && tallest.fill > 0 && peakCols[0].index === tallest.index,
+    "高亮小时柱就是填充最高的那根（峰位与柱高一致）",
+    JSON.stringify({ peak: peakCols.map((col) => col.index), tallest: tallest.index }),
+  );
   ok(sideCharts.pieSlices >= 2 && sideCharts.pieLegend.length >= 2, "工作区环形图有扇区与图例", JSON.stringify(sideCharts.pieLegend));
 
   // 环形图切换 按时长 / 按 Token

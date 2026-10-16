@@ -357,7 +357,7 @@ function CalendarHeatmap({ calendar, t, availableHeight = 0 }) {
   );
 }
 
-/** 24 小时时刻分析（横轴 0–23，柱＝分摊活跃时长）。 */
+/** 24 小时时刻分析（横轴 0–23，柱＝以轮次开始时刻计的活跃时长）。 */
 function HourChart({ hours, t }) {
   const max = Math.max(1, ...hours.map((hour) => hour.activeMs));
   const peak = hours.reduce((best, hour) => (hour.activeMs > best.activeMs ? hour : best), hours[0]);

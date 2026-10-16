@@ -126,7 +126,7 @@ function workspaceBars(items, palette, metric, rangeDays = 0) {
 
 
 /**
- * 时刻分析：24 根柱，柱高＝该时段分摊到的活跃时长，最高的一根高亮。
+ * 时刻分析：24 根柱，柱高＝以轮次开始时刻计的活跃时长，最高的一根高亮。
  * @param hours - byHour 数组。
  * @param palette - 色板。
  * @returns SVG 字符串。

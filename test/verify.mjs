@@ -104,74 +104,94 @@ ok(Math.abs(noWindowSnap.byHour.reduce((sum, bucket) => sum + bucket.activeMs, 0
 const metaRow = rowFromSession({ id: "m", createdAt: base, cwd: "/tmp/x", isSeeded: false }, { sessionListMetadata: { blank: false, lastPromptAt: base + 3600000 } });
 eq(metaRow.lastPromptAt, base + 3600000, "sessionListMetadata.lastPromptAt 被识别");
 
-console.log("\n—— 时刻分析（事件时间戳，新口径）——");
+console.log("\n—— 时刻分析（按轮次落桶，新口径）——");
 {
   const MIN = 60000;
   // 整点起算，方便按 UTC 桶核对（foldSessionHours 落桶恒为 UTC，聚合时再按请求时区平移）
   const H0 = Date.UTC(2026, 9, 14, 0); // 周三 00:00 UTC
   const reqHeader = (seq, time) => ({ type: "request/header", seq, time, data: { header: { config: { provider: "deepseek-official", model: "deepseek-flash", reasoningEffort: "max" } } } });
-  const assistant = (seq, time) => ({
+  const turnStart = (seq, time, turn) => ({ type: "turn/start", seq, time, data: { turn } });
+  const assistant = (seq, time, turn, step = 1) => ({
     type: "assistant/message", seq, time,
     data: {
-      turn: 1, step: 1,
+      turn, step,
       message: { role: "assistant", source: { kind: "model", provider: "deepseek-official", model: "deepseek-flash" } },
       usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 },
       stream: [],
     },
   });
-  const toolCall = (seq, time, callId) => ({ type: "tool/call", seq, time, data: { turn: 1, step: 1, callId, name: "bash", arguments: "{}" } });
-  const toolResult = (seq, time, callId) => ({ type: "tool/result", seq, time, data: { turn: 1, step: 1, message: { role: "tool", source: { kind: "tool", callId }, content: [] } } });
+  const toolCall = (seq, time, callId, turn, step = 1) => ({ type: "tool/call", seq, time, data: { turn, step, callId, name: "bash", arguments: "{}" } });
+  const toolResult = (seq, time, callId, turn, step = 1) => ({ type: "tool/result", seq, time, data: { turn, step, message: { role: "tool", source: { kind: "tool", callId }, content: [] } } });
+  const sumHours = (hours) => hours.reduce((acc, value) => acc + value, 0);
 
-  // ① 单会话跨 3 小时：模型 00:10→02:20（130min）、工具 01:30→01:50（20min）
-  const threeHourEvents = [
-    reqHeader(1, H0 + 10 * MIN),
-    assistant(2, H0 + 140 * MIN),
-    toolCall(3, H0 + 90 * MIN, "c1"),
-    toolResult(4, H0 + 110 * MIN, "c1"),
+  // ① 多轮分开：同一会话两轮分别在 09:xx 与 13:xx → 两个桶各自有值、互不混合
+  const twoTurns = [
+    turnStart(1, H0 + 9 * HOUR, 1), reqHeader(2, H0 + 9 * HOUR), assistant(3, H0 + 9 * HOUR + 20 * MIN, 1),
+    turnStart(4, H0 + 13 * HOUR, 2), reqHeader(5, H0 + 13 * HOUR), assistant(6, H0 + 13 * HOUR + 30 * MIN, 2),
   ];
-  const folded3 = foldSessionModels(threeHourEvents, { sessionLlmMs: 130 * MIN, sessionToolMs: 20 * MIN });
-  eq(folded3.hoursSource, "events", "① 事件累计 = 官方口径 → hoursSource=events（未缩放）");
-  eq(Math.round(folded3.hours[0] / MIN), 50, "① 0 点：模型 00:10–01:00 = 50min");
-  eq(Math.round(folded3.hours[1] / MIN), 80, "① 1 点：模型 01:00–02:00 60min + 工具 20min = 80min");
-  eq(Math.round(folded3.hours[2] / MIN), 20, "① 2 点：模型 02:00–02:20 = 20min");
+  const foldedTurns = foldSessionModels(twoTurns, { sessionLlmMs: 50 * MIN, sessionToolMs: 0, sessionStartMs: H0 });
+  eq(foldedTurns.hoursSource, "events", "① 两轮事件累计 = 官方口径 → events（未缩放）");
+  eq(Math.round(foldedTurns.hours[9] / MIN), 20, "① 第 1 轮（09:00 起）20min 落 9 桶");
+  eq(Math.round(foldedTurns.hours[13] / MIN), 30, "① 第 2 轮（13:00 起）30min 落 13 桶");
+  eq(foldedTurns.hours[10], 0, "① 两轮不混合：10 桶为 0");
+  eq(foldedTurns.hours[14], 0, "① 两轮不混合：14 桶为 0");
+  eq(sumHours(foldedTurns.hours), 50 * MIN, "① 两轮合计 50min === 官方 activeMs（守恒）");
 
-  // ② 跨小时边界切分：00:50→01:10 的 20min → 各 10min
-  const boundaryEvents = [reqHeader(1, H0 + 50 * MIN), assistant(2, H0 + 70 * MIN)];
-  const folded2 = foldSessionModels(boundaryEvents, { sessionLlmMs: 20 * MIN, sessionToolMs: 0 });
-  eq(Math.round(folded2.hours[0] / MIN), 10, "② 00:50–01:00 的 10min 落 0 点");
-  eq(Math.round(folded2.hours[1] / MIN), 10, "② 01:00–01:10 的 10min 落 1 点");
-  eq(folded2.hours[0] + folded2.hours[1], 20 * MIN, "② 跨小时切分后总量不变");
+  // ② 跨小时整段归起始：一轮 13:50–14:20（模型 15min + 工具 15min = 30min）→ 全在 13 桶
+  const acrossHour = [
+    turnStart(1, H0 + 13 * HOUR + 50 * MIN, 1),
+    reqHeader(2, H0 + 13 * HOUR + 50 * MIN),
+    assistant(3, H0 + 14 * HOUR + 5 * MIN, 1),
+    toolCall(4, H0 + 14 * HOUR + 5 * MIN, "c1", 1),
+    toolResult(5, H0 + 14 * HOUR + 20 * MIN, "c1", 1),
+  ];
+  const foldedAcross = foldSessionModels(acrossHour, { sessionLlmMs: 15 * MIN, sessionToolMs: 15 * MIN, sessionStartMs: H0 });
+  eq(Math.round(foldedAcross.hours[13] / MIN), 30, "② 13:50–14:20 整段 30min 落 13 桶（模型 + 工具）");
+  eq(foldedAcross.hours[14], 0, "② 14 桶为 0（不跨小时切分）");
+  eq(sumHours(foldedAcross.hours), 30 * MIN, "② 整段归起始后总量不变");
 
-  // ③ 守恒：sum(hours) === 事件累计 === 官方 activeMs
-  const sum3 = folded3.hours.reduce((acc, value) => acc + value, 0);
-  eq(sum3, folded3.hoursTargetMs, "③ sum(hours) === llmMs + toolMs（0 漂移，±1ms）");
-  eq(sum3, 150 * MIN, "③ 事件累计 = 130min 模型 + 20min 工具");
+  // ③ 会话级兜底：无 turn 事件 → 全部计入 createdAt 所在小时（不是最早事件所在小时）
+  const sessionAnchor = H0 + 16 * HOUR;
+  const noTurnEvents = [reqHeader(1, H0 + 3 * HOUR), assistant(2, H0 + 3 * HOUR + 25 * MIN, undefined)];
+  const foldedSession = foldSessionModels(noTurnEvents, { sessionLlmMs: 25 * MIN, sessionToolMs: 0, sessionStartMs: sessionAnchor });
+  eq(foldedSession.hoursSource, "events", "③ 会话级兜底仍走事件口径（有可用区间）");
+  eq(Math.round(foldedSession.hours[16] / MIN), 25, "③ 25min 全落 createdAt 所在的 16 桶");
+  eq(foldedSession.hours[3], 0, "③ 最早事件所在的 3 桶为 0（按会话开始时刻兜底）");
+  const sessionRow = {
+    ...makeRow({ id: "fallback", cwd: "/tmp/fb", createdAt: sessionAnchor, turns: 1, steps: 1, llmMs: 25 * MIN, toolMs: 0, input: 0, output: 0, cacheRead: 0 }),
+    hours: foldedSession.hours,
+    hoursSource: foldedSession.hoursSource,
+  };
+  const fbSnap = present(aggregate([sessionRow], { days: 1, timeZone: "UTC", now: sessionAnchor }));
+  eq(Math.round(fbSnap.byHour[16].activeMs / MIN), 25, "③ 聚合：兜底 25min 落在 createdAt 的 16 桶");
+  eq(fbSnap.byHour[3].activeMs, 0, "③ 聚合：3 桶为 0");
+  ok(Math.abs(sumHours(fbSnap.byHour.map((bucket) => bucket.activeMs)) - fbSnap.totals.activeMs) < 1, "③ 聚合：兜底 sum(byHour) === totals.activeMs");
 
-  // ④ 时区：同一批 UTC 桶在 UTC / Asia/Shanghai 下落桶不同且各自自洽
+  // ④ 时区：事件在上海 13:00 开始（= UTC 05:00）→ 上海落 13 桶、UTC 落 5 桶，且无整体 +1h 偏移
+  const shTurn = [turnStart(1, H0 + 5 * HOUR, 1), reqHeader(2, H0 + 5 * HOUR), assistant(3, H0 + 5 * HOUR + 30 * MIN, 1)];
+  const foldedSh = foldSessionModels(shTurn, { sessionLlmMs: 30 * MIN, sessionToolMs: 0, sessionStartMs: H0 });
   const hourRow = {
-    ...makeRow({ id: "h3", cwd: "/tmp/h3", createdAt: H0, turns: 2, steps: 2, llmMs: 130 * MIN, toolMs: 20 * MIN, input: 0, output: 0, cacheRead: 0 }),
-    hours: folded3.hours,
-    hoursSource: folded3.hoursSource,
+    ...makeRow({ id: "h3", cwd: "/tmp/h3", createdAt: H0, turns: 1, steps: 1, llmMs: 30 * MIN, toolMs: 0, input: 0, output: 0, cacheRead: 0 }),
+    hours: foldedSh.hours,
+    hoursSource: foldedSh.hoursSource,
   };
   const ref = H0 + 12 * HOUR;
   const utcHourSnap = present(aggregate([hourRow], { days: 30, timeZone: "UTC", now: ref }));
   const shHourSnap = present(aggregate([hourRow], { days: 30, timeZone: "Asia/Shanghai", now: ref }));
-  eq(Math.round(utcHourSnap.byHour[0].activeMs / MIN), 50, "④ UTC：0 点 50min");
-  eq(Math.round(utcHourSnap.byHour[1].activeMs / MIN), 80, "④ UTC：1 点 80min");
-  eq(Math.round(utcHourSnap.byHour[2].activeMs / MIN), 20, "④ UTC：2 点 20min");
-  eq(Math.round(shHourSnap.byHour[8].activeMs / MIN), 50, "④ Asia/Shanghai：8 点 50min（UTC+8 平移）");
-  eq(Math.round(shHourSnap.byHour[9].activeMs / MIN), 80, "④ Asia/Shanghai：9 点 80min");
-  eq(Math.round(shHourSnap.byHour[10].activeMs / MIN), 20, "④ Asia/Shanghai：10 点 20min");
-  ok(utcHourSnap.byHour[0].activeMs > 0 && shHourSnap.byHour[0].activeMs === 0, "④ 同一事件在两时区落桶不同");
-  const sumUtc = utcHourSnap.byHour.reduce((acc, b) => acc + b.activeMs, 0);
-  const sumSh = shHourSnap.byHour.reduce((acc, b) => acc + b.activeMs, 0);
+  eq(Math.round(utcHourSnap.byHour[5].activeMs / MIN), 30, "④ UTC：上海 13:00 = UTC 05:00 → 5 桶 30min");
+  eq(Math.round(shHourSnap.byHour[13].activeMs / MIN), 30, "④ Asia/Shanghai：13 桶 30min（无整体 +1h 偏移）");
+  eq(shHourSnap.byHour[14].activeMs, 0, "④ Asia/Shanghai：14 桶为 0（不是晚一小时）");
+  eq(shHourSnap.byHour[5].activeMs, 0, "④ Asia/Shanghai：已平移，5 桶为 0");
+  ok(utcHourSnap.byHour[5].activeMs > 0 && shHourSnap.byHour[5].activeMs === 0, "④ 同一事件在两时区落桶不同");
+  const sumUtc = sumHours(utcHourSnap.byHour.map((bucket) => bucket.activeMs));
+  const sumSh = sumHours(shHourSnap.byHour.map((bucket) => bucket.activeMs));
   ok(Math.abs(sumUtc - utcHourSnap.totals.activeMs) < 1 && Math.abs(sumSh - shHourSnap.totals.activeMs) < 1, "④ 两时区各自 sum(byHour) === totals.activeMs");
   ok(Math.abs(sumUtc - sumSh) < 1, "④ 换时区只改分布、不改总量");
   eq(utcHourSnap.hourSource.events, 1, "④ 事件口径命中 1 行");
 
   // ⑤ 新环境场景：创建于 10 小时前、只有 20min 真实活跃 → 不得摊平成 10 小时平峰
   const TEN_HOURS = 10 * HOUR;
-  const newEnvEvents = [reqHeader(1, H0 + TEN_HOURS - 20 * MIN), assistant(2, H0 + TEN_HOURS)];
+  const newEnvEvents = [reqHeader(1, H0 + TEN_HOURS - 20 * MIN), assistant(2, H0 + TEN_HOURS, 1)];
   const foldedNew = foldSessionModels(newEnvEvents, { sessionLlmMs: 20 * MIN, sessionToolMs: 0 });
   eq(Math.round(foldedNew.hours[9] / MIN), 20, "⑤ 事件口径：20min 全落在真实活跃所在的 9 点");
   const newEnvBase = { createdAt: H0, turns: 2, steps: 2, llmMs: 20 * MIN, toolMs: 0, input: 0, output: 0, cacheRead: 0 };
@@ -190,7 +210,7 @@ console.log("\n—— 时刻分析（事件时间戳，新口径）——");
   eq(apportionSnap.hourSource.apportioned, 1, "⑤ 旧法诊断 apportioned=1");
 
   // 缩放：事件累计 10min，官方 activeMs=20min → 按比例缩放到官方口径
-  const scaledEvents = [reqHeader(1, H0), assistant(2, H0 + 10 * MIN)];
+  const scaledEvents = [reqHeader(1, H0), assistant(2, H0 + 10 * MIN, 1)];
   const foldedScaled = foldSessionModels(scaledEvents, { sessionLlmMs: 20 * MIN, sessionToolMs: 0 });
   eq(foldedScaled.hoursSource, "events-scaled", "事件累计 ≠ 官方口径 → events-scaled");
   eq(Math.round(foldedScaled.hours.reduce((acc, value) => acc + value, 0) / MIN), 20, "缩放后 sum(hours) === 官方 activeMs");
@@ -202,6 +222,7 @@ console.log("\n—— 时刻分析（事件时间戳，新口径）——");
   };
   const scaledSnap = present(aggregate([scaledRow], { days: 1, timeZone: "UTC", now: H0 }));
   eq(scaledSnap.hourSource.scaled, 1, "缩放行在聚合诊断里记为 scaled");
+  ok(Math.abs(scaledSnap.byHour.reduce((acc, b) => acc + b.activeMs, 0) - scaledSnap.totals.activeMs) < 1, "缩放行聚合后 sum(byHour) === totals.activeMs（守恒）");
 
   // ⑥ 未回填（无 row.hours）：仍走旧法摊销，且总数守恒
   const noHoursSnap = present(aggregate(rows, { days: 30, timeZone: "Asia/Shanghai", now: base }));
@@ -212,6 +233,48 @@ console.log("\n—— 时刻分析（事件时间戳，新口径）——");
   eq(mixedSnap.hourSource.events, 1, "⑥ 混用时事件行计 1");
   eq(mixedSnap.hourSource.apportioned, rows.length, "⑥ 混用时旧法行计 rows.length");
   ok(Math.abs(mixedSnap.byHour.reduce((acc, b) => acc + b.activeMs, 0) - mixedSnap.totals.activeMs) < 1, "⑥ 混用来源 sum(byHour) === totals.activeMs");
+
+  // ⑦–⑨ 时区落桶回归：用户实测"上海 13:00–14:00 被算到 14:00–15:00"必须被逐桶数值证伪。
+  // 折叠恒为 UTC 桶，聚合时按请求时区平移；这里直接用真实期望值锁住"整点 / 跨小时 / 跨天"三种边界。
+  const hourRowFrom = (id, startMs, endMs) => {
+    const llmMs = endMs - startMs;
+    const folded = foldSessionModels(
+      [turnStart(1, startMs, 1), reqHeader(2, startMs), assistant(3, endMs, 1)],
+      { sessionLlmMs: llmMs, sessionToolMs: 0, sessionStartMs: startMs },
+    );
+    return {
+      ...makeRow({ id, cwd: "/tmp/tz", createdAt: startMs, turns: 1, steps: 1, llmMs, toolMs: 0, input: 0, output: 0, cacheRead: 0 }),
+      hours: folded.hours,
+      hoursSource: folded.hoursSource,
+    };
+  };
+  const hourSnapshot = (row, nowMs) => present(aggregate([row], { days: 1, timeZone: "Asia/Shanghai", now: nowMs }));
+  const minutesOf = (snap, hour) => Math.round(snap.byHour[hour].activeMs / MIN);
+
+  // ⑦ 整点段：上海 13:00–14:00（= UTC 05:00–06:00）整段只落 13 桶
+  const sh13 = Date.UTC(2026, 9, 16, 5);
+  const case1 = hourSnapshot(hourRowFrom("tz-13", sh13, sh13 + 60 * MIN), sh13 + 8 * HOUR);
+  eq(minutesOf(case1, 13), 60, "⑦ 上海 13:00–14:00 → 13 点 60min（不整体晚一小时）");
+  eq(minutesOf(case1, 12), 0, "⑦ 12 点为 0");
+  eq(minutesOf(case1, 14), 0, "⑦ 14 点为 0（若落 14 即为一小时错位）");
+  eq(case1.hourSource.events, 1, "⑦ 事件口径命中 1 行");
+  ok(case1.byHour.every((bucket, index) => bucket.hour === index), "⑦ byHour 第 i 项的 hour === i（客户端柱/标签同源于此）");
+  ok(Math.abs(case1.byHour.reduce((acc, b) => acc + b.activeMs, 0) - case1.totals.activeMs) < 1, "⑦ 逐桶之和守恒");
+
+  // ⑧ 跨小时整段归起始：上海 13:50–14:20（= UTC 05:50–06:20）→ 全部 30min 落 13 点、14 点为 0
+  const sh1350 = Date.UTC(2026, 9, 16, 5, 50);
+  const case2 = hourSnapshot(hourRowFrom("tz-1350", sh1350, sh1350 + 30 * MIN), sh1350 + 8 * HOUR);
+  eq(minutesOf(case2, 13), 30, "⑧ 13:50–14:20 整段 30min 落 13 点（不跨小时切分）");
+  eq(minutesOf(case2, 14), 0, "⑧ 14 点为 0（整段归起始小时，不是晚一小时）");
+  eq(minutesOf(case2, 12), 0, "⑧ 12 点为 0");
+
+  // ⑨ 跨天整段归起始：上海 23:30–00:30（= UTC 15:30–16:30）→ 全部 60min 落 23 点、次日 0 点为 0
+  const sh2330 = Date.UTC(2026, 9, 16, 15, 30);
+  const case3 = hourSnapshot(hourRowFrom("tz-overnight", sh2330, sh2330 + 60 * MIN), Date.UTC(2026, 9, 16, 15, 45));
+  eq(minutesOf(case3, 23), 60, "⑨ 23:30–00:30 整段 60min 落 23 点（不跨天切分）");
+  eq(minutesOf(case3, 0), 0, "⑨ 次日 0 点为 0（整段归起始小时）");
+  eq(minutesOf(case3, 1), 0, "⑨ 1 点为 0（不整体后移）");
+  eq(minutesOf(case3, 13), 0, "⑨ 13 点为 0（不整体前移）");
 }
 
 console.log("\n—— 「全部」从最早活跃日算起 ——");

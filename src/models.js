@@ -145,27 +145,32 @@ function streamWindow(stream) {
   return first === null || last === null ? null : [first, last];
 }
 
-/**
- * 把 [start, end) 的毫秒按 **UTC 整点边界** 切分后累加进 24 个桶。
- * 跨小时按边界切分（每片恰好落在一个桶里），返回本次累加的毫秒数；
- * end <= start 不计（返回 0）。
- */
-function addIntervalToHours(hours, start, end) {
-  if (!(end > start)) return 0;
-  const span = end - start;
-  let cursor = start;
-  while (cursor < end) {
-    const boundary = Math.floor(cursor / HOUR_MS) * HOUR_MS + HOUR_MS;
-    const stop = Math.min(boundary, end);
-    const hour = ((Math.floor(cursor / HOUR_MS) % 24) + 24) % 24;
-    hours[hour] += stop - cursor;
-    cursor = stop;
-  }
-  return span;
+/** 会话级伪轮次的键：事件没有 `data.turn` 时归入这里。 */
+const SESSION_TURN_KEY = "(session)";
+
+/** UTC 毫秒 → 0–23 的 UTC 小时（负数也能正确取模）。 */
+function utcHourOf(ms) {
+  return ((Math.floor(ms / HOUR_MS) % 24) + 24) % 24;
+}
+
+/** 事件所属轮次的键：优先用 `data.turn`，缺失时归入会话级伪轮次。 */
+function turnKeyOf(event) {
+  const turn = event?.data?.turn;
+  if (typeof turn === "number" && Number.isFinite(turn)) return `turn:${turn}`;
+  if (typeof turn === "string" && turn !== "") return `turn:${turn}`;
+  return SESSION_TURN_KEY;
 }
 
 /**
- * 按事件时间戳统计一个会话的 0–23 点活跃时长（毫秒）。
+ * 按**轮次（turn）**统计一个会话的 0–23 点活跃时长（毫秒）。
+ *
+ * **最小归属单位 = 轮次**：多轮会话逐轮分开计算，每个轮次的活跃时长
+ * （= 该轮内各步的模型时间 + 工具时间之和）**整段记到「该轮开始时刻」所在的整点**，
+ * 不跨小时切分；轮次开始时刻优先取该轮的 `turn/start` 事件，没有则取该轮最早的事件时间。
+ *
+ * **会话级兜底**：事件没有轮次信息（老会话 / 未回填）时，整段活跃记到 `sessionStartMs`
+ * （会话 createdAt）所在的整点；sessionStartMs 未提供时退化为最早事件时间。
+ * 事件里完全没有可用区间（或官方 activeMs 为 0）时 `hours = null`，交给聚合层走旧法摊销。
  *
  * **时区**：桶索引是 **UTC 小时**。理由：折叠在后台运行、不携带查询时区，结果还要写进
  * 索引文件跨查询/重启复用；UTC 是唯一时区无关的稳定表示。聚合时再按请求的时区平移
@@ -176,59 +181,110 @@ function addIntervalToHours(hours, start, end) {
  *     没有可用 header 时退化为该 `assistant/message` 的 stream 首末时间戳；都没有记 0。
  *   · 工具时间 = 按 `callId` 配对 `tool/call.time` → `tool/result.time` 的区间；
  *     **未配对 / 未结束的调用不计**（悬空调用没有可信的结束时间，宁可少算）。
- *   · 区间跨小时按 UTC 边界切分，切片毫秒直接落桶，因此 `sum(hours)` 恰等于事件累计时长。
  *
  * **守恒**：官方 activeMs（llmMs + toolMs）与事件累计不等时（未闭合步 / crash 恢复补写），
  * 整体按比例缩放到官方 activeMs，保证 `sum(hours) === llmMs + toolMs`（±1ms）。
  *
  * @param events - 事件数组（官方 SessionLogSnapshot 的 events）。
- * @param options - sessionLlmMs / sessionToolMs：会话官方口径，用于缩放守恒。
+ * @param options - sessionLlmMs / sessionToolMs：会话官方口径，用于缩放守恒；
+ *   sessionStartMs：会话 createdAt，用于没有轮次事件时的会话级兜底。
  * @returns {{ hours: number[]|null, source: 'events'|'events-scaled'|null, rawMs: number, targetMs: number }}
- *   事件里没有任何可用区间（或官方 activeMs 为 0）时 hours = null，交给聚合层摊销。
  */
-export function foldSessionHours(events, { sessionLlmMs = 0, sessionToolMs = 0 } = {}) {
+export function foldSessionHours(events, { sessionLlmMs = 0, sessionToolMs = 0, sessionStartMs = 0 } = {}) {
   const hours = new Array(24).fill(0);
   const list = Array.isArray(events) ? events : [];
+  const anchorMs = epochMs(sessionStartMs) ?? 0;
+  /** 轮次键 → { startMs, activeMs, fixedStart }；fixedStart 的轮次不再被更早的事件时间改写。 */
+  const turns = new Map();
+
+  const ensureTurn = (key, time) => {
+    let turn = turns.get(key);
+    if (turn === undefined) {
+      const sessionKey = key === SESSION_TURN_KEY;
+      const fixed = sessionKey && anchorMs > 0;
+      turn = { startMs: fixed ? anchorMs : (time ?? 0), activeMs: 0, fixedStart: fixed };
+      turns.set(key, turn);
+    }
+    return turn;
+  };
+  /** 用事件时间参与「轮次开始时刻」判定（取最早；fixedStart 轮次不动）。 */
+  const noteStart = (key, time) => {
+    const turn = ensureTurn(key, time);
+    if (turn.fixedStart || time === null || time <= 0) return turn;
+    if (turn.startMs <= 0 || time < turn.startMs) turn.startMs = time;
+    return turn;
+  };
+  /** 把一段活跃时长累加进某轮次（不做小时切分）。 */
+  const addActive = (key, startTime, ms) => {
+    if (!(ms > 0)) return;
+    const turn = noteStart(key, startTime);
+    turn.activeMs += ms;
+  };
+
   /** 最近一条 request/header 的时间（用掉即清，避免重复配给多条 message）。 */
   let headerTime = null;
   /** 事件区间的累计毫秒。 */
   let rawMs = 0;
-  /** 已开始、未结束的工具调用：callId → 开始时间。 */
+  /** 已开始、未结束的工具调用：callId → { time, key }。 */
   const openCalls = new Map();
 
   for (const event of list) {
     const type = event?.type;
-    if (type === "request/header") {
-      const t = epochMs(event.time);
-      if (t !== null) headerTime = t;
+    const time = epochMs(event.time);
+    const key = turnKeyOf(event);
+    if (type === "turn/start") {
+      const turn = ensureTurn(key, time);
+      if (time !== null && time > 0) {
+        turn.startMs = time;
+        turn.fixedStart = true;
+      }
       continue;
     }
     if (type === "tool/call") {
       const callId = typeof event.data?.callId === "string" ? event.data.callId : "";
-      const t = epochMs(event.time);
-      if (callId !== "" && t !== null) openCalls.set(callId, t);
+      if (callId !== "" && time !== null) openCalls.set(callId, { time, key });
       continue;
     }
     if (type === "tool/result") {
       const source = event.data?.message?.source;
       const callId = typeof source?.callId === "string" ? source.callId : "";
-      const t = epochMs(event.time);
-      if (callId === "" || t === null) continue;
+      if (callId === "" || time === null) continue;
       const started = openCalls.get(callId);
       if (started === undefined) continue; // 未配对 / 未结束：不计
       openCalls.delete(callId);
-      rawMs += addIntervalToHours(hours, started, t);
+      if (time > started.time) {
+        addActive(started.key, started.time, time - started.time);
+        rawMs += time - started.time;
+      }
       continue;
     }
-    if (type !== "assistant/message") continue;
-    const messageTime = epochMs(event.time);
-    if (headerTime !== null && messageTime !== null && messageTime > headerTime) {
-      rawMs += addIntervalToHours(hours, headerTime, messageTime);
-    } else {
-      const window = streamWindow(event.data?.stream);
-      if (window !== null) rawMs += addIntervalToHours(hours, window[0], window[1]);
+    if (type === "assistant/message") {
+      if (headerTime !== null && time !== null && time > headerTime) {
+        // 模型时间 = request/header.time → assistant/message.time；整段归该 message 所在轮次
+        addActive(key, headerTime, time - headerTime);
+        rawMs += time - headerTime;
+      } else {
+        const window = streamWindow(event.data?.stream);
+        if (window !== null) {
+          addActive(key, window[0], window[1] - window[0]);
+          rawMs += window[1] - window[0];
+        }
+      }
+      headerTime = null;
+      continue;
     }
-    headerTime = null;
+    if (type === "request/header") {
+      if (time !== null) headerTime = time;
+      continue;
+    }
+    // 其它事件（step/start、turn/end、user/message…）只用于校正「轮次开始时刻」
+    noteStart(key, time);
+  }
+
+  // 每个轮次的活跃时长整段记到「该轮开始时刻」所在整点（不跨小时切分）
+  for (const turn of turns.values()) {
+    if (!(turn.activeMs > 0) || !(turn.startMs > 0)) continue;
+    hours[utcHourOf(turn.startMs)] += turn.activeMs;
   }
 
   const targetMs = numOr0(sessionLlmMs) + numOr0(sessionToolMs);
@@ -243,10 +299,10 @@ export function foldSessionHours(events, { sessionLlmMs = 0, sessionToolMs = 0 }
 /**
  * 折叠一个会话的事件日志 → 每个归并组的统计。
  * @param events - 事件数组（官方 SessionLogSnapshot 的 events）。
- * @param options - groups（自定义归并）/ sessionLlmMs / sessionToolMs（会话官方口径，用于守恒分摊与时刻分布缩放）。
+ * @param options - groups（自定义归并）/ sessionLlmMs / sessionToolMs（会话官方口径，用于守恒分摊与时刻分布缩放）/ sessionStartMs（会话 createdAt，时刻分布兜底）。
  * @returns { models, requests, unknownRequests, totalStreamMs, hours, hoursSource, hoursRawMs, hoursTargetMs }
  */
-export function foldSessionModels(events, { groups = [], sessionLlmMs = 0, sessionToolMs = 0 } = {}) {
+export function foldSessionModels(events, { groups = [], sessionLlmMs = 0, sessionToolMs = 0, sessionStartMs = 0 } = {}) {
   const models = {};
   let requests = 0;
   let unknownRequests = 0;
@@ -294,7 +350,7 @@ export function foldSessionModels(events, { groups = [], sessionLlmMs = 0, sessi
   // 会话 llmMs 按 stream 权重分摊（守恒：最后一个模型吸收余数）
   allocateLlmMs(models, sessionLlmMs, totalStreamMs);
   // 同一趟折叠里顺带算小时分布（同一份 events，不额外读日志）
-  const hours = foldSessionHours(list, { sessionLlmMs, sessionToolMs });
+  const hours = foldSessionHours(list, { sessionLlmMs, sessionToolMs, sessionStartMs });
   return {
     models,
     requests,
