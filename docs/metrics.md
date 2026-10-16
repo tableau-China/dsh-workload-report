@@ -25,7 +25,7 @@
 | 轮次 / 步骤 | `turns` / `steps` 合计 | 来自 sessionStats |
 | 活跃天数 | 该范围内出现过会话（或某工作区出现过会话）的自然日数量 | 按会话**创建时间**归属；跨天续聊的活动记在创建那天 |
 | 归属日期 | 会话创建时间在所选时区的自然日 | 时区由前端传入（默认浏览器时区） |
-| 时刻分析 | 优先按**事件真实时间戳**落桶：模型 `request/header.time → assistant/message.time`（无 header 退化为 stream 首末），工具按 `callId` 配对 `tool/call.time → tool/result.time`；跨小时按 UTC 边界切分，再按请求时区平移（`row.hours`，严格守恒）。未回填 / `modelUsage: off` 退回旧法：`createdAt → lastPromptAt` 的墙钟比例分摊 | 事件桶按 UTC 持久化（时区无关、可复用）；固定偏移时区平移精确，带夏令时的时区用参考时刻偏移（切换周 ±1h）；未配对/未结束的调用不计；事件累计与官方 activeMs 不等时按比例缩放（行上 `hoursSource` 诊断） |
+| 时刻分析 | 以**轮次（turn）**为最小归属单位：多轮会话逐轮分开，每个轮次的活跃时长（该轮内模型时间 + 工具时间之和）**整段记到「该轮开始时刻」所在的整点，不跨小时切分**（跨小时的轮次整段归入起始小时）。轮次开始时刻取该轮 `turn/start`，没有则取该轮最早事件时间；模型时间 = `request/header.time → assistant/message.time`（无 header 退化为 stream 首末），工具时间按 `callId` 配对 `tool/call.time → tool/result.time`；落桶按 UTC，聚合时按请求时区平移（`row.hours`，严格守恒）。**会话级兜底**：事件没有轮次信息（老会话）时整段记到 `createdAt` 所在整点；未回填 / `modelUsage: off` 退回旧法：`createdAt → lastPromptAt` 的墙钟比例分摊 | 与旧摊销法的差别：旧法把会话 activeMs 按墙钟窗口均匀摊到覆盖的每个小时（长窗口摊成假平峰）；新法按「轮次开始时刻」聚合，保留真实高峰与跨小时归属。事件桶按 UTC 持久化（时区无关、可复用）；固定偏移时区平移精确，带夏令时的时区用参考时刻偏移（切换周 ±1h）；未配对/未结束的调用不计；事件累计与官方 activeMs 不等时按比例缩放（行上 `hoursSource` 诊断） |
 | 「全部」区间 | 最早的活跃日 → 今天 | 不写死天数，因此活跃天数分母是真实历史跨度 |
 | 日历热力图 | 固定展示「最早活跃日 → 今天」的全部历史，颜色 5 档＝活跃时长（相对最大活跃日） | 不受顶部区间筛选影响；右侧横条为各周几累计活跃时长 |
 | 工作区 | `SessionHeader.cwd` 的目录名，可用 `workspaceAliases` 换显示名 | 「未知工作区」不计入"覆盖工作区数" |

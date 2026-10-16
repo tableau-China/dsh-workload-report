@@ -33,7 +33,7 @@
 cd ~/WorkBuddy/ds_Harness/dsh-workload-report
 
 # 1) 改代码后先本地自检
-node build.mjs && node test/verify.mjs        # 构建 + 308 项离线断言
+node build.mjs && node test/verify.mjs        # 构建 + 326 项离线断言
 
 # 2) 更新 CHANGELOG.md（新增该版本条目）并提交
 git add -A && git commit -m "feat: …"
@@ -45,7 +45,7 @@ npm version patch -m "release: v%s"           # 或 minor / major
 git push --follow-tags
 ```
 
-workflow（[.github/workflows/release.yml](../.github/workflows/release.yml)）会依次：校验 tag 与 `package.json` 版本一致 → 构建并校验入库 `lib/client.js` → 跑 308 项离线断言 → 检查该版本未被发布 → **`npm stage publish`**（用 `NPM_TOKEN` 密钥，无需 OTP）。
+workflow（[.github/workflows/release.yml](../.github/workflows/release.yml)）会依次：校验 tag 与 `package.json` 版本一致 → 构建并校验入库 `lib/client.js` → 跑 326 项离线断言 → 检查该版本未被发布 → **`npm stage publish`**（用 `NPM_TOKEN` 密钥，无需 OTP）。
 
 跑完后 Actions 的 Summary 会给出 stage id 与下一步命令；你本地执行一次：
 

@@ -139,9 +139,9 @@ Whether the exported HTML report contains session titles is your call (`anonymiz
 | --- | --- |
 | `pnpm add -D esbuild puppeteer-core` | Install build and E2E dependencies (or point `ESBUILD_PATH` / `WL_PUPPETEER_DIR` at existing installs) |
 | `node build.mjs` | Bundle `src/client/` into `lib/client.js` (ModuleLoader factory format) with esbuild |
-| `node test/verify.mjs` | 308 offline assertions: aggregation semantics, time zones, event-timestamp hour bucketing and conservation (cross-hour split / cross-time-zone / no flattening on long windows / apportion fallback), "all-time" start, calendar data source, HTML escaping, both token shapes, cold-read fallback, `inject` declaration check, host routes, and the balance states (off by default / signed in / signed out / failed / service absent) with isomorphic chip text |
+| `node test/verify.mjs` | 326 offline assertions: aggregation semantics, time zones, turn-based hour bucketing and conservation (multi-turn separation / whole turn attributed to its start hour / cross-time-zone / no flattening on long windows / apportion fallback), "all-time" start, calendar data source, HTML escaping, both token shapes, cold-read fallback, `inject` declaration check, host routes, and the balance states (off by default / signed in / signed out / failed / service absent) with isomorphic chip text |
 | `./test/e2e-boot.sh 3299` | Boot an **isolated instance** (own DSH_HOME and port, copied projection data) without touching your running GUI |
-| `node test/e2e-ui.mjs` | 61 real-browser assertions: calendar/bar switching, side-by-side geometry, weekday bars, donut switching, collapsed detail, report export |
+| `node test/e2e-ui.mjs` | 63 real-browser assertions: calendar/bar switching, side-by-side geometry, weekday bars, donut switching, collapsed detail, report export |
 
 CI runs `build.mjs` + `verify.mjs`, and fails if the committed `lib/client.js` differs from a fresh build.
 
