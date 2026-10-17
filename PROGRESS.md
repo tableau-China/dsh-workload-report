@@ -39,11 +39,29 @@
 - 报告：`hourChart()` 改 Tokens + 密度点 + 峰值数值 + 同款图例 + 未计入提示。
 - 文档：README（中英）断言数 / 口径、`docs/metrics.md` 的时刻 Token 与人类消息定义；版本统一 0.6.5。
 
+### 视觉修正（2026-10-17）
+
+> 用户看 `.tmp/shots/hour-card.png` 指出两处与设计稿不一致：峰值柱/「峰值」图例用了 amber（与人类消息点撞色）、
+> 柱偏矮且顶部留白过多。复核结论：截图不是缩放，1560×1000 下卡片就是 637×314。
+
+| 决策 | 取舍 |
+| --- | --- |
+| 峰值柱与「峰值」图例改用 `--dsw-static-blue-600`（`#2563eb`） | 宿主 token；比普通柱的 deepseek-400→600 更深，且与 amber 点（`#f59e0b`）明显分离 |
+| 报告色板新增 `peak: "#2f4bd8"` | 报告是自包含 HTML，用不了宿主 token；取预览稿深蓝，人类消息点仍用 `weekend` amber |
+| `.wl-hour-card` 纵向 flex，图表区 `flex:1 1 auto` + `min-height:240px` | 让柱区吃掉 header/legend 之外的高度；不再写死 196px |
+| 柱形区 `top:64px` / `bottom:16px` | 顶部 64px 固定给密度点与峰值数值，柱高随卡片伸缩 |
+| 同排 `.wl-pie-card` 拉伸时 `pie-wrap` 弹性居中 | 时刻卡变高后右侧饼图不留在顶部、下方留大片空白 |
+
+- 量测（真实客户端 + 宿主 token + 无头 Chrome，1560×1000 / 1180×900）：
+  卡片 637×354 / 596×354；图表区 240px（67.9%）；峰值柱 160px（45.3%）；顶部预留 64px；
+  卡片顶到柱顶 122px（含 58px 标题区）；峰值柱 `#2563eb`、人类消息点 `#f59e0b`。
+- 截图：`.tmp/shots/hour-card.png`、`hour-card-1180.png`、`hour-card-dark.png`、`hour-row-1560.png`。
+
 ### 测试
 
-- 离线断言 **415 → 502**（连跑 2 次 exit 0）：跨小时 Token 归桶、`Σ hourTokens === tokensTotal`、缩放整数守恒、
+- 离线断言 **415 → 503**（连跑 2 次 exit 0）：跨小时 Token 归桶、`Σ hourTokens === tokensTotal`、缩放整数守恒、
   humanMsgs 计数与时区平移、measure 切换取数、未回填 / 读不出不计入并标注、圆点几何与图例文案、
-  报告同步、宿主 `/snapshot.diagnostics.hourTokensSource`。
+  报告同步、宿主 `/snapshot.diagnostics.hourTokensSource`；新增峰值柱蓝 / 人类消息点 amber 的 token 分离断言。
 - 同构量测（无头 Chrome 1560×1000，真实客户端组件 + 真实快照）：默认 Tokens、chips 切换生效、
   最大圆直径 16.8px 且上沿留白 14px、图例无括号解释、卡片无小标题、缺失提示可见。
 
