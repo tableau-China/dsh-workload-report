@@ -9,7 +9,7 @@ import { renderReport } from "../src/report-html.js";
 import { balanceChip } from "../src/client/balance.js";
 import { translate } from "../src/client/locales.js";
 import {
-  DEFAULT_PRICING, allocateLlmMs, cacheHitRate, costOf, emptyModelBucket, foldSessionModels,
+  DEFAULT_PRICING, DEFAULT_WAIT_TOOLS, allocateLlmMs, cacheHitRate, costOf, emptyModelBucket, foldSessionModels,
   groupKeyFor, isPeak, modelLabel, modelTokens, resolvePricing, UNKNOWN_MODEL,
 } from "../src/models.js";
 
@@ -275,6 +275,148 @@ console.log("\n—— 时刻分析（按轮次落桶，新口径）——");
   eq(minutesOf(case3, 0), 0, "⑨ 次日 0 点为 0（整段归起始小时）");
   eq(minutesOf(case3, 1), 0, "⑨ 1 点为 0（不整体后移）");
   eq(minutesOf(case3, 13), 0, "⑨ 13 点为 0（不整体前移）");
+}
+
+console.log("\n—— 等待用户剔除（0.7.0）——");
+{
+  const MIN = 60000;
+  const H0 = Date.UTC(2026, 9, 14, 0); // 周三 00:00 UTC，整点便于核对 UTC 桶
+  const turnStart = (seq, time, turn) => ({ type: "turn/start", seq, time, data: { turn } });
+  const reqHeader = (seq, time, turn) => ({ type: "request/header", seq, time, data: { turn, header: { config: { provider: "deepseek-official", model: "deepseek-flash" } } } });
+  const assistant = (seq, time, turn) => ({
+    type: "assistant/message", seq, time,
+    data: {
+      turn, step: 1,
+      message: { role: "assistant", source: { kind: "model", provider: "deepseek-official", model: "deepseek-flash" } },
+      usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      stream: [],
+    },
+  });
+  const toolCall = (seq, time, callId, name, turn) => ({ type: "tool/call", seq, time, data: { turn, step: 1, callId, name, arguments: "{}" } });
+  const toolResult = (seq, time, callId, turn) => ({ type: "tool/result", seq, time, data: { turn, step: 1, message: { role: "tool", source: { kind: "tool", callId }, content: [] } } });
+  const userMessage = (seq, time, turn) => ({ type: "user/message", seq, time, data: { turn, message: { role: "user", content: [] } } });
+  const sumHours = (hours) => hours.reduce((acc, value) => acc + value, 0);
+  const minutes = (ms) => Math.round(ms / MIN);
+
+  eq(DEFAULT_WAIT_TOOLS.join(","), "ask_user_question,exit_plan_mode", "默认交互工具白名单 = ask_user_question / exit_plan_mode");
+
+  // ①/⑦ 同一会话：等待前 10min 模型 + 3h 交互工具（中间夹 user/message）+ 等待后 10min 模型。
+  // 官方 llmMs=20min、toolMs=180min；等待整段剔除后净活跃 20min。
+  const waitEvents = [
+    turnStart(1, H0 + 9 * HOUR, 1),
+    reqHeader(2, H0 + 9 * HOUR, 1),
+    assistant(3, H0 + 9 * HOUR + 10 * MIN, 1),
+    toolCall(4, H0 + 9 * HOUR + 10 * MIN, "ask-1", "ask_user_question", 1),
+    userMessage(5, H0 + 10 * HOUR, 1),
+    toolResult(6, H0 + 12 * HOUR + 10 * MIN, "ask-1", 1),
+    turnStart(7, H0 + 12 * HOUR + 10 * MIN, 2),
+    reqHeader(8, H0 + 12 * HOUR + 10 * MIN, 2),
+    assistant(9, H0 + 12 * HOUR + 20 * MIN, 2),
+  ];
+  const foldedWait = foldSessionModels(waitEvents, { sessionLlmMs: 20 * MIN, sessionToolMs: 180 * MIN, sessionStartMs: H0 });
+  eq(foldedWait.waitMs, 180 * MIN, "① 交互工具 3h（含 user/message 夹层）→ waitMs = 180min");
+  eq(foldedWait.hoursSource, "events", "① 剔除等待后事件累计 = 净活跃 → events");
+  eq(minutes(foldedWait.hours[9]), 10, "① 等待前的 10min 工作落 9 桶");
+  eq(minutes(foldedWait.hours[12]), 10, "① 等待后的 10min 工作落 12 桶");
+  eq(foldedWait.hours[10], 0, "① 10 桶不含等待");
+  eq(foldedWait.hours[11], 0, "① 11 桶不含等待");
+  eq(minutes(sumHours(foldedWait.hours)), 20, "① sum(hours) = 净活跃 20min（不含 3h 等待）");
+
+  const waitRow = {
+    ...makeRow({ id: "wait", cwd: "/tmp/wait", createdAt: H0 + 9 * HOUR, turns: 2, steps: 2, llmMs: 20 * MIN, toolMs: 180 * MIN, input: 0, output: 0, cacheRead: 0 }),
+    waitMs: foldedWait.waitMs,
+    hours: foldedWait.hours,
+    hoursSource: foldedWait.hoursSource,
+  };
+  const waitSnap = present(aggregate([waitRow], { days: 1, timeZone: "UTC", now: H0 + 20 * HOUR }));
+  eq(waitSnap.totals.activeMs, 200 * MIN, "⑤ 官方 activeMs 保留 = 模型 20min + 工具 180min");
+  eq(waitSnap.totals.waitMs, 180 * MIN, "⑤ totals.waitMs = 180min");
+  eq(waitSnap.totals.netActiveMs, 20 * MIN, "⑤ totals.netActiveMs = 20min");
+  eq(waitSnap.totals.toolMs, 0, "① totals.toolMs 不计入等待（官方 180min → 净工具 0）");
+  eq(waitSnap.totals.llmMs + waitSnap.totals.toolMs, waitSnap.totals.netActiveMs, "① 净模型 + 净工具 = 净活跃");
+  ok(Math.abs(waitSnap.totals.netActiveMs + waitSnap.totals.waitMs - waitSnap.totals.activeMs) < 1, "⑤ 守恒 netActiveMs + waitMs === activeMs（±1ms）");
+  eq(minutes(waitSnap.byHour[9].activeMs), 10, "⑦ 聚合：9 点 10min（等待前的工作）");
+  eq(minutes(waitSnap.byHour[12].activeMs), 10, "⑦ 聚合：12 点 10min（等待后的工作）");
+  eq(waitSnap.byHour[10].activeMs + waitSnap.byHour[11].activeMs, 0, "⑦ 等待时段不抬高任何小时桶（10/11 点为 0）");
+  ok(Math.abs(waitSnap.byHour.reduce((acc, b) => acc + b.activeMs, 0) - waitSnap.totals.netActiveMs) < 1, "⑦ sum(byHour) === totals.netActiveMs（净活跃守恒）");
+  eq(waitSnap.byDay.find((day) => day.sessions > 0).activeMs, 20 * MIN, "⑤ byDay 用净活跃 20min");
+  eq(waitSnap.byWorkspace[0].activeMs, 20 * MIN, "⑤ byWorkspace 用净活跃 20min");
+  eq(waitSnap.byWorkspace[0].waitMs, 180 * MIN, "⑤ byWorkspace 单独携带 waitMs");
+  eq(waitSnap.calendar.days[0].activeMs, 20 * MIN, "⑤ calendar 用净活跃 20min");
+  eq(waitSnap.bySession[0].activeMs, 20 * MIN, "⑤ bySession 用净活跃 20min");
+  eq(waitSnap.bySession[0].waitMs, 180 * MIN, "⑤ bySession 单独携带 waitMs");
+
+  // ② 非白名单工具 10min，中间有 user/message → 判为等待（人类输入夹层）
+  const humanEvents = [
+    turnStart(1, H0 + 9 * HOUR, 1),
+    reqHeader(2, H0 + 9 * HOUR, 1),
+    assistant(3, H0 + 9 * HOUR + 5 * MIN, 1),
+    toolCall(4, H0 + 9 * HOUR + 5 * MIN, "bash-1", "bash", 1),
+    userMessage(5, H0 + 9 * HOUR + 8 * MIN, 1),
+    toolResult(6, H0 + 9 * HOUR + 15 * MIN, "bash-1", 1),
+  ];
+  const foldedHuman = foldSessionModels(humanEvents, { sessionLlmMs: 5 * MIN, sessionToolMs: 10 * MIN, sessionStartMs: H0 });
+  eq(foldedHuman.waitMs, 10 * MIN, "② 非白名单 10min + 有 user/message → waitMs = 10min");
+  eq(minutes(foldedHuman.hours[9]), 5, "② 等待剔除后只剩 5min 模型时间");
+  eq(minutes(sumHours(foldedHuman.hours)), 5, "② 净活跃 5min（10min 工具被剔除）");
+
+  // ③ 同样的 10min 工具，但没有 user/message → 仍算工作（长任务豁免，不误伤）
+  const noHumanEvents = humanEvents.filter((event) => event.type !== "user/message");
+  const foldedNoHuman = foldSessionModels(noHumanEvents, { sessionLlmMs: 5 * MIN, sessionToolMs: 10 * MIN, sessionStartMs: H0 });
+  eq(foldedNoHuman.waitMs, 0, "③ 非白名单 10min 无 user/message → waitMs = 0（不误伤）");
+  eq(foldedNoHuman.hoursSource, "events", "③ 长任务仍走事件口径");
+  eq(minutes(sumHours(foldedNoHuman.hours)), 15, "③ 10min 工具照常算工作（合计 15min）");
+  eq(minutes(foldedNoHuman.hours[9]), 15, "③ 15min 全落 9 桶");
+
+  // 白名单可扩展：自定义工具即使没有 user/message，命中 waitTools 也整段等待
+  const customEvents = [
+    turnStart(1, H0 + 9 * HOUR, 1),
+    toolCall(2, H0 + 9 * HOUR, "gate-1", "deploy_gate", 1),
+    toolResult(3, H0 + 9 * HOUR + 10 * MIN, "gate-1", 1),
+  ];
+  const foldedCustom = foldSessionModels(customEvents, { sessionLlmMs: 0, sessionToolMs: 10 * MIN, sessionStartMs: H0, waitTools: ["deploy_gate"] });
+  eq(foldedCustom.waitMs, 10 * MIN, "② 白名单可扩展：waitTools 命中的自定义工具整段等待");
+  eq(foldedCustom.hours, null, "② 全部是等待 → 没有可落的活跃桶（hours=null）");
+
+  // ④ 30s 的短交互 < waitMinMs(60s) → 不剔除（避免碎片化）
+  const shortEvents = [
+    turnStart(1, H0 + 9 * HOUR, 1),
+    reqHeader(2, H0 + 9 * HOUR, 1),
+    toolCall(3, H0 + 9 * HOUR, "ask-short", "ask_user_question", 1),
+    userMessage(4, H0 + 9 * HOUR + 10 * 1000, 1),
+    toolResult(5, H0 + 9 * HOUR + 30 * 1000, "ask-short", 1),
+  ];
+  const foldedShort = foldSessionModels(shortEvents, { sessionLlmMs: 0, sessionToolMs: 30 * 1000, sessionStartMs: H0 });
+  eq(foldedShort.waitMs, 0, "④ 30s 短交互 < waitMinMs → waitMs = 0（不剔除）");
+  eq(Math.round(sumHours(foldedShort.hours) / 1000), 30, "④ 30s 仍计为工作");
+
+  // ⑥ excludeWait=false → 与 0.6.0 完全一致：不判等待，3h 工具区间照常算活跃并落桶
+  const foldedNoWait = foldSessionModels(waitEvents, { sessionLlmMs: 20 * MIN, sessionToolMs: 180 * MIN, sessionStartMs: H0, excludeWait: false });
+  eq(foldedNoWait.waitMs, 0, "⑥ excludeWait=false → 不判定等待（waitMs=0）");
+  eq(minutes(foldedNoWait.hours[9]), 190, "⑥ 3h 工具区间回到 9 桶（10 + 180min，与 0.6.0 一致）");
+  eq(minutes(foldedNoWait.hours[12]), 10, "⑥ 第 2 轮 10min 落 12 桶");
+  eq(minutes(sumHours(foldedNoWait.hours)), 200, "⑥ sum(hours) = 官方 activeMs 200min");
+  const noWaitRow = {
+    ...makeRow({ id: "no-wait", cwd: "/tmp/wait", createdAt: H0 + 9 * HOUR, turns: 2, steps: 2, llmMs: 20 * MIN, toolMs: 180 * MIN, input: 0, output: 0, cacheRead: 0 }),
+    waitMs: foldedNoWait.waitMs,
+    hours: foldedNoWait.hours,
+    hoursSource: foldedNoWait.hoursSource,
+  };
+  const noWaitSnap = present(aggregate([noWaitRow], { days: 1, timeZone: "UTC", now: H0 + 20 * HOUR }));
+  eq(noWaitSnap.totals.activeMs, 200 * MIN, "⑥ 回归：activeMs 仍为官方 200min");
+  eq(noWaitSnap.totals.waitMs, 0, "⑥ 回归：waitMs = 0");
+  eq(noWaitSnap.totals.netActiveMs, 200 * MIN, "⑥ 回归：netActiveMs === activeMs（行为与 0.6.0 一致）");
+  eq(noWaitSnap.totals.toolMs, 180 * MIN, "⑥ 回归：excludeWait=false 时 toolMs 仍为官方 180min");
+  ok(Math.abs(noWaitSnap.byHour.reduce((acc, b) => acc + b.activeMs, 0) - noWaitSnap.totals.activeMs) < 1, "⑥ 回归：sum(byHour) === totals.activeMs");
+
+  // 展示层：报告 KPI / 每日图都用净活跃，副标题与 footer 单列等待
+  const waitReport = renderReport(waitSnap, { theme: "light", title: "等待报告" });
+  ok(waitReport.includes("含等待用户 3 h"), "展示：报告 KPI 副标题写明「含等待用户 3 h」");
+  ok(waitReport.includes("净活跃"), "展示：报告 footer 说明净活跃口径");
+  ok(waitReport.includes(">20 m<"), "展示：报告 KPI 活跃时长 = 净活跃 20min（不是 200min）");
+  ok(waitReport.includes("活跃 20 m"), "展示：报告每日柱 tooltip 用净活跃 20min");
+  eq(translate("zh", "kpi.active.waitSub", { wait: "3 h" }), "含等待用户 3 h", "i18n：中文等待副标题");
+  eq(translate("en", "kpi.active.waitSub", { wait: "3 h" }), "incl. waiting 3 h", "i18n：英文等待副标题");
 }
 
 console.log("\n—— 「全部」从最早活跃日算起 ——");
@@ -855,6 +997,92 @@ ok(
   String(restartSnap.diagnostics.modelFold.lastError),
 );
 await rm(LIFECYCLE_INDEX, { force: true }).catch(() => {});
+
+// ---------------------------------------------------------------- 等待用户剔除的宿主配置（0.7.0）
+console.log("\n—— 等待用户剔除的宿主配置（excludeWait）——");
+
+/** 起一个隔离宿主实例：投影 llmMs=20min / toolMs=180min，事件里有一段 3h 的 ask_user_question。 */
+function bootWaitHost({ excludeWait, waitMinMs } = {}) {
+  const routeList = [];
+  const hostRecords = [{ header: { id: "W1", createdAt: Date.UTC(2026, 9, 14, 9), cwd: "/tmp/wait-host", isSeeded: false, version: 4 }, live: false, persisted: true }];
+  const hostValues = {
+    sessionStats: { turns: 2, steps: 2, llmMs: 20 * 60000, toolMs: 180 * 60000 },
+    tokenUsage: { uncachedInputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 },
+    title: "wait-host",
+  };
+  const hostEvents = [
+    { type: "turn/start", seq: 1, time: Date.UTC(2026, 9, 14, 9), data: { turn: 1 } },
+    {
+      type: "request/header", seq: 2, time: Date.UTC(2026, 9, 14, 9),
+      data: { turn: 1, header: { config: { provider: "deepseek-official", model: "deepseek-flash" } } },
+    },
+    {
+      type: "assistant/message", seq: 3, time: Date.UTC(2026, 9, 14, 9, 10),
+      data: {
+        turn: 1, step: 1,
+        message: { role: "assistant", source: { kind: "model", provider: "deepseek-official", model: "deepseek-flash" } },
+        usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 },
+        stream: [],
+      },
+    },
+    { type: "tool/call", seq: 4, time: Date.UTC(2026, 9, 14, 9, 10), data: { turn: 1, step: 1, callId: "w", name: "ask_user_question", arguments: "{}" } },
+    { type: "user/message", seq: 5, time: Date.UTC(2026, 9, 14, 10), data: { turn: 1, message: { role: "user", content: [] } } },
+    { type: "tool/result", seq: 6, time: Date.UTC(2026, 9, 14, 12, 10), data: { turn: 1, step: 1, message: { role: "tool", source: { kind: "tool", callId: "w" }, content: [] } } },
+    { type: "turn/start", seq: 7, time: Date.UTC(2026, 9, 14, 12, 10), data: { turn: 2 } },
+    {
+      type: "request/header", seq: 8, time: Date.UTC(2026, 9, 14, 12, 10),
+      data: { turn: 2, header: { config: { provider: "deepseek-official", model: "deepseek-flash" } } },
+    },
+    {
+      type: "assistant/message", seq: 9, time: Date.UTC(2026, 9, 14, 12, 20),
+      data: {
+        turn: 2, step: 1,
+        message: { role: "assistant", source: { kind: "model", provider: "deepseek-official", model: "deepseek-flash" } },
+        usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 },
+        stream: [],
+      },
+    },
+  ];
+  const hostCtx = {
+    logger: { info() {}, warn() {} },
+    effect(fn) { fn(); return () => {}; },
+    on() { return () => {}; },
+    sessions: { get: () => undefined },
+    sessionProjections: { snapshot: () => undefined },
+    sessionQuery: {
+      listSessions: async () => hostRecords,
+      observeSession: async () => ({ header: hostRecords[0].header, projections: { asOfSeq: 1, values: {} }, dispose() {} }),
+      readSession: async () => ({ session: {}, inheritedEventCount: 0, events: hostEvents }),
+    },
+    sessionProjectionCache: { cachedSnapshot: () => ({ asOfSeq: 10, values: hostValues }) },
+    webServer: { register(spec) { routeList.push(spec); return () => {}; } },
+  };
+  const config = {
+    indexPath: "/tmp/wl-verify-wait-host-" + process.pid + "-" + String(excludeWait) + ".json",
+    excludeWait,
+  };
+  if (waitMinMs !== undefined) config.waitMinMs = waitMinMs;
+  apply(hostCtx, config);
+  return { routeList, indexPath: config.indexPath };
+}
+
+const waitHost = bootWaitHost({ excludeWait: true });
+await waitHealth(waitHost.routeList, (body) => body.indexing === false && body.diagnostics.modelFold.running === false && body.diagnostics.modelFold.pending === 0, "等待会话回填完成");
+const waitHostSnap = JSON.parse((await callOn(waitHost.routeList, "/workload-report/v1/snapshot?days=30&tz=UTC")).body);
+eq(waitHostSnap.totals.activeMs, 200 * 60000, "宿主（excludeWait=true）：官方 activeMs = 200min");
+eq(waitHostSnap.totals.waitMs, 180 * 60000, "宿主（excludeWait=true）：waitMs = 180min");
+eq(waitHostSnap.totals.netActiveMs, 20 * 60000, "宿主（excludeWait=true）：netActiveMs = 20min");
+ok(Math.abs(waitHostSnap.byHour.reduce((acc, b) => acc + b.activeMs, 0) - waitHostSnap.totals.netActiveMs) < 1, "宿主（excludeWait=true）：sum(byHour) === netActiveMs");
+await rm(waitHost.indexPath, { force: true }).catch(() => {});
+
+const noWaitHost = bootWaitHost({ excludeWait: false });
+await waitHealth(noWaitHost.routeList, (body) => body.indexing === false && body.diagnostics.modelFold.running === false && body.diagnostics.modelFold.pending === 0, "不剔除等待的会话回填完成");
+const noWaitHostSnap = JSON.parse((await callOn(noWaitHost.routeList, "/workload-report/v1/snapshot?days=30&tz=UTC")).body);
+eq(noWaitHostSnap.totals.activeMs, 200 * 60000, "宿主（excludeWait=false）：activeMs = 200min");
+eq(noWaitHostSnap.totals.waitMs, 0, "宿主（excludeWait=false）：waitMs = 0（与 0.6.0 一致）");
+eq(noWaitHostSnap.totals.netActiveMs, 200 * 60000, "宿主（excludeWait=false）：netActiveMs === activeMs");
+ok(Math.abs(noWaitHostSnap.byHour.reduce((acc, b) => acc + b.activeMs, 0) - noWaitHostSnap.totals.activeMs) < 1, "宿主（excludeWait=false）：sum(byHour) === activeMs（回归）");
+await rm(noWaitHost.indexPath, { force: true }).catch(() => {});
 
 // ---------------------------------------------------------------- 余额显示（0.5.0，默认关闭 + 可选依赖）
 console.log("\n—— 余额显示（默认关闭 / 可选依赖）——");
