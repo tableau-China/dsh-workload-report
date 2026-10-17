@@ -9,8 +9,9 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { STYLES } from "./styles.js";
 import { NS, en, languageOf, translate, zh } from "./locales.js";
-import { formatDuration, formatInt, formatKpiDuration, formatMoney, formatPercent, formatTokens } from "../format.js";
+import { formatHours, formatInt, formatMoney, formatPercent, formatTokens } from "../format.js";
 import { balanceChip } from "./balance.js";
+import { MetricBarCell } from "./bar-cell.jsx";
 import { sectorPath } from "../sector-path.js";
 
 /** 宿主半部注册的只读接口前缀（与 index.js 的默认 apiPath 一致）。 */
@@ -28,8 +29,21 @@ const RANGES = [
 /** 统计范围。 */
 const SCOPES = ["all", "main", "subagent"];
 
-/** 「按日期明细」的列（骨架屏与真实表格共用，列顺序不会漂）。 */
-const DETAIL_COLUMNS = ["table.date", "table.conversations", "table.turns", "table.steps", "table.active", "table.input", "table.output", "table.cache"];
+/**
+ * 「按日期明细」的列（骨架屏与真实表格共用，列顺序不会漂）。
+ * 带 value 的列渲染比例条（与「主要会话」共用 MetricBarCell）；日期明细用
+ * 「Token 合计」替代「步骤」，8 列在窄屏也放得下。
+ */
+const DETAIL_COLUMNS = [
+  { key: "date", labelKey: "table.date", text: (day) => day.date },
+  { key: "conversations", labelKey: "table.conversations", value: (day) => day.conversations ?? 0, format: formatInt },
+  { key: "turns", labelKey: "table.turns", value: (day) => day.turns ?? 0, format: formatInt },
+  { key: "active", labelKey: "table.active", kind: "activeMs", value: (day) => day.activeMs ?? 0, format: formatHours },
+  { key: "tokens", labelKey: "table.tokens", kind: "tokens", value: (day) => day.tokensTotal ?? 0, format: formatTokens },
+  { key: "input", labelKey: "table.input", text: (day) => formatTokens(day.tokens?.input ?? 0) },
+  { key: "output", labelKey: "table.output", text: (day) => formatTokens(day.tokens?.output ?? 0) },
+  { key: "cache", labelKey: "table.cache", text: (day) => formatTokens(day.tokens?.cacheRead ?? 0) },
+];
 
 /** KPI 卡片顺序（骨架屏与真实卡片共用，卡片数量/顺序不会漂）。 */
 const KPI_KEYS = ["kpi.active", "kpi.tokens", "kpi.modelCost", "kpi.activeDays", "kpi.conversations", "kpi.turns", "kpi.cache", "kpi.topModel"];
@@ -315,7 +329,7 @@ function CalendarHeatmap({ calendar, t, availableHeight = 0 }) {
                 if (entry === undefined) return null;
                 const activeMs = entry.day?.activeMs ?? 0;
                 const title = entry.day
-                  ? t("tip.day", { date: entry.date, active: formatDuration(activeMs), conversations: entry.day.conversations, turns: entry.day.turns })
+                  ? t("tip.day", { date: entry.date, active: formatHours(activeMs), conversations: entry.day.conversations, turns: entry.day.turns })
                   : `${entry.date}\n${t("tip.noRecord")}`;
                 return (
                   <rect key={entry.date} x={x} y={topPad + row * (cell + gap)} width={cell} height={cell} rx="3" fill={fills[level(activeMs)]}>
@@ -344,10 +358,10 @@ function CalendarHeatmap({ calendar, t, availableHeight = 0 }) {
                 fill="var(--dsw-static-deepseek-400, #6b83ff)"
                 opacity="0.9"
               >
-                <title>{t("tip.weekday", { weekday: weekdayLabels[row], total: formatDuration(total) })}</title>
+                <title>{t("tip.weekday", { weekday: weekdayLabels[row], total: formatHours(total) })}</title>
               </rect>
               <text x={barX + barArea + 5} y={y + cell * 0.78} fontSize="9" fill="var(--dsw-alias-label-tertiary, #6b7280)">
-                {total > 0 ? formatDuration(total) : ""}
+                {total > 0 ? formatHours(total) : ""}
               </text>
             </g>
           );
@@ -364,7 +378,7 @@ function HourChart({ hours, t }) {
   const tip = (hour) =>
     t("hour.tip", {
       hour: hour.hour,
-      active: formatDuration(hour.activeMs),
+      active: formatHours(hour.activeMs),
       sessions: formatInt(hour.sessions),
       starts: formatInt(hour.starts),
     });
@@ -377,7 +391,7 @@ function HourChart({ hours, t }) {
           return (
             // 原生 title 提示跟随鼠标（不再用固定在容器顶部的浮动层）
             <div className="wl-hour-col" key={hour.hour} data-peak={isPeak || undefined} title={tip(hour)}>
-              {isPeak && hour.activeMs > 0 ? <div className="wl-hour-value">{formatDuration(hour.activeMs)}</div> : null}
+              {isPeak && hour.activeMs > 0 ? <div className="wl-hour-value">{formatHours(hour.activeMs)}</div> : null}
               <div className="wl-hour-track">
                 <div className="wl-hour-fill" style={{ height: `${Math.max(ratio * 100, hour.activeMs > 0 ? 3 : 0).toFixed(1)}%` }} />
               </div>
@@ -387,7 +401,7 @@ function HourChart({ hours, t }) {
         })}
       </div>
       <div className="wl-legend">
-        <span>{t("hour.peak", { hour: peak?.hour ?? 0, active: formatDuration(peak?.activeMs ?? 0) })}</span>
+        <span>{t("hour.peak", { hour: peak?.hour ?? 0, active: formatHours(peak?.activeMs ?? 0) })}</span>
       </div>
     </>
   );
@@ -437,7 +451,7 @@ function WorkspacePie({ items, t, metric: fixedMetric = null, ariaLabel = null }
     angle += sweep;
     return arc;
   });
-  const formatValue = (value) => (metric === "activeMs" ? formatDuration(value) : formatInt(value));
+  const formatValue = (value) => (metric === "activeMs" ? formatHours(value) : formatInt(value));
 
   return (
     <>
@@ -464,7 +478,7 @@ function WorkspacePie({ items, t, metric: fixedMetric = null, ariaLabel = null }
             ))}
           </g>
           <text x="80" y="76" textAnchor="middle" fontSize="15" fontWeight="650" fill="var(--dsw-alias-label-primary, #1a1d21)">
-            {metric === "activeMs" ? formatDuration(slices.total) : formatTokens(slices.total)}
+            {metric === "activeMs" ? formatHours(slices.total) : formatTokens(slices.total)}
           </text>
           <text x="80" y="93" textAnchor="middle" fontSize="10" fill="var(--dsw-alias-label-tertiary, #6b7280)">
             {metric === "activeMs" ? t("pie.totalTime") : t("pie.totalTokens")}
@@ -588,14 +602,14 @@ function DailyChart({ days, t }) {
           rx="2"
           fill={weekend ? "var(--dsw-static-amber-500, #f59e0b)" : "var(--dsw-static-deepseek-500, #4d6bfe)"}
         >
-          <title>{t("tip.daily", { date: day.date.slice(5), active: formatDuration(day.activeMs), tokens: formatTokens(day.tokensTotal), conversations: day.conversations, turns: day.turns })}</title>
+          <title>{t("tip.daily", { date: day.date.slice(5), active: formatHours(day.activeMs), tokens: formatTokens(day.tokensTotal), conversations: day.conversations, turns: day.turns })}</title>
         </rect>,
       );
       // 0 不标：柱就落在轴上，标 "0" 只会和日期挤在一起；数值标在柱顶（h/m/s 小字号）
       if (labeled.has(index)) {
         values.push(
           <text key={day.date} data-kind={peak ? "peak-label" : "bar-label"} data-date={day.date} x={centerX} y={y - 5} textAnchor="middle" fontSize="9" fontWeight={peak ? "650" : undefined} fill={peak ? "var(--dsw-alias-label-primary, #1a1d21)" : "var(--dsw-alias-label-secondary, #4b5563)"}>
-            {formatDuration(day.activeMs)}
+            {formatHours(day.activeMs)}
           </text>,
         );
       }
@@ -682,7 +696,7 @@ function ModelSection({ data, t }) {
   ];
   const metricValue = (item) =>
     metric === "requests" ? item.requests : metric === "llmMs" ? item.llmMs : item.tokensTotal;
-  const fmtMetric = (value) => (metric === "requests" ? formatInt(value) : metric === "llmMs" ? formatDuration(value) : formatTokens(value));
+  const fmtMetric = (value) => (metric === "requests" ? formatInt(value) : metric === "llmMs" ? formatHours(value) : formatTokens(value));
 
   const ranked = useMemo(() => [...models].sort((a, b) => metricValue(b) - metricValue(a)), [models, metric]);
   const totalMetric = ranked.reduce((sum, item) => sum + metricValue(item), 0);
@@ -1004,8 +1018,8 @@ function Kpis({ data, t }) {
   const cards = [
     [
       "kpi.active",
-      formatKpiDuration(netActive),
-      `${t("kpi.active.sub", { llm: formatKpiDuration(totals.llmMs), tool: formatKpiDuration(totals.toolMs) })} · ${t("kpi.active.waitSub", { wait: formatKpiDuration(activeWait) })}`,
+      formatHours(netActive),
+      `${t("kpi.active.sub", { llm: formatHours(totals.llmMs), tool: formatHours(totals.toolMs) })} · ${t("kpi.active.waitSub", { wait: formatHours(activeWait) })}`,
     ],
     // 总 Token 直接给完整整数（可核对的真实值），小字里才用 K/M/B 缩写
     ["kpi.tokens", formatInt(totals.tokensTotal), t("kpi.tokens.sub", { input: formatTokens(totals.tokens.input), output: formatTokens(totals.tokens.output), cache: formatTokens(totals.tokens.cacheRead) })],
@@ -1097,7 +1111,7 @@ function SkeletonBody({ t }) {
       <div className="wl-card">
         <table className="wl-table">
           <thead>
-            <tr>{DETAIL_COLUMNS.map((key) => <th key={key}>{t(key)}</th>)}</tr>
+            <tr>{DETAIL_COLUMNS.map((column) => <th key={column.key}>{t(column.labelKey)}</th>)}</tr>
           </thead>
           <tbody>
             <tr><td colSpan={DETAIL_COLUMNS.length} className="wl-state">{t("state.loading")}</td></tr>
@@ -1121,7 +1135,20 @@ function ByDayView({ data, t }) {
   const dailyBodyRef = useRef(null);
   const dailyBody = useChartSize(dailyBodyRef);
   const models = data.byModel ?? [];
-  const rows = [...data.byDay].filter((day) => day.sessions > 0).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 31);
+  const rows = useMemo(
+    () => [...data.byDay].filter((day) => day.sessions > 0).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 31),
+    [data.byDay],
+  );
+  // 比例条按「本列最大值」归一：与「主要会话」四列同一套规则，宽度由 MetricBarCell 计算。
+  const maxima = useMemo(
+    () => Object.fromEntries(
+      DETAIL_COLUMNS.filter((column) => column.value !== undefined).map((column) => [
+        column.key,
+        Math.max(1, ...rows.map((day) => column.value(day))),
+      ]),
+    ),
+    [rows],
+  );
 
   return (
     <>
@@ -1172,26 +1199,42 @@ function ByDayView({ data, t }) {
 
       <details className="wl-card wl-details">
         <summary>{t("detail.summary", { count: rows.length })}</summary>
-        <table className="wl-table">
-          <thead>
-            <tr>
-              {DETAIL_COLUMNS.map((key) => <th key={key}>{t(key)}</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.length === 0 ? (
-              <tr><td colSpan={8} className="wl-state">{t("state.empty")}</td></tr>
-            ) : (
-              rows.map((day) => (
-                <tr key={day.date}>
-                  <td>{day.date}</td><td>{day.conversations}</td><td>{formatInt(day.turns)}</td><td>{formatInt(day.steps)}</td>
-                  <td>{formatDuration(day.activeMs)}</td><td>{formatTokens(day.tokens.input)}</td>
-                  <td>{formatTokens(day.tokens.output)}</td><td>{formatTokens(day.tokens.cacheRead)}</td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+        <div className="wl-table-scroll">
+          <table className="wl-table">
+            <thead>
+              <tr>
+                {DETAIL_COLUMNS.map((column) => <th key={column.key}>{t(column.labelKey)}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.length === 0 ? (
+                <tr><td colSpan={DETAIL_COLUMNS.length} className="wl-state">{t("state.empty")}</td></tr>
+              ) : (
+                rows.map((day) => (
+                  <tr key={day.date}>
+                    {DETAIL_COLUMNS.map((column) => {
+                      const value = column.value === undefined ? null : column.value(day);
+                      const text = column.value === undefined ? column.text(day) : column.format(value);
+                      return (
+                        <td key={column.key}>
+                          {column.value === undefined ? text : (
+                            <MetricBarCell
+                              value={value}
+                              max={maxima[column.key]}
+                              kind={column.kind ?? column.key}
+                              text={text}
+                              title={`${day.date} · ${t(column.labelKey)} ${text}`}
+                            />
+                          )}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
       </details>
     </>
   );
@@ -1232,7 +1275,7 @@ function ByWorkspaceView({ data, t }) {
                   </div>
                   <div className="wl-metric">
                     <div className="wl-metric-value">
-                      {formatDuration(item.activeMs)}
+                      {formatHours(item.activeMs)}
                       <span className="wl-metric-share">{formatPercent(item.activeShare)}</span>
                     </div>
                     <div className="wl-bar-track">
@@ -1265,8 +1308,8 @@ function ByWorkspaceView({ data, t }) {
                 </div>
                 <div className="wl-ws-foot">
                   {formatInt(item.sessions)} {t("table.sessions")} · {formatInt(item.conversations)} {t("table.conversations")} ·{" "}
-                  {t("metric.chatsSub", { avg: formatDuration(item.avgActiveMsPerConversation) })}
-                  {item.waitMs > 0 ? ` · ${t("ws.wait", { wait: formatDuration(item.waitMs) })}` : ""}
+                  {t("metric.chatsSub", { avg: formatHours(item.avgActiveMsPerConversation) })}
+                  {item.waitMs > 0 ? ` · ${t("ws.wait", { wait: formatHours(item.waitMs) })}` : ""}
                 </div>
               </li>
             ))}
@@ -1291,7 +1334,7 @@ function ByWorkspaceView({ data, t }) {
                 <tr key={item.key}>
                   <td className="wl-name" title={item.path}>{item.label}</td><td>{formatInt(item.activeDays ?? 0)}</td>
                   <td>{formatInt(item.sessions)}</td><td>{formatInt(item.conversations)}</td><td>{formatInt(item.turns)}</td>
-                  <td>{formatInt(item.steps)}</td><td>{formatDuration(item.activeMs)}</td><td>{formatTokens(item.tokensTotal)}</td>
+                  <td>{formatInt(item.steps)}</td><td>{formatHours(item.activeMs)}</td><td>{formatTokens(item.tokensTotal)}</td>
                   <td>{formatPercent(item.activeShare)}</td><td>{formatPercent(item.tokenShare)}</td>
                 </tr>
               ))
@@ -1307,7 +1350,7 @@ function ByWorkspaceView({ data, t }) {
 const SESSION_METRICS = [
   { key: "turns", labelKey: "table.turns", format: (value) => formatInt(value) },
   { key: "steps", labelKey: "table.steps", format: (value) => formatInt(value) },
-  { key: "activeMs", labelKey: "table.active", format: (value) => formatDuration(value) },
+  { key: "activeMs", labelKey: "table.active", format: (value) => formatHours(value) },
   { key: "output", labelKey: "table.output", format: (value) => formatTokens(value) },
 ];
 
@@ -1374,10 +1417,13 @@ function BySessionView({ data, t }) {
                   const value = sessionMetric(row, key);
                   return (
                     <td key={key}>
-                      <span className="wl-bar-cell" title={`${t(labelKey)} ${format(value)}`}>
-                        <span className="wl-bar-cell-fill" data-kind={key} style={{ width: `${((value / maxima[key]) * 100).toFixed(1)}%` }} />
-                        <span className="wl-bar-cell-value">{format(value)}</span>
-                      </span>
+                      <MetricBarCell
+                        value={value}
+                        max={maxima[key]}
+                        kind={key}
+                        text={format(value)}
+                        title={`${t(labelKey)} ${format(value)}`}
+                      />
                     </td>
                   );
                 })}

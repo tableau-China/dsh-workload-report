@@ -2,40 +2,27 @@
 
 // 单位统一用小写 h/m/s：与 Token 的 K/M/B 一样是语言无关的写法，
 // 中英文界面共用同一份格式，避免每个语言各写一套"小时/分/秒"。
-const DURATION_UNITS = [
-  { limit: 60000, suffix: "s", scale: 1000, digits: 1 },
-  { limit: 3600000, suffix: "m", scale: 60000, digits: 1 },
-  { limit: Infinity, suffix: "h", scale: 3600000, digits: 2 },
-];
+const HOUR_MS = 3600000;
+const MINUTE_MS = 60000;
 
-/**
- * 人类可读时长（毫秒）。表格、tooltip、报告等"信息密度高"的地方用它。
- * @param ms - 毫秒。
- * @returns 例如 "3.4 h" / "12.5 m" / "800 s"。
- */
-export function formatDuration(ms) {
-  const value = Number.isFinite(ms) && ms > 0 ? ms : 0;
-  if (value === 0) return "0";
-  const unit = DURATION_UNITS.find((u) => value < u.limit) ?? DURATION_UNITS[DURATION_UNITS.length - 1];
-  const scaled = value / unit.scale;
-  const digits = scaled >= 100 ? 0 : unit.digits;
-  // 去掉多余尾零：1.50 → 1.5，3.00 → 3
-  const text = scaled.toFixed(digits).replace(/\.?0+$/, "");
-  return `${text} ${unit.suffix}`;
+/** 去掉 toFixed 产生的 ".0" 尾零，但保留 1 位有效小数（1.50 → 1.5，3.0 → 3）。 */
+function trimZero(text) {
+  return text.replace(/\.0$/, "");
 }
 
 /**
- * KPI 卡专用时长：数值大、只扫一眼，所以固定精度——
- * ≥1 小时保留一位小数（223.2 h），不足 1 小时用整数 m / s（45 m / 12 s）。
- * 与 formatDuration 的区别只在精度，不在口径。
+ * 人类可读时长（毫秒）——**全站唯一**的小时 / 分钟换算入口。
+ * 规则：不足 1 小时用分钟（不足 1 分钟用秒）；1 小时及以上固定保留 1 位小数（去掉 .0），
+ * 例如 1.63 h → "1.6 h"、20 min → "20 m"。看板、图例、KPI 副文本、工作区、会话表、
+ * 导出报告都走这里，不允许各自 toFixed。
  * @param ms - 毫秒。
- * @returns 例如 "223.2 h" / "45 m" / "12 s"。
+ * @returns 例如 "1.6 h" / "20 m" / "800 s"。
  */
-export function formatKpiDuration(ms) {
+export function formatHours(ms) {
   const value = Number.isFinite(ms) && ms > 0 ? ms : 0;
   if (value === 0) return "0";
-  if (value >= 3600000) return `${(value / 3600000).toFixed(1)} h`;
-  if (value >= 60000) return `${Math.round(value / 60000)} m`;
+  if (value >= HOUR_MS) return `${trimZero((value / HOUR_MS).toFixed(1))} h`;
+  if (value >= MINUTE_MS) return `${trimZero((value / MINUTE_MS).toFixed(1))} m`;
   return `${Math.max(1, Math.round(value / 1000))} s`;
 }
 

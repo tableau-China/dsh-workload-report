@@ -5,7 +5,7 @@
  * 所有外部文本（工作区名、会话标题、备注）都经 escapeHtml 转义。
  */
 
-import { escapeHtml, formatDuration, formatInt, formatPercent, formatTokens } from "./format.js";
+import { escapeHtml, formatHours, formatInt, formatPercent, formatTokens } from "./format.js";
 import { sectorPath } from "./sector-path.js";
 
 /** 主题色板（浅色/深色）。报告是独立文件，用不了宿主 token，因此自带一套与看板一致的色板。 */
@@ -58,13 +58,13 @@ function dailyChart(days, palette) {
       const y = pad.top + innerH - h;
       const weekend = isWeekend(day.date);
       const fill = weekend ? palette.weekend : palette.input;
-      const title = `${day.date}${weekend ? "（周末）" : ""}\n活跃 ${formatDuration(day.activeMs)}\nToken ${formatInt(day.tokensTotal)}\n对话 ${day.conversations} · 轮次 ${day.turns}`;
+      const title = `${day.date}${weekend ? "（周末）" : ""}\n活跃 ${formatHours(day.activeMs)}\nToken ${formatInt(day.tokensTotal)}\n对话 ${day.conversations} · 轮次 ${day.turns}`;
       // tooltip 必须挂在柱本身（<rect> 的直接子节点）：挂在 <g> 上时部分浏览器不弹
       // （原生 SVG tooltip 以实际命中的形状为准）；0 值日也保留 ≥1px 的柱，天天可悬停。
       const bar = `<rect x="${(x - barW / 2).toFixed(2)}" y="${y.toFixed(2)}" width="${barW.toFixed(2)}" height="${Math.max(h, 1).toFixed(2)}" rx="2" fill="${fill}"><title>${escapeHtml(title)}</title></rect>`;
       const value =
         day.activeMs > 0 && index % valueEvery === 0
-          ? `<text x="${x.toFixed(1)}" y="${(y - 5).toFixed(1)}" text-anchor="middle" font-size="10" fill="${palette.muted}">${escapeHtml(formatDuration(day.activeMs))}</text>`
+          ? `<text x="${x.toFixed(1)}" y="${(y - 5).toFixed(1)}" text-anchor="middle" font-size="10" fill="${palette.muted}">${escapeHtml(formatHours(day.activeMs))}</text>`
           : "";
       return `<g>${bar}${value}</g>`;
     })
@@ -108,7 +108,7 @@ function workspaceBars(items, palette, metric, rangeDays = 0) {
   <div class="ws-metrics">
     <div class="ws-metric">
       <div class="m-label">我的付出</div>
-      <div class="m-value">${escapeHtml(formatDuration(item.activeMs))}<span class="m-share">${escapeHtml(formatPercent(item.activeShare ?? 0))}</span></div>
+      <div class="m-value">${escapeHtml(formatHours(item.activeMs))}<span class="m-share">${escapeHtml(formatPercent(item.activeShare ?? 0))}</span></div>
       <div class="bar-track"><div class="bar-fill" style="width:${activePct.toFixed(2)}%"></div></div>
       <div class="m-sub">活跃 ${formatInt(item.activeDays ?? 0)}/${formatInt(rangeDays)} 天 · ${formatInt(item.turns)} 轮 · ${formatInt(item.steps)} 步</div>
     </div>
@@ -148,7 +148,7 @@ function hourChart(hours, palette) {
       const x = pad.left + step * index + (step - barW) / 2;
       const y = pad.top + innerH - h;
       const fill = hour.hour === peak?.hour ? palette.accent : palette.input;
-      const title = `${hour.hour}:00–${hour.hour}:59\n活跃 ${formatDuration(hour.activeMs)}\n覆盖 ${hour.sessions} 个会话 · ${hour.starts} 次开始`;
+      const title = `${hour.hour}:00–${hour.hour}:59\n活跃 ${formatHours(hour.activeMs)}\n覆盖 ${hour.sessions} 个会话 · ${hour.starts} 次开始`;
       // 柱自带 tooltip，且 24 根柱恒存在（0 值给 1px）：原来 h ≤ 0.5 时整根柱被删掉，
       // 该小时连可命中的形状都没有 → 悬停无任何提示。
       return `<g><rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${barW.toFixed(2)}" height="${Math.max(h, 1).toFixed(2)}" rx="2" fill="${fill}"><title>${escapeHtml(title)}</title></rect></g>`;
@@ -166,7 +166,7 @@ function hourChart(hours, palette) {
   ${bars}
   ${labels}
 </svg>
-<p class="empty" style="margin:6px 0 0">最活跃：${peak ? peak.hour : 0}:00（${escapeHtml(formatDuration(peak ? peak.activeMs : 0))}）</p>`;
+<p class="empty" style="margin:6px 0 0">最活跃：${peak ? peak.hour : 0}:00（${escapeHtml(formatHours(peak ? peak.activeMs : 0))}）</p>`;
 }
 
 /**
@@ -194,7 +194,7 @@ function workspacePie(items, palette) {
     .map((slice, index) => {
       const share = slice.value / total;
       const sweep = share * Math.PI * 2;
-      const arc = `<path d="${sectorPath(outer, inner, angle, angle + sweep)}" fill="${colors[index % colors.length]}" stroke="${palette.surface}" stroke-width="1.6" stroke-linejoin="round"><title>${escapeHtml(slice.label)}：${escapeHtml(formatDuration(slice.value))}（${escapeHtml(formatPercent(share))}）</title></path>`;
+      const arc = `<path d="${sectorPath(outer, inner, angle, angle + sweep)}" fill="${colors[index % colors.length]}" stroke="${palette.surface}" stroke-width="1.6" stroke-linejoin="round"><title>${escapeHtml(slice.label)}：${escapeHtml(formatHours(slice.value))}（${escapeHtml(formatPercent(share))}）</title></path>`;
       angle += sweep;
       return arc;
     })
@@ -202,13 +202,13 @@ function workspacePie(items, palette) {
   const legend = top
     .map((slice, index) => {
       const share = slice.value / total;
-      return `<li><i style="background:${colors[index % colors.length]}"></i><span class="pie-name">${escapeHtml(slice.label)}</span><span class="pie-value">${escapeHtml(formatDuration(slice.value))}</span><span class="pie-share">${escapeHtml(formatPercent(share))}</span></li>`;
+      return `<li><i style="background:${colors[index % colors.length]}"></i><span class="pie-name">${escapeHtml(slice.label)}</span><span class="pie-value">${escapeHtml(formatHours(slice.value))}</span><span class="pie-share">${escapeHtml(formatPercent(share))}</span></li>`;
     })
     .join("");
   return `<div class="pie-wrap">
   <svg viewBox="0 0 160 160" width="160" height="160" role="img" aria-label="工作区占比">
     <g transform="translate(80,80) rotate(-90)">${arcs}</g>
-    <text x="80" y="76" text-anchor="middle" font-size="14" font-weight="650" fill="${palette.text}">${escapeHtml(formatDuration(total))}</text>
+    <text x="80" y="76" text-anchor="middle" font-size="14" font-weight="650" fill="${palette.text}">${escapeHtml(formatHours(total))}</text>
     <text x="80" y="92" text-anchor="middle" font-size="10" fill="${palette.muted}">总活跃时长</text>
   </svg>
   <ul class="pie-legend">${legend}</ul>
@@ -362,7 +362,7 @@ export function renderReport(snapshot, options = {}) {
   // 活跃时长 KPI 用净活跃（totals.activeMs 是官方值，含等待用户）；等待在副标题里单列
   const netActiveMs = totals.netActiveMs ?? totals.activeMs;
   const kpis = [
-    ["累计活跃时长", formatDuration(netActiveMs), `模型 ${formatDuration(totals.llmMs)} · 工具 ${formatDuration(totals.toolMs)} · 含等待用户 ${formatDuration(totals.waitMs ?? 0)}`],
+    ["累计活跃时长", formatHours(netActiveMs), `模型 ${formatHours(totals.llmMs)} · 工具 ${formatHours(totals.toolMs)} · 含等待用户 ${formatHours(totals.waitMs ?? 0)}`],
     ["总 Token", formatTokens(totals.tokensTotal), `输入 ${formatTokens(totals.tokens.input)} · 输出 ${formatTokens(totals.tokens.output)} · 缓存 ${formatTokens(totals.tokens.cacheRead)}`],
     ["模型费用(估算)", money(pricing.totalCost), costed.total > 0 ? `${formatInt(costed.covered)}/${formatInt(costed.total)} 个模型有官方价 · as-of ${pricing.asOf ?? "—"}` : "无带官方价的模型"],
     ["对话次数", formatInt(totals.conversations), `会话总数 ${formatInt(totals.sessions)}（含空会话 ${formatInt(totals.emptySessions)}）`],
@@ -376,13 +376,13 @@ export function renderReport(snapshot, options = {}) {
     .sort((a, b) => b.date.localeCompare(a.date))
     .slice(0, 14)
     .map(
-      (day) => `<tr><td>${escapeHtml(day.date)}</td><td>${day.conversations}</td><td>${formatInt(day.turns)}</td><td>${formatInt(day.steps)}</td><td>${formatDuration(day.activeMs)}</td><td>${formatTokens(day.tokens.input)}</td><td>${formatTokens(day.tokens.output)}</td><td>${formatTokens(day.tokens.cacheRead)}</td></tr>`,
+      (day) => `<tr><td>${escapeHtml(day.date)}</td><td>${day.conversations}</td><td>${formatInt(day.turns)}</td><td>${formatInt(day.steps)}</td><td>${formatHours(day.activeMs)}</td><td>${formatTokens(day.tokens.input)}</td><td>${formatTokens(day.tokens.output)}</td><td>${formatTokens(day.tokens.cacheRead)}</td></tr>`,
     )
     .join("");
 
   const workspaceRows = snapshot.byWorkspace
     .map(
-      (item) => `<tr><td class="ws">${escapeHtml(item.label)}</td><td>${formatInt(item.activeDays ?? 0)}</td><td>${formatInt(item.sessions)}</td><td>${formatInt(item.conversations)}</td><td>${formatInt(item.turns)}</td><td>${formatInt(item.steps)}</td><td>${formatDuration(item.activeMs)}</td><td>${formatTokens(item.tokensTotal)}</td><td>${formatPercent(item.activeShare ?? 0)}</td><td>${formatPercent(item.tokenShare ?? 0)}</td></tr>`,
+      (item) => `<tr><td class="ws">${escapeHtml(item.label)}</td><td>${formatInt(item.activeDays ?? 0)}</td><td>${formatInt(item.sessions)}</td><td>${formatInt(item.conversations)}</td><td>${formatInt(item.turns)}</td><td>${formatInt(item.steps)}</td><td>${formatHours(item.activeMs)}</td><td>${formatTokens(item.tokensTotal)}</td><td>${formatPercent(item.activeShare ?? 0)}</td><td>${formatPercent(item.tokenShare ?? 0)}</td></tr>`,
     )
     .join("");
 
@@ -396,7 +396,7 @@ export function renderReport(snapshot, options = {}) {
       <tbody>${snapshot.bySession
         .slice(0, topSessions)
         .map(
-          (item) => `<tr><td class="ws">${escapeHtml(item.title || "(无标题)")}</td><td>${escapeHtml(item.workspaceLabel)}</td><td>${formatInt(item.turns)}</td><td>${formatInt(item.steps)}</td><td>${formatDuration(item.activeMs)}</td><td>${formatTokens(item.tokens.output)}</td></tr>`,
+          (item) => `<tr><td class="ws">${escapeHtml(item.title || "(无标题)")}</td><td>${escapeHtml(item.workspaceLabel)}</td><td>${formatInt(item.turns)}</td><td>${formatInt(item.steps)}</td><td>${formatHours(item.activeMs)}</td><td>${formatTokens(item.tokens.output)}</td></tr>`,
         )
         .join("")}</tbody>
     </table>
@@ -532,7 +532,7 @@ export function renderReport(snapshot, options = {}) {
   ${sessionSection}
 
   <footer>
-    活跃时长＝净活跃（模型＋工具时间，已剔除等待用户 ${escapeHtml(formatDuration(totals.waitMs ?? 0))}；累计，非墙钟）。
+    活跃时长＝净活跃（模型＋工具时间，已剔除等待用户 ${escapeHtml(formatHours(totals.waitMs ?? 0))}；累计，非墙钟）。
     官方 activeMs 保留在接口字段 <code>totals.activeMs</code> 供核对：净活跃 + 等待用户 = 官方 activeMs（守恒）。
     等待用户＝交互工具（ask_user_question / exit_plan_mode 白名单）或工具调用期间夹着 user/message、且单次 ≥ 60s 的区间；
     没有人类输入的长任务（编译 / 跑批）照常算工作。每日 / 时刻图同样用净活跃。

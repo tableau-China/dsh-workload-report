@@ -4,7 +4,8 @@
 import { readFile, rm } from "node:fs/promises";
 
 import { aggregate, dateKey, present, resolveRange, rowFromSession, workspaceLabel } from "../src/aggregate.js";
-import { formatDuration, formatMoney, formatTokens, escapeHtml } from "../src/format.js";
+import { escapeHtml, formatHours, formatMoney, formatTokens } from "../src/format.js";
+import { barPercent } from "../src/client/bar-width.js";
 import { renderReport } from "../src/report-html.js";
 import { balanceChip } from "../src/client/balance.js";
 import { translate } from "../src/client/locales.js";
@@ -459,9 +460,51 @@ console.log("\n—— 区间与别名 ——");
 eq(JSON.stringify(resolveRange({ days: 7, now: Date.parse("2026-10-10T03:00:00Z"), timeZone: "UTC" })), JSON.stringify({ from: "2026-10-04", to: "2026-10-10" }), "近 7 天区间含今天");
 eq(workspaceLabel("/Users/me/proj-a", { "proj-a": "零售订单系统" }), "零售订单系统", "别名优先");
 eq(workspaceLabel("", {}), "(未知工作区)", "空 cwd 显示未知工作区");
-eq(formatDuration(5400000), "1.5 h", "时长格式化（单位小写 h，去掉多余尾零）");
-eq(formatDuration(10800000), "3 h", "整点时长不带小数");
-eq(formatDuration(0), "0", "零时长");
+console.log("\n—— 时长格式化（formatHours：全站唯一换算入口）——");
+eq(formatHours(5868000), "1.6 h", "1.63 h → 1.6 h（旧两位小数统一为一位）");
+eq(formatHours(5400000), "1.5 h", "1.5 h 保持一位小数（单位小写 h）");
+eq(formatHours(10800000), "3 h", "整点时长去掉 .0（3 h，不是 3.0 h）");
+eq(formatHours(0), "0", "零时长");
+eq(formatHours(20 * 60000), "20 m", "不足 0.1 h 用分钟");
+eq(formatHours(59 * 60000), "59 m", "不足 1 小时仍用分钟（与既有报告断言一致）");
+eq(formatHours(3600000), "1 h", "整小时边界切到小时（去掉 .0）");
+eq(formatHours(30000), "30 s", "不足 1 分钟用秒");
+// 同一数值在 KPI / 表格 / 报告三处必须一致（都调用 formatHours）
+const crossMs = 5868000; // 1.63 h → 1.6 h
+const crossSnap = present(aggregate([makeRow({ id: "cross", cwd: "/tmp/cross", createdAt: base, llmMs: crossMs, toolMs: 0 })], { days: 30, timeZone: "Asia/Shanghai", now: base }));
+const crossHtml = renderReport(crossSnap, { theme: "light", title: "一致性", topSessions: 1 });
+const crossDay = crossSnap.byDay.find((day) => day.sessions > 0);
+eq(formatHours(crossSnap.totals.netActiveMs), "1.6 h", "KPI 数值 = formatHours(1.63 h)");
+eq(formatHours(crossDay.activeMs), "1.6 h", "表格数值与 KPI 一致（同一函数）");
+ok(crossHtml.includes('<div class="value">1.6 h</div>'), "报告 KPI 用同一格式化结果", (crossHtml.match(/<div class="value">[^<]+<\/div>/) ?? [""])[0]);
+ok(crossHtml.includes("<td>1.6 h</td>"), "报告按日期明细表与 KPI 一致", (crossHtml.match(/<td>[^<]* h<\/td>/) ?? [""])[0]);
+ok(!crossHtml.includes("1.63 h"), "报告不再出现两位小数小时");
+{
+  const clientSource = await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8");
+  const reportSource = await readFile(new URL("../src/report-html.js", import.meta.url), "utf8");
+  ok(!clientSource.includes("formatDuration(") && !clientSource.includes("formatKpiDuration("), "看板不再调用旧时长格式化函数");
+  ok(!reportSource.includes("formatDuration(") && !reportSource.includes("formatKpiDuration("), "报告不再调用旧时长格式化函数");
+  ok(!/\/\s*3600000/.test(clientSource) && !/\/\s*3600000/.test(reportSource), "看板 / 报告没有各自的毫秒→小时换算");
+  ok(clientSource.includes("formatHours") && reportSource.includes("formatHours"), "看板与报告都走 formatHours");
+}
+console.log("\n—— 比例条（主要会话 / 按日期明细共用 MetricBarCell）——");
+eq(barPercent(500, 1000), 50, "bar 宽度 = 本行 / 本列最大值（50%）");
+eq(barPercent(250, 2000), 12.5, "同列归一（12.5%）");
+eq(barPercent(50, 200), barPercent(500, 2000), "两表同比例数值的 bar 宽度一致（25%）");
+eq(barPercent(1000, 1000), 100, "本列最大值铺满 100%");
+eq(barPercent(0, 1000), 0, "0 值不画条");
+eq(barPercent(1200, 1000), 100, "异常值夹紧到 100%");
+{
+  const indexSource = await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8");
+  const cellSource = await readFile(new URL("../src/client/bar-cell.jsx", import.meta.url), "utf8");
+  const widthSource = await readFile(new URL("../src/client/bar-width.js", import.meta.url), "utf8");
+  ok(cellSource.includes("export function MetricBarCell"), "通用组件 MetricBarCell 存在");
+  eq((indexSource.match(/<MetricBarCell/g) ?? []).length, 2, "两处调用点：主要会话 + 按日期明细");
+  ok(indexSource.includes('from "./bar-cell.jsx"'), "两张表从同一组件模块导入");
+  ok(!indexSource.includes("wl-bar-cell"), "index.jsx 不再复制条形单元格的样式/逻辑");
+  ok(cellSource.includes('from "./bar-width.js"') && widthSource.includes("export function barPercent"), "宽度计算只有一份实现");
+  ok(/key: "tokens", labelKey: "table.tokens"/.test(indexSource), "日期明细覆盖 Token 合计列");
+}
 eq(formatTokens(1500), "1.50 K", "Token 紧凑格式");
 
 // ---------------------------------------------------------------- 报告

@@ -87,6 +87,7 @@ export const STYLES = `
 .wl-hint { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); margin: 0 0 10px; }
 .wl-legend { display: flex; gap: 14px; font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); margin-top: 8px; flex-wrap: wrap; }
 .wl-dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+.wl-table-scroll { overflow-x: auto; }
 .wl-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .wl-table th, .wl-table td { text-align: right; padding: 7px 9px; border-bottom: 1px solid var(--dsw-alias-border-l2, #f0f1f3); font-variant-numeric: tabular-nums; }
 .wl-table th:first-child, .wl-table td:first-child { text-align: left; }
@@ -98,8 +99,11 @@ export const STYLES = `
 .wl-bar-cell-fill { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 5px; background: color-mix(in srgb, var(--dsw-static-deepseek-500, #4d6bfe) 20%, transparent); }
 .wl-bar-cell-fill[data-kind="steps"] { background: color-mix(in srgb, var(--dsw-static-blue-400, #60a5fa) 22%, transparent); }
 .wl-bar-cell-fill[data-kind="activeMs"] { background: color-mix(in srgb, var(--dsw-static-amber-400, #f7ad31) 26%, transparent); }
-.wl-bar-cell-fill[data-kind="output"] { background: color-mix(in srgb, var(--dsw-static-green-400, #34d399) 22%, transparent); }
-.wl-bar-cell-value { position: relative; z-index: 1; display: block; padding: 0 7px; line-height: 20px; text-align: right; font-variant-numeric: tabular-nums; }
+.wl-bar-cell-fill[data-kind="conversations"] { background: color-mix(in srgb, var(--dsw-static-deepseek-300, #a9b8ff) 34%, transparent); }
+/* output（主要会话）与 tokens（按日期明细）共用同一份绿色：同一语义不写两套 */
+.wl-bar-cell-fill[data-kind="output"], .wl-bar-cell-fill[data-kind="tokens"] { background: color-mix(in srgb, var(--dsw-static-green-400, #34d399) 22%, transparent); }
+/* 数值占满单元格；窄屏超长时省略号截断，title 保留全文（宽度只在单元格内滚动，不撑破表格） */
+.wl-bar-cell-value { position: relative; z-index: 1; display: block; padding: 0 7px; line-height: 20px; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* 可排序表头：当前排序列用主色加粗 + 箭头指示 */
 .wl-th-sort { display: inline-flex; align-items: center; gap: 4px; background: none; border: 0; padding: 0; font: inherit; font-size: 11px; font-weight: 500; color: var(--dsw-alias-label-tertiary, #6b7280); cursor: pointer; }
 .wl-th-sort:hover { color: var(--dsw-alias-label-primary, #111827); }
@@ -194,7 +198,7 @@ export const STYLES = `
 .wl-details[open] summary::before { content: "▾ "; }
 .wl-details[open] summary { margin-bottom: 10px; }
 @media (max-width: 1080px) { .wl-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } .wl-grid-2 { grid-template-columns: 1fr; } }
-@media (max-width: 720px) { .wl-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .wl-kpi[data-kpi="kpi.tokens"], .wl-kpi[data-kpi="kpi.modelCost"] { grid-column: auto; } .wl-name { max-width: 160px; } }
+@media (max-width: 720px) { .wl-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .wl-kpi[data-kpi="kpi.tokens"], .wl-kpi[data-kpi="kpi.modelCost"] { grid-column: auto; } .wl-name { max-width: 160px; } .wl-bar-cell { min-width: 44px; } }
 
 
 /* ── 每日用量趋势（左）与模型用量（右）并排 ── */
