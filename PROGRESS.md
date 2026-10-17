@@ -2,6 +2,35 @@
 
 日期用 `YYYY-MM-DD`；只记录影响后续决策的事实。
 
+## 2026-10-17 小时统一 1 位小数 / 日期明细比例条（v0.7.1）
+
+### 背景
+
+- 页面里小时出现两种精度（`1.63 h` 与 `1.6 h`），来源是 `formatDuration`（小时 2 位）与 `formatKpiDuration`（1 位）各写一套。
+- 「按日期明细」只有纯数字，缺少「主要会话」表里的浅色比例条。
+
+### 关键决策
+
+| 决策 | 取舍 |
+| --- | --- |
+| `formatHours(ms)` 以 1 小时为分钟 / 小时分界 | 既有报告断言「20 m」与短时长可读性优先；≥1h 固定 1 位小数（1.63 → 1.6），<1min 用秒 |
+| 比例条拆成 `MetricBarCell` + `bar-width.js` | 两表共用一份宽度逻辑与 `.wl-bar-cell` 样式；纯函数可在离线断言里直接量测 |
+| 日期明细用 Token 合计列替代步骤列 | 保持 8 列、窄屏不溢出；步骤仍在主要会话 / 工作区表 |
+| 删除 `cal.hint` 键与渲染 | 需求明确；`chart.hint` 仍用于骨架屏，不留下空标签 |
+
+### 已完成
+
+- `src/format.js`：新增 `formatHours`；删除 `formatDuration` / `formatKpiDuration` 两套旧精度。
+- `src/client/index.jsx` / `src/report-html.js`：所有时长展示改走 `formatHours`，无各自的 `/ 3600000` 或 `toFixed`。
+- `src/client/bar-cell.jsx` / `bar-width.js`：新增通用比例条；主要会话四列 + 日期明细四列（对话 / 轮次 / 活跃 / Token）共用。
+- `src/client/locales.js` / `index.jsx`：删除「全历史；右侧＝各周几累计」；每日用量趋势卡片头不再渲染提示段落。
+- 文档：README（中英）/ release 断言数 384 → 415；package 版本 0.7.1。
+
+### 测试
+
+- 离线断言 384 → 415（连跑 2 次 exit 0）：格式化边界与三处一致、两表共用组件、bar 宽度比例、删除提示键。
+
+
 ## 2026-10-17 等待用户剔除 / 净活跃口径（v0.7.0）
 
 ### 背景
