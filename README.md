@@ -121,7 +121,7 @@ Parameters: `from`/`to` (YYYY-MM-DD, take precedence over `days`), `days`, `all=
 
 The full definitions live in **[docs/metrics.md](./docs/metrics.md)**. Durations are always shown in **`H / M / S`** (language-neutral, like K/M/B for tokens, so one format serves every locale). The three most misunderstood:
 
-- **Active time** = model time + tool time. It is **cumulative engine work**, not wall-clock time; concurrent sessions and subagents each add up.
+- **Active time** = model time + tool time − waiting for user. It is **cumulative engine work**, not wall-clock time; concurrent sessions and subagents each add up. Waiting (interaction tools such as `ask_user_question`, or any tool whose call→result span contains a `user/message`, ≥ 60s) is excluded from active time and reported separately as `waitMs`; the official `totals.activeMs` is kept for cross-checking (`netActiveMs + waitMs === activeMs`).
 - **Conversations** = sessions with at least one step. Zero-step sessions (opened but unused) are listed separately.
 - **Attribution date** = the session's creation day in the selected time zone; a session resumed across midnight still counts on its creation day.
 
@@ -139,7 +139,7 @@ Whether the exported HTML report contains session titles is your call (`anonymiz
 | --- | --- |
 | `pnpm add -D esbuild puppeteer-core` | Install build and E2E dependencies (or point `ESBUILD_PATH` / `WL_PUPPETEER_DIR` at existing installs) |
 | `node build.mjs` | Bundle `src/client/` into `lib/client.js` (ModuleLoader factory format) with esbuild |
-| `node test/verify.mjs` | 326 offline assertions: aggregation semantics, time zones, turn-based hour bucketing and conservation (multi-turn separation / whole turn attributed to its start hour / cross-time-zone / no flattening on long windows / apportion fallback), "all-time" start, calendar data source, HTML escaping, both token shapes, cold-read fallback, `inject` declaration check, host routes, and the balance states (off by default / signed in / signed out / failed / service absent) with isomorphic chip text |
+| `node test/verify.mjs` | 384 offline assertions: aggregation semantics, time zones, turn-based hour bucketing and conservation (multi-turn separation / whole turn attributed to its start hour / cross-time-zone / no flattening on long windows / apportion fallback), waiting-for-user exclusion (interaction whitelist / human-input interleaving / short-interaction threshold / long-task exemption / net-active conservation / `excludeWait:false` 0.6.0 regression), "all-time" start, calendar data source, HTML escaping, both token shapes, cold-read fallback, `inject` declaration check, host routes, and the balance states (off by default / signed in / signed out / failed / service absent) with isomorphic chip text |
 | `./test/e2e-boot.sh 3299` | Boot an **isolated instance** (own DSH_HOME and port, copied projection data) without touching your running GUI |
 | `node test/e2e-ui.mjs` | 63 real-browser assertions: calendar/bar switching, side-by-side geometry, weekday bars, donut switching, collapsed detail, report export |
 

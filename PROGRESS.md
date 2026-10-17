@@ -2,6 +2,40 @@
 
 日期用 `YYYY-MM-DD`；只记录影响后续决策的事实。
 
+## 2026-10-17 等待用户剔除 / 净活跃口径（v0.7.0）
+
+### 背景
+
+- 用户实测：用 `ask_user_question` 等回答 3 小时，这 3 小时被整段算成「活跃时长」（`toolMs` 是 call→result 墙钟），严重虚高。
+- 目标：交互等待从活跃中剔除，但编译/跑批这类**没有人类输入**的长任务仍照常算工作。
+
+### 关键决策
+
+| 决策 | 取舍 |
+| --- | --- |
+| 等待判定 = 单次区间 ≥ `waitMinMs` 且（白名单 或 夹着 `user/message`） | 白名单保证交互工具无 human 消息也能识别；human 夹层覆盖任意工具；统一阈值避免 30s 确认被切碎（断言 ④） |
+| 长任务豁免 = 不满足上面任一信号就照常算工作 | 编译/跑批没有 user/message，不会被误伤（断言 ③） |
+| 等待在**行级**剔除，而不是聚合后再减 | `byDay/byWorkspace/byHour/calendar/bySession` 的 `activeMs` 天然是净活跃；totals 另留官方 `activeMs` + `netActiveMs`，`llmMs/toolMs` 为净口径 |
+| 小时桶缩放目标改为「官方 activeMs − waitMs」 | 保持 `sum(hours) === 净活跃`；事件桶与官方口径不等仍走 `events-scaled` |
+| `INDEX_VERSION` 5 → 6 | v5 的 `hours` 把等待算成工作，语义作废；不换代会把旧桶当净活跃分布复用 |
+| `excludeWait:false` 作为回归开关 | 置 false 时完全不判定等待，`waitMs=0`，小时桶与 0.6.0 逐桶一致 |
+
+### 已完成
+
+- `src/models.js`：新增 `DEFAULT_WAIT_TOOLS` / `DEFAULT_WAIT_MIN_MS`；`foldSessionHours` 在同一趟 events 里识别等待
+  （白名单 / user/message 夹层 / 阈值），`waitMs` 整段剔除且不进小时桶；`foldSessionModels` 透传并返回 `waitMs`。
+- `src/aggregate.js`：新增 `netActiveMs(row)`；桶的 `activeMs` 统一为净活跃并累计 `waitMs`；totals 保留官方
+  `activeMs` 并新增 `waitMs` / `netActiveMs`；旧法摊销与事件桶回正都改用净活跃；占比/均值/每活跃小时输出改用净活跃。
+- `index.js`：DEFAULTS 增加 `excludeWait` / `waitTools` / `waitMinMs`；折叠传参并写回 `row.waitMs`；
+  `MODEL_ROW_FIELDS` 增加 `waitMs`；`INDEX_VERSION` 5 → 6（注释写明原因）。
+- 客户端：KPI 活跃显示净活跃，副标题「含等待用户 {wait}」；工作区 foot 单列等待（zh/en 新键）。
+- 报告：KPI / 每日柱 / 时刻图用净活跃，footer 写明净活跃 + 等待 = 官方 activeMs。
+- 文档：`docs/metrics.md` 新增「等待用户（0.7.0）」章节；README（中英）/ release 断言数 326 → 384。
+
+### 测试
+
+- 离线断言 326 → 384（连跑 2 次 exit 0）：等待剔除 ①–⑦ + 白名单扩展 + 宿主配置端到端（true/false）+ 报告/i18n 展示。
+
 ## 2026-10-16 时刻分析改按轮次落桶（v0.6.0）
 
 ### 背景

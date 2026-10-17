@@ -1,5 +1,42 @@
 # CHANGELOG — dsh-workload-report
 
+## v0.7.0（2026-10-17）— 等待用户从活跃时长中剔除（净活跃口径）
+
+### 问题
+
+- 「活跃时长」= `llmMs + toolMs`，而 `toolMs` 是 `tool/call → tool/result` 的墙钟间隔。
+  用户用 `ask_user_question` 让 AI 等他回答，**一等 3 小时**，这 3 小时被整段算成活跃时长 → 严重虚高。
+
+### 变更
+
+- **三层等待判定**（单次工具区间 ≥ `waitMinMs` 且满足任一条件时，整段计为 `waitMs`）：
+  1. 工具名在 `waitTools` 白名单（默认 `ask_user_question` / `exit_plan_mode`，可扩展）；
+  2. `tool/call → tool/result` 之间夹着 `user/message`（人类输入夹层，任意工具适用）；
+  3. 短于 `waitMinMs`（默认 60s）的交互不剔除，避免碎片化。
+- **长任务豁免**：没有 `user/message` 且不在白名单的长工具（编译 / 跑批）照常算工作，不误伤。
+- **折叠**：`foldSessionHours` / `foldSessionModels` 在同一趟 events 里累计 `waitMs`；小时桶只累计非等待区间
+  （保持「按轮次整段归起始小时」语义不变，只剔除等待）。
+- **行字段**：`row.waitMs` 随索引持久化，行换代时由 `carryModelFields` 搬运；`INDEX_VERSION` 5 → 6
+  （v5 的 `hours` 把等待算成工作，语义作废，必须换代重建）。
+- **聚合**：`totals.waitMs`、`totals.netActiveMs = activeMs - waitMs`；`totals.activeMs` 仍保留官方值供核对，`totals.llmMs / toolMs` 为净口径（`toolMs` 已扣等待，故 `llmMs + toolMs === netActiveMs`）。
+  `byDay / byWorkspace / byHour / calendar / bySession` 的 `activeMs` 一律为净活跃（row 级剔除，不事后减）；
+  `byWorkspace` 另带 `waitMs`。守恒：`netActiveMs + waitMs === activeMs`（±1ms），
+  `sum(byHour) === totals.netActiveMs`。
+- **配置**：`excludeWait: true`（默认开）/ `waitTools` / `waitMinMs`；`excludeWait: false` 时不做任何等待判定，
+  `waitMs = 0`、`netActiveMs === activeMs`，小时桶与 0.6.0 完全一致（有回归断言）。
+- **展示**：KPI「活跃时长」显示净活跃，副标题追加「含等待用户 {wait}」（zh/en）；工作区视图 foot 单列等待；
+  报告 KPI / 每日柱 / 时刻图同样用净活跃，footer 写明新口径与守恒关系。
+- **文档**：`docs/metrics.md` 增补 `waitMs`（三层判定）、`netActiveMs`、"官方 activeMs 保留用于核对"。
+
+### 测试
+
+- 离线断言 **326 → 384**（+58，连跑 2 次 exit 0）：
+  ① 交互工具 3h（含 user/message）→ `waitMs=180min`、净活跃 20min、小时桶不含等待；
+  ② 非白名单 10min 有 user/message → 判等待；③ 同样的 10min 无 user/message → 仍算工作；
+  ④ 30s 短交互 < 60s → 不剔除；⑤ 守恒 `netActiveMs + waitMs === activeMs`；
+  ⑥ `excludeWait:false` → 与 0.6.0 一致；⑦ 一段 3h 等待前后各有工作 → 不抬高任何小时桶；
+  另含宿主配置端到端（true / false 两种）与报告/i18n 展示断言。
+
 ## v0.6.0（2026-10-16）— 时刻分析改按轮次（turn）落桶（不分摊、不切分）
 
 ### 变更
