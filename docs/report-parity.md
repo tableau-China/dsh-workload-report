@@ -8,7 +8,7 @@
 
 - 生成入口：`renderReport(snapshot, options)`（`src/report-html.js`），宿主路由 `/workload-report/v1/report.html`。
 - 数据源：与看板同一个 `present(aggregate(...))` 快照（`snapshot.byDay / byHour / calendar / byModel / modelDaily / pricing / topModel / diagnostics`）。
-- 最近审计：2026-10-17（v0.6.5）。此前报告漏掉 0.6.5 的时刻图 / 卡片头 / 比例条等改动，本清单即为防再漏的基线。
+- 最近审计：2026-10-17（v0.6.6）。此前报告漏掉 0.6.5 的时刻图 / 卡片头 / 比例条等改动，本清单即为防再漏的基线。
 
 ## 1. 逐项对照
 

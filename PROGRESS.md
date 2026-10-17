@@ -2,7 +2,33 @@
 
 日期用 `YYYY-MM-DD`；只记录影响后续决策的事实。
 
-## 2026-10-17 报告对齐看板（v0.6.5，修正本轮的遗漏）
+## 2026-10-17 发布 0.6.6：报告对齐 + README 重写 + 截图重拍
+
+### 背景
+
+- 0.6.5 已发布到 npm；报告对齐、文档与截图是后续改动，统一收进 **0.6.6**。
+- 本轮只做本地提交与验证；**不 push、不发 npm、不打 tag**（由 Lead 执行）。
+
+### 变更
+
+- `package.json`：**0.6.5 → 0.6.6**；`files` 白名单由 `docs/metrics.md` 改为 **`docs`**，
+  `docs/report-parity.md` / `docs/ui-conventions.md` 会进 npm 包。
+- `CHANGELOG.md`：把「未发布」条目标为 **v0.6.6**，补发布小节（版本、files、README、截图、PROGRESS）。
+- `README.md` / `README.zh-CN.md`：按当前真实功能重写，中英章节一一对应；覆盖安装与入口、
+  数据来源与原则、8 张 KPI、时刻分析双口径、三层等待判定、配置项、`INDEX_VERSION = 7` 升级注意、
+  文档索引与隐私；断言数更新为 **566**，不再保留「6 张 KPI / 533 断言」。
+- 截图：用 `.tmp/readme-gen.mjs`（真实客户端组件 + 真实 `aggregate()` / `renderReport()`，无头 Chrome，
+  2x DPR）重拍 4 张并覆盖 `assets/`。
+
+### 验证
+
+- `node build.mjs && node test/verify.mjs` 连跑 2 次：**566 项断言，exit 0**。
+- `npm pack --dry-run`：包内包含 `docs/report-parity.md`、`docs/ui-conventions.md`。
+- 截图尺寸：dashboard **3120×2476**（2x 1560×1238）、report **2480×10476**（2x 1240×5238 fullPage）；
+  新旧字节 / md5 见提交回报。
+- README 中英章节数 / 键值一一对应（结构一致，非逐字直译）。
+
+## 2026-10-17 报告对齐看板（并入 v0.6.6，修正本轮遗漏）
 
 ### 背景（用户的批评）
 
@@ -108,7 +134,7 @@
 - chips：顶部范围、每日、时刻、工作区、模型五处共用；工作区开关移到卡片右上；模型 chips 恢复底色与选中态。
 - 时刻：legend 行 `space-between`，右侧状态三态；回填期间继续 5 秒轮询。
 - 样式：唯一 class 102 → 94；`.wl-legend` 合并；一次性提示类收敛为 `.wl-status` / hint 修饰。
-- 文档：`docs/ui-conventions.md`；README 不动（版本仍 0.6.5，未发布）。
+- 文档：`docs/ui-conventions.md`；README 本轮未改，随后在 0.6.6 统一更新。
 
 ### 量测（无头 Chrome 1560×1000，zh-CN，7 天区间）
 

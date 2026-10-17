@@ -1,6 +1,6 @@
 # CHANGELOG — dsh-workload-report
 
-## 未发布（基于 v0.6.5）— UI 一致性：ChipGroup / CardHead / tooltip 全覆盖
+## v0.6.6（2026-10-17）— 报告对齐看板 + report-parity 机制 + 文档/截图更新
 
 ### 变更
 
@@ -38,13 +38,19 @@
 
 ### 测试
 
-- 离线断言 **535 → 545 → 565**（连跑 2 次 exit 0）：新增 chip 组件与复用点、CardHead 结构与 hint 位置、
+- 离线断言 **535 → 545 → 566**（连跑 2 次 exit 0）：新增 chip 组件与复用点、CardHead 结构与 hint 位置、
   `hourTokensNote` 三态、tooltip 逐元素、样式收敛与 UI 约定文档断言；报告结构对齐块新增 20 项
   （密度点 / Tokens 默认口径 / 轮次小图 / 状态三态 / 标题右侧说明 / 日历 / 峰值 / 比例条 / 模型小标题 /
-  KPI / 净活跃 / 自包含）；i18n 死键扫描扩展到全部客户端模块。
+  KPI / 净活跃 / 自包含）；另加「报告不含余额 / 余额接口」隐私断言；i18n 死键扫描扩展到全部客户端模块。
 - 无头 Chrome 1560 / 1180 量测：三处 hint 均为 11px / `rgb(129,133,140)`，与标题基线差 0px、
   相对标题左边距 60 / 86 / 104px；标题下方 hint 节点 0；chips 未换行、未被挤压。
 
+### 发布（0.6.6）
+
+- `package.json` 版本 **0.6.5 → 0.6.6**；`files` 白名单由 `docs/metrics.md` 改为 **`docs`**，`docs/report-parity.md` / `docs/ui-conventions.md` 等文档随 npm 包发布。
+- **README 中英双语按当前真实功能重写**：8 张 KPI、数据来源与原则、功能清单、三层等待判定、时刻分析两种口径、配置项、`INDEX_VERSION = 7` 升级注意、文档索引与隐私；不再保留旧版「6 张 KPI / 533 断言」等过期表述。
+- **4 张截图按当前 UI 重拍**（2x DPR）：`assets/dashboard-calendar.png` / `dashboard-workspace.png` / `report-light.png` / `report-dark.png`；报告与看板同口径（8 KPI、日历、密度点、比例条）。
+- `PROGRESS.md` 追加本轮发布记录。
 
 ## v0.6.5（2026-10-17）— 时刻分析 Token 口径 + 人类消息密度；等待剔除、时长/比例条并入
 

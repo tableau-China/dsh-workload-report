@@ -1,6 +1,6 @@
 {
   "name": "dsh-workload-report",
-  "version": "0.6.5",
+  "version": "0.6.6",
   "description": "DeepSeek Harness (DSH) plugin — see your effort and token usage by date and workspace: calendar heatmap, time-of-day analysis, workspace share, and a shareable self-contained HTML report.",
   "type": "module",
   "main": "index.js",
@@ -19,7 +19,7 @@
     "README.zh-CN.md",
     "CHANGELOG.md",
     "LICENSE",
-    "docs/metrics.md"
+    "docs"
   ],
   "scripts": {
     "build": "node build.mjs",
