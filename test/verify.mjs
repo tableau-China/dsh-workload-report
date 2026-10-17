@@ -1146,11 +1146,13 @@ console.log("\n—— 报告与路由中的模型维度 ——");
 const reportWithModels = renderReport(modelSnap, { theme: "light", title: "测试报告" });
 ok(reportWithModels.includes("模型用量"), "报告含「模型用量」一节");
 ok(reportWithModels.includes('class="treemap"'), "报告含 treemap 图");
-ok(reportWithModels.includes("模型占比 · 面积 = Token 占比"), "treemap 带口径小标题（模型占比 · 面积 = Token）");
+ok(reportWithModels.includes("模型占比 · 面积 = Token"), "treemap 带口径小标题（模型占比 · 面积 = Token）");
+ok(reportWithModels.includes("按日模型趋势"), "按日趋势带小标题（与看板 h4 同位置）");
 ok(reportWithModels.includes("api-docs.deepseek.com"), "报告 footer 给出官方计费链接");
 ok(reportWithModels.includes("官方计费标准"), "报告 footer 标注官方计费标准");
 ok(reportWithModels.includes("deepseek-v4-flash"), "报告列出模型名");
-ok(reportWithModels.includes("模型费用(估算)"), "报告 KPI 增加「模型费用」");
+ok(reportWithModels.includes(">模型费用<"), "报告 KPI 增加「模型费用」（与看板同标签）");
+ok(reportWithModels.includes("最活跃模型") && reportWithModels.includes("请求占比"), "报告 KPI 增加「最活跃模型」（与看板同口径）");
 ok(reportWithModels.includes("个模型有官方价"), "模型费用 KPI 副标题给出价目覆盖度");
 ok(reportWithModels.includes('aria-label="每日活跃时长"'), "报告每日趋势＝单序列活跃时长（与看板柱状图一致）");
 ok(!reportWithModels.includes("<polyline"), "报告每日趋势去掉了折线");
@@ -1165,6 +1167,47 @@ ok(reportWithModels.includes(">周末<") && reportWithModels.includes("#f59e0b")
   );
   ok(!/<script|src=|<link /i.test(reportWithModels), "报告仍然无脚本 / 无外链资源（自包含）");
 }
+
+console.log("\n—— 报告结构对齐（看板 → 报告）——");
+{
+  // 回填中：状态行必须显示「正在计算中……」；数据用模型快照，时刻 / 日历 / KPI 都有内容。
+  const runningSnap = {
+    ...modelSnap,
+    // 密度点需要人类消息数据：给 9 点补一条，保证结构断言不依赖测试数据是否恰好有 humanMsgs
+    byHour: modelSnap.byHour.map((hour) => (hour.hour === 9 ? { ...hour, humanMsgs: 4 } : hour)),
+    diagnostics: { modelFold: { running: true }, hourTokensSource: { missing: 3 } },
+  };
+  const parityHtml = renderReport(runningSnap, { theme: "light", title: "对齐报告" });
+  ok(parityHtml.includes('data-kind="hour-dot"'), "结构：时刻图有人类消息密度点（data-kind=hour-dot）");
+  ok(parityHtml.includes("Tokens 口径") && parityHtml.includes("Token 产出"), "结构：时刻图明确默认 Tokens 口径");
+  ok(parityHtml.includes("轮次（该小时开始的会话数）") && parityHtml.includes('aria-label="时刻分析：轮次"'), "结构：轮次作为第二张小图呈现（不伪造切换按钮）");
+  ok(!parityHtml.includes("wl-chip") && !parityHtml.includes("<button"), "结构：报告没有看板切换控件 / 按钮");
+  ok(parityHtml.includes('data-kind="hour-tokens-missing"') && parityHtml.includes('data-state="running"') && parityHtml.includes("正在计算中……"), "结构：回填中状态行显示「正在计算中……」");
+  ok(/<div class="card-head">[\s\S]{0,80}<div class="card-head-text"><h2>[^<]+<\/h2><span class="card-hint"/.test(parityHtml), "结构：卡片说明在标题右侧（card-head-text 内）");
+  ok(!parityHtml.includes('class="hint"') && !/<p class="hint">/.test(parityHtml), "结构：标题下方不再有旧 hint 段落");
+  ok(/\.card-hint \{[^}]*font-size: 11px/.test(parityHtml) && /\.card-hint \{[^}]*color: #6b7280/.test(parityHtml), "结构：标题右侧说明 11px + muted（与看板同字号/同色）");
+  ok(parityHtml.includes('data-kind="calendar-cell"') && parityHtml.includes('data-kind="weekday-bar"'), "结构：每日趋势含日历热力图 + 周几累计条");
+  ok(parityHtml.includes('data-kind="peak-label"') && parityHtml.includes('data-kind="active-bar-hit"'), "结构：柱状图有峰值标签与全高命中区 tooltip");
+  ok(parityHtml.includes("data-bar-cell") && /class="bar-cell-fill"[^>]*style="width:[0-9.]+%;background:/.test(parityHtml), "结构：表格比例条与看板同规则（宽度百分比 + 内联背景条）");
+  ok(parityHtml.includes("模型占比 · 面积 = Token") && parityHtml.includes("按日模型趋势"), "结构：模型 treemap / 按日趋势都有小标题");
+  ok(parityHtml.includes("最活跃模型") && parityHtml.includes("请求占比") && parityHtml.includes("模型费用"), "结构：KPI 含「模型费用」与「最活跃模型」");
+  ok(parityHtml.includes("含等待用户") && parityHtml.includes("净活跃"), "结构：KPI / footer 写清净活跃与含等待用户口径");
+  {
+    const hrefs = [...parityHtml.matchAll(/href="([^"]+)"/g)].map((match) => match[1]);
+    ok(hrefs.every((href) => /^https:\/\/(api-docs\.deepseek\.com|platform\.kimi\.com|platform\.claude\.com)\//.test(href)), "结构：报告外链仅官方计费页", hrefs.join(" · "));
+    ok(!/<script|<link |\ssrc=/i.test(parityHtml), "结构：报告无脚本 / 无外链资源（自包含）");
+  }
+  // 空闲 + 有未计入会话：状态行回到「Token 未计入 N 个会话」
+  const idleSnap = {
+    ...modelSnap,
+    byHour: runningSnap.byHour,
+    diagnostics: { modelFold: { running: false }, hourTokensSource: { missing: 3 } },
+  };
+  const idleHtml = renderReport(idleSnap, { theme: "dark" });
+  ok(idleHtml.includes('data-state="idle"') && idleHtml.includes("Token 未计入 3 个会话"), "结构：空闲时状态行显示「Token 未计入 N 个会话」");
+  ok(!idleHtml.includes("正在计算中……"), "结构：空闲时不残留「正在计算中……」");
+}
+
 const snapRes = await call("/workload-report/v1/snapshot?days=30&tz=UTC");
 const snapJson = JSON.parse(snapRes.body);
 ok(Array.isArray(snapJson.byModel), "/snapshot 返回 byModel 数组");
