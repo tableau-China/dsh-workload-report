@@ -30,11 +30,18 @@
   `wl-hour-note / wl-fold-error / wl-model-note / wl-model-links / wl-model-raw` 收敛到
   `.wl-status` 与 `.wl-hint-spaced / .wl-hint-block`；删除 8 条无用样式。
 - **文档**：新增 `docs/ui-conventions.md`（铁律、共享组件清单、卡片头/图例/状态结构、tooltip 规则）。
+- **报告补齐看板改动（本轮遗漏修正）**：`src/report-html.js` 新增 KPI「最活跃模型」、8 张 KPI / 5 列栅格、
+  每日日历热力图 + 柱状图（峰值标签 / 命中区 / 1 位小数）、时刻状态行（回填中 / 未计入 N）、轮次第二小图、
+  标题右侧 11px 说明、表格比例条（直接 import `barPercent`）、模型小标题与 rect tooltip；
+  仍是自包含 HTML（无脚本、外链仅官方计费页）。新增 `docs/report-parity.md` 对照清单，
+  `docs/ui-conventions.md` 增加「报告同步铁律」与检查项。
 
 ### 测试
 
-- 离线断言 **535 → 545**（连跑 2 次 exit 0）：新增 chip 组件与复用点、CardHead 结构与 hint 位置、
-  `hourTokensNote` 三态、tooltip 逐元素、样式收敛与 UI 约定文档断言；i18n 死键扫描扩展到全部客户端模块。
+- 离线断言 **535 → 545 → 565**（连跑 2 次 exit 0）：新增 chip 组件与复用点、CardHead 结构与 hint 位置、
+  `hourTokensNote` 三态、tooltip 逐元素、样式收敛与 UI 约定文档断言；报告结构对齐块新增 20 项
+  （密度点 / Tokens 默认口径 / 轮次小图 / 状态三态 / 标题右侧说明 / 日历 / 峰值 / 比例条 / 模型小标题 /
+  KPI / 净活跃 / 自包含）；i18n 死键扫描扩展到全部客户端模块。
 - 无头 Chrome 1560 / 1180 量测：三处 hint 均为 11px / `rgb(129,133,140)`，与标题基线差 0px、
   相对标题左边距 60 / 86 / 104px；标题下方 hint 节点 0；chips 未换行、未被挤压。
 

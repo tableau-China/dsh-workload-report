@@ -4,6 +4,10 @@
 > 所有卡片头统一用 `CardHead`。**新增 UI 必须复用这些组件；不得另造样式或变体 class。**
 >
 > 颜色只用宿主主题 token（`--dsw-alias-*` / `--dsw-static-*`），不写死色值；zh/en 文案逐键对齐，不留死键。
+>
+> **报告同步铁律：任何看板 UI 改动必须在同一提交内同步 `src/report-html.js` 与
+> `docs/report-parity.md`，并在 `test/verify.mjs` 补结构断言。只改 `src/client/*` 视为未完成。**
+> 静态报告的自包含约束（内联 CSS/SVG、无脚本、除官方计费链接外无外链）不可破坏。
 
 ## 1. 共享组件清单
 
@@ -90,7 +94,23 @@
 - 文案：`日期 · 活跃 x · Token y[ · 周末]`，数字统一走 `formatHours` / `formatTokens`。
 - 坐标轴文字、周几标签也带对应累计提示；图例项不需要 title。
 
-## 7. 新增 UI 检查清单
+## 7. 看板 ↔ 报告同步
+
+报告不是"另一套 UI"，而是看板的静态投影。对应关系固定如下（详见 `docs/report-parity.md`）：
+
+| 看板组件 / 约定 | 报告对应实现（`src/report-html.js`） | 说明 |
+| --- | --- | --- |
+| `CardHead`（标题 + 右侧 hint） | `cardHead()` → `.card-head` / `.card-head-text` / `.card-hint` | 11px、muted、单行省略 + `title`；禁止标题下方 hint |
+| `MetricBarCell` / `barPercent` | `barCell()`（直接 import `barPercent`） | 宽度规则必须同源；视觉为内联 div 背景条 |
+| `hourTokensNote` 三态 | 直接 import `hourTokensNote` | 回填中「正在计算中……」/ 空闲「Token 未计入 N 个会话」/ N=0 不渲染 |
+| `ChipGroup` 切换 | **不渲染按钮** | 固定默认口径；第二口径用第二张小图或表格列，见 report-parity 的「有意不同」 |
+| `formatHours` | 同一函数 | 小时一律 1 位小数；禁止各自 `/3600000` |
+| 日历 / 柱状 / treemap / 环形几何 | 同数据源、同 `sectorPath` / 同布局算法 | 视觉参数（峰值深蓝、周末 amber、密度点半径）必须同源 |
+
+报告自包含检查：`<script` = 0、无 `<link` / `src=`、外链仅官方计费页。
+改报告后运行 `node build.mjs && node test/verify.mjs`，并更新 `docs/report-parity.md` 状态列。
+
+## 8. 新增 UI 检查清单
 
 1. 切换控件是否用了 `ChipGroup` + `Chip`？有没有新增 `wl-chip-*` class？
 2. 卡片头是否用了 `CardHead`，说明是否在标题右侧（hint）、控件是否在右上角？标题下方不应再有 hint。
@@ -98,3 +118,6 @@
 4. 状态提示是否用 `.wl-status` / `.wl-hint` 的通用修饰？
 5. 所有颜色是否都是宿主 token？zh/en 是否逐键对齐、没有死键？
 6. 每个 hover 元素是否有直接挂在形状上的原生 `<title>`？
+7. **同一提交**里 `src/report-html.js` 是否已同步？`docs/report-parity.md` 是否已更新？
+8. `test/verify.mjs` 是否补了对应结构断言（标记存在性，稳定可跑）？
+9. 报告是否仍自包含（无脚本 / 无外链资源 / 外链仅官方计费页）？

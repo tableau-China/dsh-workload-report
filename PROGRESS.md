@@ -2,6 +2,57 @@
 
 日期用 `YYYY-MM-DD`；只记录影响后续决策的事实。
 
+## 2026-10-17 报告对齐看板（v0.6.5，修正本轮的遗漏）
+
+### 背景（用户的批评）
+
+- 「导出 HTML 报告」`src/report-html.js` 仍是老版本：最近几轮只改了看板 `src/client/*`，
+  报告没跟上（缺密度点后的新卡片头、KPI、日历、比例条、轮次第二口径等）。
+- 根因不是技术，而是**流程**：之前只把「改看板」当完成，没有把报告列为同一提交的交付物。
+  本轮先做差异审计，再把报告拉到一致，最后把「必须同步」写进测试与文档。
+
+### 差异审计（看板 vs 报告）
+
+| 区域 | 看板有 | 报告（修复前） | 处理 |
+| --- | --- | --- | --- |
+| KPI | 8 张含模型费用 / 最活跃模型；5 列跨列；净活跃 + 含等待用户 | 7 张、无最活跃模型；Token 用缩写；3 列 | 补齐 8 张 / 同栅格 / Token 完整整数 |
+| 每日趋势 | 日历（默认）+ 柱状切换；周几累计条；峰值标签；命中区 tooltip | 只有柱；峰值不保证标注；无命中区 | 日历 + 柱状同时静态展示；补峰值/命中区 |
+| 时刻分析 | Tokens 默认 + 轮次切换；密度点；三项图例；状态三态；峰值深蓝 | 有密度点/图例/深蓝，但无状态行、无轮次口径 | 状态行复用 `hourTokensNote`；轮次改第二张小图 |
+| 模型用量 | treemap 铺满 + 小标题；按日趋势；筛选；明细/费用/链接 | 有 treemap/趋势/明细；小标题在标题下方 | 小标题归位；title 挂 rect；卡片头统一 |
+| 表格比例条 | `MetricBarCell`（`barPercent`） | 纯数字 | 报告 `barCell()` 直接 import `barPercent` |
+| 卡片说明 | 标题右侧 11px muted | 标题下方 12px | 全部改标题右侧，删除旧 `<p class="hint">` |
+| 口径文案 | 净活跃/等待/未计入 N | 有 footer，但时刻状态行缺 running/idle | 状态行 + KPI + footer 三处对齐 |
+
+有意不同：报告不渲染切换/排序/筛选按钮；每日两图同时展示；轮次用第二小图；工作区固定按时长；
+模型固定 Token；主要会话前 12 行；固定中文。完整清单见 `docs/report-parity.md`。
+
+### 实现
+
+- `src/report-html.js`：新增 `cardHead()` / `barCell()` / `calendarHeatmap()` / `hourTurnsChart()`；
+  KPI 8 张（含 `topModel`）、每日日历 + 柱状、时刻状态行（import `hourTokensNote`）、轮次小图、
+  模型小标题与 rect title、表格比例条；所有时长继续走 `formatHours`。
+- 报告仍是自包含 HTML：内联 CSS/SVG、无脚本、外链仅官方计费页。
+- 新增 `docs/report-parity.md`：铁律 + 看板→报告逐项对照 + 有意差异 + 同步流程 + 结构断言表。
+- `docs/ui-conventions.md`：抬头加「报告同步铁律」，新增第 7 节（组件对应表），检查清单加 3 条。
+- `test/verify.mjs`：新增「报告结构对齐」块（密度点、Tokens 默认口径、轮次小图、状态三态、
+  标题右侧 11px 说明、日历、峰值/命中区、比例条、模型小标题、KPI、净活跃/等待、自包含）。
+
+### 验证
+
+- `node build.mjs && node test/verify.mjs` 连跑 2 次：**545 → 565 项断言，exit 0**（新增 20 项）。
+- 隔离实例 `/report.html?theme=light|dark` 截图：`.tmp/shots/report-light.png` / `report-dark.png`；
+  局部 `report-hour-light.png` / `report-hour-dark.png`。
+- DOM 量测：`<script` = 0；外链仅 api-docs.deepseek.com / platform.kimi.com / platform.claude.com；
+  13 个密度点；峰值柱 fill = `rgb(47, 75, 216)`；7 张卡片 hint 全部在标题右侧、11px、muted；
+  时刻状态行 running / idle 均出现；无横向溢出。
+
+### 机制（防止下次再漏）
+
+1. 报告与看板在**同一提交**：任何 `src/client/*` UI 改动都要同步 `src/report-html.js`。
+2. `docs/report-parity.md` 是唯一对照清单；状态列必须随改动更新。
+3. `test/verify.mjs` 的结构断言是硬门槛：关键标记缺失即 exit 1。
+4. `docs/ui-conventions.md` 检查清单第 7–9 条在每次 UI 改动后逐条过。
+
 ## 2026-10-17 卡片说明统一到标题右侧（CardHead.hint）
 
 ### 背景
@@ -543,7 +594,7 @@ E2E（`test/e2e-ui.mjs`，真实实例）全过；离线断言 184 → **215**�
 - [x] 安装进真实 web profile（2026-10-10 由用户执行 `dsh plugin --profile web add link:$PWD`）。
 - [x] 模型维度已在 0.4.0 接入、0.4.1 修掉回填常驻缺陷（读 `readSession` 事件日志，见 docs/models.md）。
 - [ ] 可选：把「按工作区」做成季度/月度对比；把导出接入 PNG（现在用浏览器截图即可）。
-- [ ] 可选：把「最活跃模型」也搬进报告（本轮只补了模型费用 KPI，避免报告 KPI 行超过 8 张）。
+- [x] 2026-10-17：把「最活跃模型」搬进报告；8 张 KPI 在 5 列栅格正好排满（见 `docs/report-parity.md`）。
 
 ## 2026-10-13 v0.4.1 发布
 
