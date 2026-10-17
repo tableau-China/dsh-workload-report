@@ -177,12 +177,14 @@ export const STYLES = `
 .wl-balance-link { color: var(--dsw-static-deepseek-500, #4d6bfe); text-decoration: none; white-space: nowrap; }
 .wl-balance-link:hover { text-decoration: underline; }
 .wl-balance[data-kind="error"] .wl-balance-text { color: var(--dsw-alias-label-tertiary, #6b7280); }
-/* 卡片头唯一结构（src/client/card-head.jsx）：左标题（+ 可选说明），右上控件 */
+/* 卡片头唯一结构（src/client/card-head.jsx）：左标题 + 紧右侧说明，右上控件。
+   说明与标题同为 flex 项、按基线对齐（同一行，基线差 0）；中间剩余空间即弹性间距。 */
 .wl-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 6px; }
-.wl-card-head-text { min-width: 0; }
-.wl-card-head-text h3 { margin: 0; }
-.wl-card-head-text .wl-hint { margin: 2px 0 0; }
-.wl-card-head-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+.wl-card-head-text { display: flex; align-items: baseline; gap: 8px; flex: 0 1 auto; min-width: 0; }
+.wl-card-head-text h3 { margin: 0; flex: 0 0 auto; }
+/* 卡片说明统一放标题右侧（禁止放标题下方）：11px、muted、单行；放不下截断，title 保留全文 */
+.wl-card-head-hint { flex: 0 1 auto; min-width: 0; font-size: 11px; font-weight: 400; color: var(--dsw-alias-label-tertiary, #6b7280); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wl-card-head-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; flex: 0 0 auto; }
 /* 并排两图：列宽与上面「每日趋势 + 模型用量」完全一致，上下两行左右边界对齐 */
 .wl-grid-2 { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 14px; margin-bottom: 14px; }
 .wl-grid-2 .wl-card { margin-bottom: 0; }
@@ -259,9 +261,8 @@ export const STYLES = `
 .wl-model-grid { grid-template-columns: 1fr; gap: 10px; }
 @media (max-width: 1080px) { .wl-grid-daily-model { grid-template-columns: 1fr; } .wl-model-grid { grid-template-columns: 1fr; } }
 /* 首页「模型 Token 占比」卡：卡片被上一行等高拉伸时，把环形图在**卡内垂直居中**
-   （量测口径：图形上留白 vs 下留白，差 ≤ 2px）。hint 的下边距归零，
-   于是"图形上方的空白"就是 hint 之后到图形的那段，与下方空白可直接比较。 */
-.wl-pie-card .wl-hint { margin-bottom: 0; }
+   （量测口径：图形上留白 vs 下留白，差 ≤ 2px）。说明已上移到标题右侧，
+   卡片头下边距就是图形上方留白的起点。 */
 .wl-pie-card .wl-pie-wrap { flex: 1 1 auto; min-height: 0; align-items: center; }
 /* ── 模型区块（0.4.0） ── */
 .wl-model-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 18px; align-items: start; }

@@ -1209,32 +1209,21 @@ function SkeletonBody({ t }) {
       </div>
       <div className="wl-grid-daily-model">
         <div className="wl-card">
-          <div className="wl-card-head">
-            <div>
-              <h3>{t("chart.daily")}</h3>
-              <p className="wl-hint">{t("chart.hint")}</p>
-            </div>
-          </div>
+          <CardHead title={t("chart.daily")} hint={t("chart.hint")} />
           <div className="wl-daily-body"><div className="wl-chart-fill wl-skeleton-area" /></div>
         </div>
         <div className="wl-card">
-          <div className="wl-card-head">
-            <div>
-              <h3>{t("pie.model")}</h3>
-              <p className="wl-hint">{t("pie.modelHint")}</p>
-            </div>
-          </div>
+          <CardHead title={t("pie.model")} hint={t("pie.modelHint")} />
           <div className="wl-skeleton-area wl-skeleton-mid" />
         </div>
       </div>
       <div className="wl-grid-2">
         <div className="wl-card">
-          <h3>{t("hour.title")}</h3>
+          <CardHead title={t("hour.title")} hint={t("hour.hint")} />
           <div className="wl-skeleton-area wl-skeleton-mid" />
         </div>
         <div className="wl-card">
-          <h3>{t("pie.title")}</h3>
-          <p className="wl-hint">{t("pie.byTime")}</p>
+          <CardHead title={t("pie.title")} />
           <div className="wl-skeleton-area wl-skeleton-mid" />
         </div>
       </div>
@@ -1290,7 +1279,7 @@ function ByDayView({ data, t }) {
     <>
       <div className="wl-grid-daily-model">
       <div className="wl-card">
-        <CardHead title={t("chart.daily")}>
+        <CardHead title={t("chart.daily")} hint={t("chart.hint")}>
           <ChipGroup label={t("chart.daily")}>
             <Chip active={dailyMode === "calendar"} onClick={() => setDailyMode("calendar")}>{t("daily.calendar")}</Chip>
             <Chip active={dailyMode === "bar"} onClick={() => setDailyMode("bar")}>{t("daily.bar")}</Chip>
@@ -1319,7 +1308,8 @@ function ByDayView({ data, t }) {
 
       <div className="wl-grid-2">
         <div className="wl-card wl-hour-card">
-          <CardHead title={t("hour.title")}>
+          {/* 说明随口径切换：柱＝当前 measure，点＝人类消息密度（文案只解释"看什么"） */}
+          <CardHead title={t("hour.title")} hint={t(hourMeasure === "turns" ? "hour.hintTurns" : "hour.hint")}>
             <ChipGroup label={t("hour.title")}>
               <Chip
                 data-measure="tokens"
