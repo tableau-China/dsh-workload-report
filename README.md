@@ -1,10 +1,9 @@
 # TimeMirror for DSH · Workload Report
 
-> Put **your effort** and **your token spend** on the same picture: see where your time went and where the tokens went, by **date** and by **workspace** — calendar heatmap, time-of-day analysis, workspace share, and a **one-click self-contained HTML report you can send straight to a client**.
-> A DeepSeek Harness (DSH) plugin for effort & token insights.
+> **See your effort and your token spend on the same picture** — by **date** and by **workspace**: a calendar heatmap, time-of-day analysis, workspace share, model usage, and a **one-click self-contained HTML report** you can send straight to a client.
+> A DeepSeek Harness (DSH) plugin. Current version: **0.6.6**.
 
-> **TimeMirror** is a macOS time-distribution app I published on the Mac App Store; this plugin brings the same idea to AI-assisted work — **the time you and your AI spend, and what it costs, made visible**.
-> The package/repo uses the descriptive name `dsh-workload-report` so it can be found in the DSH ecosystem; the brand stays TimeMirror.
+> TimeMirror is a macOS time-distribution app I published on the Mac App Store; this plugin brings the same idea to AI-assisted work. The package/repo keeps the descriptive name `dsh-workload-report` so it can be found in the DSH ecosystem; the brand stays TimeMirror.
 
 [![npm](https://img.shields.io/npm/v/dsh-workload-report?style=flat-square&logo=npm)](https://www.npmjs.com/package/dsh-workload-report)
 [![license](https://img.shields.io/github/license/tableau-China/dsh-workload-report?style=flat-square)](./LICENSE)
@@ -13,40 +12,60 @@
 
 [中文](./README.zh-CN.md) · English
 
-## What problem it solves
+## What it is
 
-You use AI every day, but you **cannot say where the work went or what it was worth**:
+DSH shows stats for the **current session**. This plugin adds the cross-session, cross-project, cross-time view: which dates and which workspaces your effort went to, which hours you were productive, which models consumed the tokens, and what it cost — plus a static report for clients, teammates or monthly reviews.
 
-- **Self-review**: which project did the last 30 days actually go to? Which hours am I sharpest?
-- **Reporting to a client or your team**: not "I've been busy", but "this project took 46.2% of my effort, 3.74 B tokens, and I was on it 18 of the last 30 days."
-- **Blog posts / monthly reports**: a calendar heatmap plus time-of-day analysis is made to be screenshotted.
+**Not only cost, but the work behind it.** Active time, active days and turns show what you actually did; tokens and estimated cost show what it consumed. Numbers use the same definitions everywhere, so the dashboard and the exported report agree.
 
-DSH itself only shows a stats line for the **current session**; the cross-session, cross-project, cross-time view is what this plugin adds.
+## Install & entry point
 
-**Not just cost — the work behind it.** Cost meters tell you what you spent; this plugin also tells you *what you did*: how many days you showed up, which hours you were sharpest, and which project your effort actually went into. That is the part you can put in front of a client.
+```bash
+# npm (published package)
+dsh plugin add dsh-workload-report
 
-## Features
+# or straight from GitHub
+dsh plugin --profile web add github:tableau-China/dsh-workload-report#main
 
-- ✅ **Effort vs. spend per workspace**: each row shows "My effort" on the left (active time + active days + turns/steps) and "Token spend" on the right (total + output/cache). Both bars use the same scale, so they compare directly.
-- ✅ **Calendar heatmap**: rows Mon–Sun, columns Year-Week, colour = active time. It always shows the **full history**, with 7 per-weekday totals glued to the right edge — you can see at a glance which weekday you are busiest.
-- ✅ **Time-of-day analysis**: tokens produced per hour (default) or turn starts, with **human-message density dots** on top, a deep-blue peak bar (distinct from the amber dots) and only the peak bar labelled; sessions whose logs cannot be read are excluded from the hourly token chart and counted under the chart. Active time is still bucketed by real event timestamps for the rest of the dashboard.
-- ✅ **Workspace donut**: Top 6 + others, switchable between time and tokens.
-- ✅ **Shareable HTML report**: a single file with inline CSS and inline SVG, no scripts and no external assets (the only outbound links are official pricing pages); light/dark themes, custom title and note, and `anonymize=1` to hide workspace names and session titles. It mirrors the dashboard: calendar + bars, hourly density dots + turn mini-chart, table ratio bars, and the same 8 KPIs.
-- ✅ **Eight KPIs**: active time (net; waiting shown separately) / total tokens (as a full integer you can verify) / model cost / active days / conversations / turns·steps / cache-read share / most active model.
-- ✅ **Official interfaces only**: no log-format parsing, no business data written, **no outbound requests by default**. Values come from zero-I/O projection-checkpoint reads, with an official cold-read fallback and a reusable local index. The one opt-in exception is the optional balance chip (off by default) — see Privacy.
-- ✅ **Theme and locale aware**: every colour comes from host theme tokens (`--dsw-*`), so it follows the harness's light/dark theme and Chinese/English locale.
+# or link a local checkout
+dsh plugin --profile web add link:$PWD
+```
+
+Restart the Web profile after installing. The entry appears at the **bottom of the sidebar**: **Workload report** (**工作量报告** in Chinese). The built client bundle (`lib/client.js`) is committed, so installing from GitHub/npm needs no local build.
+
+Uninstall: `dsh plugin --profile web remove dsh-workload-report`.
+
+## Data sources & principles
+
+- **Official interfaces only.** Session identity comes from `sessionQuery.listSessions()`; statistics come from the official projections (`sessionProjections`, `sessionProjectionCache`) and, when needed, the official `sessionQuery.observeSession()` cold read. Model and hourly-token dimensions use the official `sessionQuery.readSession()` event log.
+- **No storage-format parsing.** The plugin never opens `*.jsonl.zstd`, never parses zstd/JSONL, and never reads the harness's internal projection-cache files. Formats can change between releases; the official seams are the contract.
+- **Zero outbound requests by default.** All statistics stay on your machine. The plugin exposes read-only HTTP routes only, and writes exactly one file: its own local index at `<DSH_HOME>/workload-report/index-v7.json` (safe to delete; it rebuilds).
+- **The single opt-in exception** is the optional balance chip (`balance.enabled: true`, off by default), where the **host** calls the official `deepseekAccount` service. See [Privacy](#privacy).
+- **No invented numbers.** Unreadable legacy sessions are excluded and counted in the UI; models without an official price show **—** instead of a made-up cost.
+
+## Features (0.6.6)
+
+- **Eight KPIs**: cumulative active time (**net active**, waiting shown on a second line), total tokens (full integer you can verify), model cost, active days, conversations, turns / steps, cache-read share, and the most active model.
+- **Daily usage trend**: calendar heatmap (Mon–Sun × Year-Week, colour and bar height = active time) or a bar chart; weekends use a different colour, the peak bar is always labelled, and every calendar cell, bar, weekday total and axis label has its own tooltip.
+- **Time of day**: bars default to **token output** (switchable to **turns**); the dots above the bars show **human-message density**. Peak bars are highlighted and labelled; the legend sits on one row.
+- **Workspace share**: Top 6 + others donut, switchable between **time** and **tokens**.
+- **Model token share**: a compact donut on the dashboard; full model details live in the next tab.
+- **Model usage tab**: treemap (area = token share, Top 8 + others), stacked daily trend (Top 6 models), a detail table (share / requests / input / output / cache read / cache-hit rate / estimated cost), metric chips (Token / requests / model time), click-to-filter, and official pricing links. Costs are estimated only for models with official public prices.
+- **Top sessions and daily detail**: ratio bars in the main numeric columns (sessions: turns / steps / active / output; daily detail: conversations / turns / active / tokens) and sortable headers on the sessions table; the daily detail table covers the last 31 days.
+- **Export a self-contained HTML report**: one file with inline CSS and inline SVG, **no scripts and no external assets**; light/dark themes, custom title/note, optional `anonymize=1` to hide workspace names and session titles. The report mirrors the dashboard: 8 KPIs, calendar + bars, hourly density dots + turns mini-chart, ratio bars, and the same definitions. Only official pricing pages are linked.
+- **Theme and locale aware**: all colours use host theme tokens (`--dsw-*`), so the dashboard follows the harness light/dark theme; all UI strings are aligned between Chinese and English.
 
 ## Screenshots
 
-**Home**: six KPIs + calendar heatmap (switchable to a bar chart) + side-by-side time-of-day analysis and workspace share + a collapsed daily table
+**By date**: eight KPIs + calendar heatmap + time-of-day analysis with human-message density dots + workspace share
 
-![dashboard](https://raw.githubusercontent.com/tableau-China/dsh-workload-report/main/assets/dashboard-calendar.png)
+![dashboard by date](https://raw.githubusercontent.com/tableau-China/dsh-workload-report/main/assets/dashboard-calendar.png)
 
-**By workspace**: effort on the left, token spend on the right, two bars on one scale
+**By workspace**: effort on the left, token spend on the right, both bars share one scale
 
-![workspace](https://raw.githubusercontent.com/tableau-China/dsh-workload-report/main/assets/dashboard-workspace.png)
+![dashboard by workspace](https://raw.githubusercontent.com/tableau-China/dsh-workload-report/main/assets/dashboard-workspace.png)
 
-**The exported report** (single file, safe to send to a client)
+**The exported report**: one self-contained file, safe to send to a client
 
 ![report light](https://raw.githubusercontent.com/tableau-China/dsh-workload-report/main/assets/report-light.png)
 
@@ -57,112 +76,120 @@ DSH itself only shows a stats line for the **current session**; the cross-sessio
 
 </details>
 
-## Install
+## Metric definitions
 
-### 1. Straight from GitHub (recommended)
+The full definitions live in **[docs/metrics.md](./docs/metrics.md)**. Durations use one language-neutral `H / M / S` format (like K/M/B for tokens). The points users misread most:
 
-```bash
-dsh plugin --profile web add github:tableau-China/dsh-workload-report#main
-```
+### Active time
 
-The built client bundle (`lib/client.js`) is committed, so **no local build is needed**. Restart the Web profile afterwards — a "Workload report" entry appears at the bottom of the sidebar.
+- **Active time = model time + tool time − waiting for user.** It is **cumulative engine work**, not wall-clock time; concurrent sessions and subagents each add up. It is not the elapsed time you sat in front of the screen.
+- **Waiting for user** is split out as `waitMs` and excluded from active time. The same value is persisted with the index. The official `totals.activeMs` is kept for cross-checking: `netActiveMs + waitMs === activeMs` (±1 ms).
+- **Three-layer wait rule** (a tool interval is treated as waiting only when it lasts at least `waitMinMs` **and** meets either condition):
+  1. the tool name is in `waitTools` (default `ask_user_question`, `exit_plan_mode`);
+  2. a `user/message` arrives between `tool/call` and `tool/result` (any tool).
+- **Long-task exemption**: a long build/test tool that is not a wait tool and has no interleaved user message still counts as work. Short interactions below `waitMinMs` are not removed, to avoid fragmenting real work.
+- Set `excludeWait: false` to disable the whole rule (behaviour matches 0.6.0).
 
-### 2. Link a local checkout
+### Time of day
 
-```bash
-cd /path/to/dsh-workload-report
-dsh plugin --profile web add link:$PWD     # points the profile at your source tree
-```
+The dashboard card has **two measures** and a third visual layer:
 
-### 3. From npm
+- **Tokens (default)**: each `assistant/message` usage is bucketed by the **message time** into the selected time zone. The sum of the 24 hour buckets equals the session's official token total (integer rescaling when the event total differs).
+- **Turns**: the number of sessions that **started** in that hour (net active time is still bucketed by turn start for the rest of the dashboard).
+- **Human-message dots** on top: `user/message` count per hour; dot radius encodes relative density.
+- Sessions whose event logs cannot be read (very old v0 logs, not backfilled, or `modelUsage: off`) do **not** get a fabricated hourly distribution. They are excluded from the token chart and the card says **“Token 未计入 N 个会话”**; their totals are still included in the KPI totals.
 
-```bash
-dsh plugin --profile web add dsh-workload-report
-```
+### Tokens, conversations, dates
 
-> Published on npm: <https://www.npmjs.com/package/dsh-workload-report>
-> If your npm client points at a mirror (e.g. npmmirror), a brand-new package can take a few minutes to appear — use option 1 if you are in a hurry.
-
-Uninstall: `dsh plugin --profile web remove dsh-workload-report`.
+- **Total tokens** = uncached input + output + cache read + cache write. Cache reads usually dominate and cost the least; do not price them as fresh input.
+- **Conversations** = sessions with at least one step. Zero-step sessions (opened but unused) are listed separately and excluded from this KPI.
+- **Attribution date** = the session's creation day in the selected time zone. A session resumed across midnight still belongs to its creation day.
+- **Model cost** is estimated from built-in official public prices (DeepSeek peak/off-peak, as-of 2026-10-13). Only models with an official price get a number; models without one show **—**. Estimates never fetch prices at runtime. The estimate is intentionally not described as an invoice.
 
 ## Configuration
 
-Override any of these in your profile's `cordis.patch.yml` (all optional):
+Override any of these in the profile's `cordis.patch.yml` (all optional):
 
 ```yaml
 - id: workload-report
   name: dsh-workload-report
   config:
-    apiPath: /workload-report/v1        # read-only API prefix
-    defaultDays: 7                      # default range
-    defaultScope: all                   # all | main | subagent
-    defaultTitle: Workload Report       # report title
-    workspaceAliases:                   # display names (very handy for client-facing reports)
+    defaultDays: 7                 # initial range: 7 | 30 | 90 | all
+    refreshMs: 30000               # index refresh interval (ms)
+    defaultScope: all              # all | main | subagent
+    modelUsage: auto               # auto | off (off = do not read event logs for model/hourly data)
+    excludeWait: true              # false = keep 0.6.0 behaviour (no wait detection)
+    waitTools:                     # tools treated as waiting for a human
+      - ask_user_question
+      - exit_plan_mode
+    waitMinMs: 60000               # minimum interval to be treated as waiting (ms)
+    activeModelMetric: requests    # requests | tokens | activeMs
+    workspaceAliases:              # display names, useful in client reports
       my-shop-app: Retail Order System
-      data-platform: Data Platform
-    balance:                            # optional balance chip — OFF by default
-      enabled: false                    # true = host calls platform.deepseek.com (see Privacy)
-      refreshMs: 300000                 # cache TTL for the balance query (ms)
+    balance:                       # optional balance chip — OFF by default
+      enabled: false               # true = host calls platform.deepseek.com (see Privacy)
+      refreshMs: 300000            # balance cache TTL (ms)
 ```
+
+The default model prices are built in and offline; `pricing.overrides`, `pricing.asOf` and `pricing.links` let you replace them if your contract differs. See [docs/models.md](./docs/models.md).
 
 ## Read-only API
 
 | Route | Description |
 | --- | --- |
-| `GET {apiPath}/snapshot?days=30&tz=Asia/Shanghai&scope=all` | Aggregated snapshot JSON (totals / byDay / byWorkspace / byHour / bySession / calendar / diagnostics) |
-| `GET {apiPath}/export.json?...` | Same payload, sent with `content-disposition` for download |
+| `GET {apiPath}/snapshot?days=30&tz=Asia/Shanghai&scope=all` | Aggregated snapshot JSON (totals / byDay / byWorkspace / byHour / bySession / calendar / byModel / modelDaily / diagnostics) |
+| `GET {apiPath}/export.json?...` | Same payload with a `content-disposition` header |
 | `GET {apiPath}/report.html?days=90&theme=dark&anonymize=1&title=...` | Self-contained HTML report |
-| `GET {apiPath}/health` | Index diagnostics (session count, checkpoint hits, cold reads, read failures, duration) |
-| `GET {apiPath}/balance` | Cached balance state for the toolbar chip (enabled / supported / loggedIn / amount / bonus / top-up & usage links); never touches the index |
+| `GET {apiPath}/health` | Index diagnostics (sessions, checkpoint hits, cold reads, read failures, duration) |
+| `GET {apiPath}/balance` | Cached balance state for the toolbar chip; never touches the index |
 
 Parameters: `from`/`to` (YYYY-MM-DD, take precedence over `days`), `days`, `all=1` (earliest active day → today), `tz` (IANA time zone), `scope`.
 
-## Metric definitions
+## Index & upgrading
 
-The full definitions live in **[docs/metrics.md](./docs/metrics.md)**. Durations are always shown in **`H / M / S`** (language-neutral, like K/M/B for tokens, so one format serves every locale). The three most misunderstood:
+- Index file: `<DSH_HOME>/workload-report/index-v7.json`; `INDEX_VERSION = 7`.
+- Upgrading from 0.6.5 or earlier **rebuilds the index and re-folds event data on first launch** (the hour buckets and hourly token/human-message fields are versioned). The API returns progressively filled data with `indexing: true` while this runs.
+- Deleting the index is safe: the plugin cold-reads historical sessions again. Cold reads use official interfaces and concurrency 8 (about 2 minutes for 300+ sessions on the author's machine).
+- Very early **v0-format sessions** may not be readable at all. They are excluded from statistics and the UI reports how many; the time-of-day card shows **“Token 未计入 N 个会话”** when their token distribution cannot be read.
 
-- **Active time** = model time + tool time − waiting for user. It is **cumulative engine work**, not wall-clock time; concurrent sessions and subagents each add up. Waiting (interaction tools such as `ask_user_question`, or any tool whose call→result span contains a `user/message`, ≥ 60s) is excluded from active time and reported separately as `waitMs`; the official `totals.activeMs` is kept for cross-checking (`netActiveMs + waitMs === activeMs`).
-- **Conversations** = sessions with at least one step. Zero-step sessions (opened but unused) are listed separately.
-- **Attribution date** = the session's creation day in the selected time zone; a session resumed across midnight still counts on its creation day.
+## Documentation
+
+| Document | What it covers |
+| --- | --- |
+| [docs/metrics.md](./docs/metrics.md) | Definitions: active/net/wait, time-of-day, tokens, calendar, workspaces |
+| [docs/models.md](./docs/models.md) | Model attribution, grouping, cache-hit rate, peak/off-peak pricing and cost estimation |
+| [docs/ui-conventions.md](./docs/ui-conventions.md) | Shared UI components, card heads, legend/status rules, tooltip rules |
+| [docs/report-parity.md](./docs/report-parity.md) | Dashboard → report parity checklist, intentional differences, structural assertions |
+| [CHANGELOG.md](./CHANGELOG.md) | Version history and testing notes |
+| [PROGRESS.md](./PROGRESS.md) | Decisions, measurements, environment gotchas and release notes |
 
 ## Privacy
 
-All statistics stay on your machine. The plugin registers **read-only** HTTP routes only: by default no outbound requests, no telemetry, no user content collected.
-The single file it writes is its own index cache at `<DSH_HOME>/workload-report/index-v*.json` — delete it and the plugin rebuilds by cold-reading; nothing else in your harness data is touched.
-Whether the exported HTML report contains session titles is your call (`anonymize=1` hides them).
+All statistics stay on your machine. The plugin registers **read-only** HTTP routes only: by default no outbound requests, no telemetry, no user content collected. It writes only its own index cache; nothing else in your harness data is touched. The exported report may contain session titles unless you pass `anonymize=1`.
 
-**Optional balance chip — off by default.** Only when you set `balance.enabled: true` does the host call the official `deepseekAccount` service: `getBalance()` makes the **host** request `https://platform.deepseek.com/api/v0/users/get_user_summary` (the account balance endpoint). That is the only outbound request this plugin can ever trigger, it is opt-in, and it is cached for `balance.refreshMs`. The top-up/usage links come from the service's local `getState()` and need no network. A failed or timed-out query is shown as an em dash with a top-up link — never as an error dialog. The balance is rendered only in your own toolbar chip; it is **never** written into the exported HTML report.
+**Optional balance chip — off by default.** Only when you set `balance.enabled: true` does the host call the official `deepseekAccount` service: `getBalance()` makes the **host** request `https://platform.deepseek.com/api/v0/users/get_user_summary` (the account balance endpoint). That is the only outbound request this plugin can trigger, it is opt-in, and it is cached for `balance.refreshMs`. The top-up/usage links come from the service's local `getState()` and need no network. A failed or timed-out query shows an em dash with a top-up link — never an error dialog. The balance is rendered only in your own toolbar chip and is **never written into the exported HTML report**.
 
 ## Development
 
 | Command | Purpose |
 | --- | --- |
-| `pnpm add -D esbuild puppeteer-core` | Install build and E2E dependencies (or point `ESBUILD_PATH` / `WL_PUPPETEER_DIR` at existing installs) |
+| `pnpm add -D esbuild puppeteer-core` | Install build and browser-test dependencies (or point `ESBUILD_PATH` / `WL_PUPPETEER_DIR` at existing installs) |
 | `node build.mjs` | Bundle `src/client/` into `lib/client.js` (ModuleLoader factory format) with esbuild |
-| `node test/verify.mjs` | 533 offline assertions: aggregation semantics, time zones, turn-based hour bucketing and conservation (multi-turn separation / whole turn attributed to its start hour / cross-time-zone / no flattening on long windows / apportion fallback), **hourly tokens by message time (Σ hourTokens === row.tokensTotal, integer rescaling, time-zone shift, sessions with unreadable logs excluded and counted) and human-message density (per-hour counts / dot geometry / tokens-vs-turns measure)**, waiting-for-user exclusion (interaction whitelist / human-input interleaving / short-interaction threshold / long-task exemption / net-active conservation / `excludeWait:false` 0.6.0 regression), "all-time" start, calendar data source, HTML escaping, both token shapes, cold-read fallback, `inject` declaration check, host routes, and the balance states (off by default / signed in / signed out / failed / service absent) with isomorphic chip text |
-| `./test/e2e-boot.sh 3299` | Boot an **isolated instance** (own DSH_HOME and port, copied projection data) without touching your running GUI |
-| `node test/e2e-ui.mjs` | 67 real-browser assertions: calendar/bar switching, side-by-side geometry, weekday bars, donut switching, collapsed detail, report export, and the time-of-day card (default Tokens / measure chips / density-dot inset / legend without parentheticals / no subtitle) |
+| `node test/verify.mjs` | **566 offline assertions**: aggregation semantics, time zones, turn-based hour bucketing and conservation, hourly tokens by message time, human-message density, wait exclusion (all three rules + long-task exemption + `excludeWait:false` regression), index/read fallbacks, report structure parity, i18n key alignment, and balance states |
+| `./test/e2e-boot.sh 3299` | Boot an **isolated instance** (own DSH_HOME and port) without touching your running GUI |
+| `node test/e2e-ui.mjs` | Real-browser E2E: calendar/bar switching, geometry, donuts, report export, time-of-day card |
 
 CI runs `build.mjs` + `verify.mjs`, and fails if the committed `lib/client.js` differs from a fresh build.
 
 ## Compatibility
 
-- DSH `0.2.x`, **including `alpha` prereleases** (developed and verified against `@deepseek-ai/dsh@0.2.1-alpha.2`): the plugin only depends on official interfaces (`sessionProjections` / `sessionProjectionCache` / `sessionQuery`) and Node built-ins, never on internal file formats — so it can follow new releases. **Staying compatible with the latest alpha is one of this project's goals**; breakages will be tracked in issues and the CHANGELOG.
-- The first launch cold-reads historical sessions whose projection checkpoints are missing (about 2 minutes for 300+ sessions on my machine, concurrency 8). During that pass the API returns progressively filled data with `indexing: true`; once the index is persisted, restarts reuse it.
-- Very early **v0-format sessions** may not be migratable/readable by the current harness. They are excluded from the statistics and the UI reports how many.
+- DSH `0.2.x`, **including `alpha` prereleases** (developed and verified against `@deepseek-ai/dsh@0.2.1-alpha.2`). The plugin depends only on official interfaces (`sessionProjections` / `sessionProjectionCache` / `sessionQuery`) and Node built-ins, never on internal file formats.
+- The first launch cold-reads historical sessions whose projection checkpoints are missing; the API returns progressively filled data with `indexing: true`, and restarts reuse the persisted index.
+- Very early **v0-format sessions** may not be migratable/readable by the current harness. They are excluded from statistics and the UI reports how many.
 
 ## Author
 
-<table>
-<tr>
-<td width="40" valign="middle"><img src="https://avatars.githubusercontent.com/u/49810568?v=4" width="32" height="32" alt="XILEJUN" style="border-radius:50%"></td>
-<td valign="middle">
-
 **[XILEJUN](https://github.com/tableau-China)** — author of TimeMirror · [Blog post (中文)](https://github.com/tableau-China/dsh-workload-report/blob/main/docs/blog.md)
-
-</td>
-</tr>
-</table>
 
 ## License
 
