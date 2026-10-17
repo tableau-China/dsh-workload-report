@@ -9,8 +9,12 @@
  * 会话身份（id / createdAt / cwd / 是否为子代理）来自 SessionHeader。
  *
  * 口径（写进 README，避免误读）：
- *   - 「活跃时长」= 模型时间 + 工具时间，是引擎累计工作时间，不是墙钟打开时长；
+ *   - 「官方活跃时长」= 模型时间 + 工具时间，是引擎累计工作时间，不是墙钟打开时长；
  *     并发的会话/子代理会各自累加，因此它不能读作「用了多少小时」。
+ *   - 「净活跃时长」= 官方活跃时长 − 等待用户（waitMs，0.7.0）。交互工具（ask_user_question /
+ *     exit_plan_mode 白名单）与「调用期间夹着 user/message」且单次 ≥ waitMinMs 的工具区间整段
+ *     计为等待，从活跃中剔除；byDay / byWorkspace / byHour / calendar 全部用净活跃。
+ *     官方 activeMs 仍保留在 totals.activeMs 供核对，且 netActiveMs + waitMs === activeMs。
  *   - 「对话次数」= 至少产生过 1 个步骤（step）的会话数；零步会话单列，不计入对话。
  *   - 归属日期用会话创建时间在所给时区下的自然日；跨天续聊的活动仍算创建那天。
  */
@@ -38,9 +42,25 @@ export function tokensTotal(tokens) {
   return num(tokens?.input) + num(tokens?.output) + num(tokens?.cacheRead) + num(tokens?.cacheWrite);
 }
 
-/** 会话的引擎活跃时长（毫秒）。 */
+/** 会话的官方引擎活跃时长（毫秒，llmMs + toolMs）。 */
 export function activeMs(row) {
   return num(row?.llmMs) + num(row?.toolMs);
+}
+
+/**
+ * 行上的等待用户时长（毫秒，不会超过该会话的工具时间）。
+ * waitMs 可能缺失（未折叠 / modelUsage=off）→ 按 0 处理。
+ */
+export function waitMsOf(row) {
+  return Math.min(num(row?.waitMs), num(row?.toolMs));
+}
+
+/**
+ * 会话的净活跃时长（毫秒）= 官方 activeMs − waitMs。
+ * waitMs 超过工具时间时就地夹紧，保证非负且「净模型 + 净工具」与净活跃一致。
+ */
+export function netActiveMs(row) {
+  return Math.max(0, activeMs(row) - waitMsOf(row));
 }
 
 /** 会话是否属于子代理。 */
@@ -203,7 +223,8 @@ export function distributeHours(buckets, row, timeZone) {
   // 严格覆盖 [start, end)：切片比例之和恰好为 1，分摊后总时长守恒（不因取整漂移）
   const end = Math.max(Math.min(rawEnd, start + HOUR_WINDOW_CAP_MS), start + 1);
   const span = end - start;
-  const activeTotal = row.llmMs + row.toolMs;
+  // 旧法也用净活跃：等待用户不属于工作，不能摊进任何小时桶
+  const activeTotal = netActiveMs(row);
   const seen = new Set();
   let cursor = start;
   while (cursor < end) {
@@ -224,8 +245,8 @@ export function distributeHours(buckets, row, timeZone) {
 /**
  * 优先用**事件时间戳分布**（row.hours，UTC 桶）落小时；没有可用分布时返回 false，交给旧法摊销。
  *
- * row.hours 在折叠时已守恒到当时的官方 activeMs；但活会话续聊后 row.activeMs 可能已增长，
- * 这里再按 activeMs / sum(local) 回正一次，保证全局 sum(byHour) === totals.activeMs（±1ms）。
+ * row.hours 在折叠时已守恒到当时的净活跃（官方 activeMs − waitMs）；但活会话续聊后 row 的数值可能已增长，
+ * 这里再按 netActiveMs(row) / sum(local) 回正一次，保证全局 sum(byHour) === totals.netActiveMs（±1ms）。
  * @param buckets - 24 个桶。
  * @param row - 会话行（带 hours / hoursSource）。
  * @param timeZone - 请求时区。
@@ -234,7 +255,7 @@ export function distributeHours(buckets, row, timeZone) {
  */
 function distributeEventHours(buckets, row, timeZone, referenceMs) {
   if (!Array.isArray(row.hours) || row.hours.length !== 24) return false;
-  const active = activeMs(row);
+  const active = netActiveMs(row);
   if (!(active > 0)) return false;
   const local = localHoursFromUtc(row.hours, timeZone, referenceMs);
   let sum = 0;
@@ -334,7 +355,9 @@ function emptyBucket() {
     steps: 0,
     llmMs: 0,
     toolMs: 0,
+    // activeMs 在子桶里表示**净活跃**（从 row 级就已剔除 waitMs）；totals 另保留官方值
     activeMs: 0,
+    waitMs: 0,
     decodeTokens: 0,
     tokens: emptyTokens(),
   };
@@ -363,9 +386,12 @@ function addRow(bucket, row) {
   else bucket.mainSessions += 1;
   bucket.turns += row.turns;
   bucket.steps += row.steps;
+  // 从 row 级剔除等待：桶里的 activeMs 是净活跃、toolMs 是净工具时间（不要事后再减）
+  const wait = waitMsOf(row);
   bucket.llmMs += row.llmMs;
-  bucket.toolMs += row.toolMs;
-  bucket.activeMs += activeMs(row);
+  bucket.toolMs += num(row.toolMs) - wait;
+  bucket.waitMs += wait;
+  bucket.activeMs += activeMs(row) - wait;
   bucket.decodeTokens += row.decodeTokens;
   bucket.tokens.input += row.tokens.input;
   bucket.tokens.output += row.tokens.output;
@@ -426,6 +452,8 @@ export function aggregate(rows, options = {}) {
   const scoped = all ? scopedAll : filterRows(rows, { ...range, timeZone, scope });
 
   const totals = emptyBucket();
+  /** totals.activeMs 保留官方值（供与平台核对）；子桶的 activeMs 是净活跃。 */
+  let officialActiveMs = 0;
   const dayMap = new Map();
   /** 日历专用：全历史逐日（不受日期筛选影响）。 */
   const calendarMap = new Map();
@@ -453,6 +481,7 @@ export function aggregate(rows, options = {}) {
   }
 
   for (const row of scoped) {
+    officialActiveMs += activeMs(row);
     addRow(totals, row);
 
     const key = dateKey(row.createdAt, timeZone);
@@ -520,7 +549,14 @@ export function aggregate(rows, options = {}) {
   return {
     range: { ...range, timeZone, days: dayCount(range) },
     scope,
-    totals: { ...withTotals(totals), workspaces: realWorkspaces, activeDays: dayMap.size },
+    totals: {
+      ...withTotals(totals),
+      // 官方值保留用于核对；净活跃 = 官方 − 等待用户（两者之和守恒）
+      activeMs: officialActiveMs,
+      netActiveMs: Math.max(0, officialActiveMs - totals.waitMs),
+      workspaces: realWorkspaces,
+      activeDays: dayMap.size,
+    },
     byDay: days
       .map((date) => {
         const day = dayMap.get(date);
@@ -571,7 +607,10 @@ export function aggregate(rows, options = {}) {
         isSubagent: row.isSubagent,
         turns: row.turns,
         steps: row.steps,
-        activeMs: activeMs(row),
+        // 会话明细同样展示净活跃；waitMs 单独给出，官方 activeMs 可由两值相加核对
+        activeMs: netActiveMs(row),
+        waitMs: waitMsOf(row),
+        officialActiveMs: activeMs(row),
         llmMs: row.llmMs,
         toolMs: row.toolMs,
         tokens: row.tokens,
@@ -675,7 +714,8 @@ function totalModelCost(modelMap, pricing) {
  */
 export function present(snapshot) {
   const totalTokens = snapshot.totals.tokensTotal || 1;
-  const totalActive = snapshot.totals.activeMs || 1;
+  // 占比与均值都用净活跃（totals.activeMs 是官方值，含等待，不能做分母）
+  const totalActive = snapshot.totals.netActiveMs || 1;
   return {
     ...snapshot,
     byWorkspace: snapshot.byWorkspace.map((item) => ({
@@ -694,13 +734,13 @@ export function present(snapshot) {
       avgTokensPerConversation:
         snapshot.totals.conversations > 0 ? snapshot.totals.tokensTotal / snapshot.totals.conversations : 0,
       avgActiveMsPerConversation:
-        snapshot.totals.conversations > 0 ? snapshot.totals.activeMs / snapshot.totals.conversations : 0,
+        snapshot.totals.conversations > 0 ? snapshot.totals.netActiveMs / snapshot.totals.conversations : 0,
       cacheHitRate:
         snapshot.totals.tokens.input + snapshot.totals.tokens.cacheRead > 0
           ? snapshot.totals.tokens.cacheRead / (snapshot.totals.tokens.input + snapshot.totals.tokens.cacheRead)
           : 0,
       outputPerActiveHour:
-        snapshot.totals.activeMs > 0 ? snapshot.totals.tokens.output / (snapshot.totals.activeMs / 3600000) : 0,
+        snapshot.totals.netActiveMs > 0 ? snapshot.totals.tokens.output / (snapshot.totals.netActiveMs / 3600000) : 0,
     },
   };
 }

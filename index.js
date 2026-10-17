@@ -20,7 +20,7 @@ import { dirname, join } from "node:path";
 
 import { PROJECTION_KEYS, aggregate, present, rowFromSession } from "./src/aggregate.js";
 import { renderReport } from "./src/report-html.js";
-import { foldSessionModels, resolvePricing } from "./src/models.js";
+import { DEFAULT_WAIT_MIN_MS, DEFAULT_WAIT_TOOLS, foldSessionModels, resolvePricing } from "./src/models.js";
 
 /** 插件版本：getBalance 的客户端元数据（x-client-version）用它，避免手写常量与 package.json 漂移。 */
 const PLUGIN_VERSION = createRequire(import.meta.url)("./package.json").version ?? "0.0.0";
@@ -56,6 +56,15 @@ const DEFAULTS = {
   indexPath: "",
   /** 模型维度：auto | off。off 时完全不读事件日志（行为与不含该功能一致）。 */
   modelUsage: "auto",
+  /**
+   * 等待用户剔除（0.7.0）：交互工具与「调用期间夹着 user/message」的工具区间从活跃时长中剔除。
+   * excludeWait=false 时完全不判定等待，行为与 0.6.0 一致（回归开关）。
+   */
+  excludeWait: true,
+  /** 交互工具白名单：这些工具的单次调用（≥ waitMinMs）整段计为等待。 */
+  waitTools: [...DEFAULT_WAIT_TOOLS],
+  /** 等待判定阈值（毫秒）：短于它的交互不剔除，避免碎片化。 */
+  waitMinMs: DEFAULT_WAIT_MIN_MS,
   /** 模型折叠并发（要读整份事件日志，比投影贵，默认低于 indexConcurrency）。 */
   modelFoldConcurrency: 4,
   /** 单会话事件数上限：超过则跳过该会话的模型维度并计入诊断（保护内存）。 */
@@ -100,7 +109,7 @@ const MODEL_FOLD_ERROR_MAX = 200;
  *   · pending 永远 > 0 → 界面永远停在"模型维度正在回填…"；
  *   · 重启后又要从头折一遍。
  */
-const MODEL_ROW_FIELDS = ["models", "hours", "hoursSource", "modelFoldSeq", "modelFoldAt", "modelFoldSkipped", "modelFoldError", "modelFoldErrorAt"];
+const MODEL_ROW_FIELDS = ["models", "hours", "hoursSource", "waitMs", "modelFoldSeq", "modelFoldAt", "modelFoldSkipped", "modelFoldError", "modelFoldErrorAt"];
 
 /** 把上一版行的模型折叠结果搬到新行上（新行缺的字段才补，不覆盖）。 */
 function carryModelFields(row, previous) {
@@ -150,7 +159,7 @@ function sendHtml(res, status, html) {
  *   2. 活会话 `sessionProjections.snapshot()` + `session/event` 增量：同步、精确。
  *   3. 冷读 `sessionQuery.observeSession(id, { projectionMode: "all" })`：官方折叠整份日志
  *      （内部仍以检查点做捷径），只对"缓存未命中且本地索引里没有"的会话执行一次。
- *   4. 本地索引文件 `<DSH_HOME>/workload-report/index-v5.json`：让进程重启后不必重跑冷读；
+ *   4. 本地索引文件 `<DSH_HOME>/workload-report/index-v6.json`：让进程重启后不必重跑冷读；
  *   5. 模型维度：`sessionQuery.readSession()` 读官方事件日志 → `src/models.js` 折叠（渐进回填，不阻塞首屏）；
  *      超过 `revalidateMs` 的行会重新校验一次（续聊过的冷会话靠这个纠正）。
  */
@@ -160,8 +169,11 @@ function sendHtml(res, status, html) {
  * 每轮活跃整段记到该轮开始时刻所在整点、不跨小时切分，无轮次事件的行用 `createdAt` 兜底。
  * 旧 v4 索引里是「按事件区间跨小时切分」的桶，语义已作废，必须换代重建，
  * 否则旧桶会被新口径当成有效分布直接复用（这就是 4 → 5 的原因）。
+ * v6：行上新增 `waitMs`（等待用户），且 `hours` 改为只累计非等待区间 ——
+ * v5 的桶把 ask_user_question 等等待整段算作工作（用户实测 3 小时等待被算成活跃），
+ * 语义已作废；不换代会把旧桶当成「净活跃分布」复用，所以必须 5 → 6。
  */
-const INDEX_VERSION = 5;
+const INDEX_VERSION = 6;
 
 /** 限制并发，避免几百个会话同时冷读把服务器压住。 */
 async function mapLimit(items, limit, worker) {
@@ -705,8 +717,14 @@ class WorkloadIndex {
             sessionToolMs: target.toolMs,
             // 会话级兜底：事件没有轮次信息时，活跃时长记到会话创建时刻所在整点
             sessionStartMs: target.createdAt,
+            // 等待用户剔除（excludeWait=false 时与 0.6.0 完全一致）
+            excludeWait: this.config.excludeWait !== false,
+            waitTools: this.config.waitTools,
+            waitMinMs: this.config.waitMinMs,
           });
           target.models = folded.models;
+          // 等待用户（随索引持久化；行换代时由 MODEL_ROW_FIELDS 搬运）
+          target.waitMs = folded.waitMs;
           // 时刻分布：事件时间戳（UTC 桶）随索引持久化；没有可用事件时留给聚合层摊销
           if (folded.hours !== null) {
             target.hours = folded.hours;

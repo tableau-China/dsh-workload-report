@@ -12,6 +12,23 @@
 /** 未标注模型（缺 provider/model 或 usage）的桶名。 */
 export const UNKNOWN_MODEL = "(未标注模型)";
 
+/** 默认交互工具白名单：这些工具的调用时长整段计为「等待用户」，不计入活跃时长。 */
+export const DEFAULT_WAIT_TOOLS = ["ask_user_question", "exit_plan_mode"];
+
+/** 等待判定阈值（毫秒）：单次调用短于它就不剔除，避免把碎片交互拆出来。 */
+export const DEFAULT_WAIT_MIN_MS = 60000;
+
+/** 归一化等待工具白名单：非数组回退默认，数组里的非字符串项丢弃（空数组 = 关闭白名单）。 */
+function waitToolSet(waitTools) {
+  const list = Array.isArray(waitTools) ? waitTools : DEFAULT_WAIT_TOOLS;
+  return new Set(list.filter((name) => typeof name === "string" && name !== ""));
+}
+
+/** 归一化等待阈值（非负有限数，否则用默认 60s）。 */
+function waitThresholdOf(waitMinMs) {
+  return typeof waitMinMs === "number" && Number.isFinite(waitMinMs) && waitMinMs >= 0 ? waitMinMs : DEFAULT_WAIT_MIN_MS;
+}
+
 /**
  * 内置默认归并规则。
  * DeepSeek 官方定价页注 1 原文：*"Use deepseek-flash as the model name. The legacy names
@@ -182,20 +199,37 @@ function turnKeyOf(event) {
  *   · 工具时间 = 按 `callId` 配对 `tool/call.time` → `tool/result.time` 的区间；
  *     **未配对 / 未结束的调用不计**（悬空调用没有可信的结束时间，宁可少算）。
  *
+ * **等待用户（三层判定，0.7.0）**：单次工具区间 ≥ waitMinMs 且满足任一条件时整段计为 `waitMs`：
+ *   (a) 工具名在 `waitTools` 白名单（默认 ask_user_question / exit_plan_mode）——交互工具；
+ *   (b) `tool/call` 与 `tool/result` 之间夹着 `user/message`——人类输入夹层。
+ * 等待区间**不进入**活跃时长 / 小时桶；没有 user/message 的普通长任务（编译、跑批）照常算工作。
+ * 短于 waitMinMs 的交互不剔除（避免碎片化）。`excludeWait=false` 时完全不判定等待，行为与 0.6.0 一致。
+ *
  * **守恒**：官方 activeMs（llmMs + toolMs）与事件累计不等时（未闭合步 / crash 恢复补写），
- * 整体按比例缩放到官方 activeMs，保证 `sum(hours) === llmMs + toolMs`（±1ms）。
+ * 整体按比例缩放到「官方 activeMs − waitMs」，保证 `sum(hours) === llmMs + toolMs − waitMs`（±1ms）。
  *
  * @param events - 事件数组（官方 SessionLogSnapshot 的 events）。
  * @param options - sessionLlmMs / sessionToolMs：会话官方口径，用于缩放守恒；
- *   sessionStartMs：会话 createdAt，用于没有轮次事件时的会话级兜底。
- * @returns {{ hours: number[]|null, source: 'events'|'events-scaled'|null, rawMs: number, targetMs: number }}
+ *   sessionStartMs：会话 createdAt，用于没有轮次事件时的会话级兜底；
+ *   excludeWait：是否剔除等待用户（默认 true）；waitTools：交互工具白名单；waitMinMs：等待判定阈值。
+ * @returns {{ hours: number[]|null, source: 'events'|'events-scaled'|null, rawMs: number, targetMs: number, waitMs: number }}
  */
-export function foldSessionHours(events, { sessionLlmMs = 0, sessionToolMs = 0, sessionStartMs = 0 } = {}) {
+export function foldSessionHours(events, {
+  sessionLlmMs = 0,
+  sessionToolMs = 0,
+  sessionStartMs = 0,
+  excludeWait = true,
+  waitTools = DEFAULT_WAIT_TOOLS,
+  waitMinMs = DEFAULT_WAIT_MIN_MS,
+} = {}) {
   const hours = new Array(24).fill(0);
   const list = Array.isArray(events) ? events : [];
   const anchorMs = epochMs(sessionStartMs) ?? 0;
   /** 轮次键 → { startMs, activeMs, fixedStart }；fixedStart 的轮次不再被更早的事件时间改写。 */
   const turns = new Map();
+  /** 等待判定：白名单集合 + 阈值（excludeWait=false 时判定条件直接短路）。 */
+  const waitingTools = waitToolSet(waitTools);
+  const waitThreshold = waitThresholdOf(waitMinMs);
 
   const ensureTurn = (key, time) => {
     let turn = turns.get(key);
@@ -223,9 +257,13 @@ export function foldSessionHours(events, { sessionLlmMs = 0, sessionToolMs = 0, 
 
   /** 最近一条 request/header 的时间（用掉即清，避免重复配给多条 message）。 */
   let headerTime = null;
-  /** 事件区间的累计毫秒。 */
+  /** 事件区间的累计毫秒（只含工作，不含等待）。 */
   let rawMs = 0;
-  /** 已开始、未结束的工具调用：callId → { time, key }。 */
+  /** 等待用户累计毫秒（已从活跃时长中剔除）。 */
+  let waitMs = 0;
+  /** 单调递增的 user/message 计数：用来判断工具调用期间是否夹着人类输入。 */
+  let userMark = 0;
+  /** 已开始、未结束的工具调用：callId → { time, key, name, userMark }。 */
   const openCalls = new Map();
 
   for (const event of list) {
@@ -242,7 +280,8 @@ export function foldSessionHours(events, { sessionLlmMs = 0, sessionToolMs = 0, 
     }
     if (type === "tool/call") {
       const callId = typeof event.data?.callId === "string" ? event.data.callId : "";
-      if (callId !== "" && time !== null) openCalls.set(callId, { time, key });
+      const name = typeof event.data?.name === "string" ? event.data.name : "";
+      if (callId !== "" && time !== null) openCalls.set(callId, { time, key, name, userMark });
       continue;
     }
     if (type === "tool/result") {
@@ -252,10 +291,25 @@ export function foldSessionHours(events, { sessionLlmMs = 0, sessionToolMs = 0, 
       const started = openCalls.get(callId);
       if (started === undefined) continue; // 未配对 / 未结束：不计
       openCalls.delete(callId);
-      if (time > started.time) {
-        addActive(started.key, started.time, time - started.time);
-        rawMs += time - started.time;
+      const duration = time - started.time;
+      if (duration > 0) {
+        // 三层判定：白名单交互工具 / 中间夹着 user/message（且单次时长过阈值）→ 等待；
+        // 其余（含没有人类输入的长任务）照常算工作。
+        const interleaved = userMark > started.userMark;
+        const isWait = excludeWait && duration >= waitThreshold && (waitingTools.has(started.name) || interleaved);
+        if (isWait) {
+          waitMs += duration;
+        } else {
+          addActive(started.key, started.time, duration);
+          rawMs += duration;
+        }
       }
+      continue;
+    }
+    if (type === "user/message") {
+      // 人类输入夹层：只影响发生在它之后的工具调用（call → result 之间）
+      userMark += 1;
+      noteStart(key, time);
       continue;
     }
     if (type === "assistant/message") {
@@ -277,7 +331,7 @@ export function foldSessionHours(events, { sessionLlmMs = 0, sessionToolMs = 0, 
       if (time !== null) headerTime = time;
       continue;
     }
-    // 其它事件（step/start、turn/end、user/message…）只用于校正「轮次开始时刻」
+    // 其它事件（step/start、turn/end…）只用于校正「轮次开始时刻」
     noteStart(key, time);
   }
 
@@ -287,22 +341,33 @@ export function foldSessionHours(events, { sessionLlmMs = 0, sessionToolMs = 0, 
     hours[utcHourOf(turn.startMs)] += turn.activeMs;
   }
 
-  const targetMs = numOr0(sessionLlmMs) + numOr0(sessionToolMs);
+  const officialActiveMs = numOr0(sessionLlmMs) + numOr0(sessionToolMs);
+  // 等待时长不能超过官方 activeMs（并发 / 异常日志下防止「净活跃」变负）
+  const excludedWaitMs = excludeWait ? Math.min(waitMs, officialActiveMs) : 0;
+  const targetMs = Math.max(0, officialActiveMs - excludedWaitMs);
   const sum = hours.reduce((acc, value) => acc + value, 0);
-  if (sum <= 0 || targetMs <= 0) return { hours: null, source: null, rawMs, targetMs };
-  if (Math.abs(sum - targetMs) <= 1) return { hours, source: "events", rawMs, targetMs };
+  if (sum <= 0 || targetMs <= 0) return { hours: null, source: null, rawMs, targetMs, waitMs: excludedWaitMs };
+  if (Math.abs(sum - targetMs) <= 1) return { hours, source: "events", rawMs, targetMs, waitMs: excludedWaitMs };
   const factor = targetMs / sum;
   for (let i = 0; i < 24; i++) hours[i] *= factor;
-  return { hours, source: "events-scaled", rawMs, targetMs };
+  return { hours, source: "events-scaled", rawMs, targetMs, waitMs: excludedWaitMs };
 }
 
 /**
  * 折叠一个会话的事件日志 → 每个归并组的统计。
  * @param events - 事件数组（官方 SessionLogSnapshot 的 events）。
- * @param options - groups（自定义归并）/ sessionLlmMs / sessionToolMs（会话官方口径，用于守恒分摊与时刻分布缩放）/ sessionStartMs（会话 createdAt，时刻分布兜底）。
- * @returns { models, requests, unknownRequests, totalStreamMs, hours, hoursSource, hoursRawMs, hoursTargetMs }
+ * @param options - groups（自定义归并）/ sessionLlmMs / sessionToolMs（会话官方口径，用于守恒分摊与时刻分布缩放）/ sessionStartMs（会话 createdAt，时刻分布兜底）/ excludeWait / waitTools / waitMinMs（等待用户剔除）。
+ * @returns { models, requests, unknownRequests, totalStreamMs, hours, hoursSource, hoursRawMs, hoursTargetMs, waitMs }
  */
-export function foldSessionModels(events, { groups = [], sessionLlmMs = 0, sessionToolMs = 0, sessionStartMs = 0 } = {}) {
+export function foldSessionModels(events, {
+  groups = [],
+  sessionLlmMs = 0,
+  sessionToolMs = 0,
+  sessionStartMs = 0,
+  excludeWait = true,
+  waitTools = DEFAULT_WAIT_TOOLS,
+  waitMinMs = DEFAULT_WAIT_MIN_MS,
+} = {}) {
   const models = {};
   let requests = 0;
   let unknownRequests = 0;
@@ -349,8 +414,8 @@ export function foldSessionModels(events, { groups = [], sessionLlmMs = 0, sessi
 
   // 会话 llmMs 按 stream 权重分摊（守恒：最后一个模型吸收余数）
   allocateLlmMs(models, sessionLlmMs, totalStreamMs);
-  // 同一趟折叠里顺带算小时分布（同一份 events，不额外读日志）
-  const hours = foldSessionHours(list, { sessionLlmMs, sessionToolMs, sessionStartMs });
+  // 同一趟折叠里顺带算小时分布与等待用户（同一份 events，不额外读日志）
+  const hours = foldSessionHours(list, { sessionLlmMs, sessionToolMs, sessionStartMs, excludeWait, waitTools, waitMinMs });
   return {
     models,
     requests,
@@ -360,6 +425,7 @@ export function foldSessionModels(events, { groups = [], sessionLlmMs = 0, sessi
     hoursSource: hours.source,
     hoursRawMs: hours.rawMs,
     hoursTargetMs: hours.targetMs,
+    waitMs: hours.waitMs,
   };
 }
 
