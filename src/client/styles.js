@@ -42,12 +42,28 @@ export const STYLES = `
 .wl-title { font-size: 16px; font-weight: 600; margin: 0; }
 .wl-subtitle { font-size: 12px; color: var(--dsw-alias-label-tertiary, #6b7280); margin: 2px 0 0; }
 .wl-spacer { flex: 1 1 auto; }
-.wl-chips { display: flex; gap: 4px; background: var(--dsw-alias-bg-layer-2, #f2f3f5); padding: 3px; border-radius: 999px; }
+/* 切换控件唯一实现（src/client/chips.jsx）：默认浅底 + 边框，选中主题强调色实底 + 白字。
+   尺寸 / 圆角 / 间距只在这里定义；各卡片不得再写变体 class。 */
+.wl-chips { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .wl-chip {
-  border: none; background: transparent; cursor: pointer; font: inherit; font-size: 12px;
-  color: var(--dsw-alias-label-secondary, #4b5563); padding: 4px 12px; border-radius: 999px;
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 24px; padding: 0 10px; border-radius: 999px;
+  border: 1px solid var(--dsw-alias-border-l2, #e5e7eb);
+  /* 7% 强调色 + layer-2：宿主 layer-2 在部分主题下就是白色，单用它看不出"浅底" */
+  background: color-mix(in srgb, var(--dsw-static-deepseek-500, #4d6bfe) 7%, var(--dsw-alias-bg-layer-2, #f2f3f5));
+  color: var(--dsw-alias-label-secondary, #4b5563);
+  cursor: pointer; font: inherit; font-size: 12px; font-weight: 500; line-height: 1;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
 }
-.wl-chip[data-active="true"] { background: var(--dsw-alias-bg-layer-1, #ffffff); color: var(--dsw-alias-label-primary, #111); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.wl-chip:hover { border-color: var(--dsw-static-deepseek-300, #a9b8ff); background: color-mix(in srgb, var(--dsw-static-deepseek-500, #4d6bfe) 12%, var(--dsw-alias-bg-layer-2, #f2f3f5)); color: var(--dsw-alias-label-primary, #111); }
+.wl-chip[data-active="true"] {
+  border-color: var(--dsw-static-deepseek-500, #4d6bfe);
+  background: var(--dsw-static-deepseek-500, #4d6bfe);
+  color: var(--dsw-alias-label-primary-inverted, #ffffff);
+  font-weight: 600;
+}
+.wl-chip[data-active="true"]:hover { filter: brightness(1.05); color: var(--dsw-alias-label-primary-inverted, #ffffff); }
+.wl-chip:focus-visible { outline: 2px solid var(--dsw-static-deepseek-400, #6b83ff); outline-offset: 1px; }
 .wl-select {
   font: inherit; font-size: 12px; padding: 5px 8px; border-radius: 8px;
   border: 1px solid var(--dsw-alias-border-l2, #e5e7eb);
@@ -85,7 +101,15 @@ export const STYLES = `
 .wl-card { background: var(--dsw-alias-bg-layer-1, #fff); border: 1px solid var(--dsw-alias-border-l2, #eceef1); border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; }
 .wl-card h3 { margin: 0 0 4px; font-size: 13px; font-weight: 600; }
 .wl-hint { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); margin: 0 0 10px; }
-.wl-legend { display: flex; gap: 14px; font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); margin-top: 8px; flex-wrap: wrap; }
+/* hint 的两种通用修饰：与上方内容留白 / 块级第二行；不再为每张卡另造 class */
+.wl-hint-spaced { margin-top: 8px; }
+.wl-hint-block { display: block; margin-top: 2px; }
+.wl-hint a { color: var(--dsw-static-deepseek-500, #4d6bfe); text-decoration: none; }
+.wl-hint a:hover { text-decoration: underline; }
+/* 状态提示（未计入 / 计算中 / 回填中 / 读取失败）统一走这一条 */
+.wl-status { font-size: 11px; line-height: 1.5; color: var(--dsw-alias-label-tertiary, #6b7280); margin: 0; white-space: nowrap; }
+.wl-status[data-state="running"] { color: var(--dsw-static-deepseek-500, #4d6bfe); }
+.wl-status[data-tone="error"] { color: var(--dsw-alias-label-error, #f25a5a); max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .wl-dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
 .wl-table-scroll { overflow-x: auto; }
 .wl-table { width: 100%; border-collapse: collapse; font-size: 12px; }
@@ -111,14 +135,10 @@ export const STYLES = `
 .wl-sort-mark { font-size: 9px; opacity: 0.5; }
 .wl-th-sort[data-active] .wl-sort-mark { opacity: 1; }
 .wl-bars { list-style: none; margin: 0 0 14px; padding: 0; display: grid; gap: 12px; }
-.wl-bar-head { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px; gap: 12px; }
-.wl-bar-value { color: var(--dsw-alias-label-tertiary, #6b7280); font-variant-numeric: tabular-nums; }
 .wl-bar-track { height: 8px; border-radius: 999px; background: var(--dsw-alias-bg-layer-2, #eef0f3); overflow: hidden; }
 .wl-bar-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--dsw-static-deepseek-400, #6b83ff), var(--dsw-static-deepseek-600, #3b57e0)); }
 .wl-bar-fill[data-kind="tokens"] { background: linear-gradient(90deg, var(--dsw-static-green-400, #34d399), var(--dsw-static-green-500, #10b981)); }
 .wl-bar-fill[data-kind="days"] { background: linear-gradient(90deg, var(--dsw-static-green-400, #34d399), var(--dsw-static-green-500, #10b981)); }
-.wl-bar-head-second { margin-top: 8px; }
-.wl-bar-label { font-size: 12px; color: var(--dsw-alias-label-secondary, #4b5563); }
 /* 工作区行：左独立名称列 + 右侧两条同口径 bar。列宽用变量，列头按同一套变量对齐 */
 .wl-bars, .wl-metrics-head { --wl-ws-left: 156px; --wl-ws-gap: 18px; }
 /* 列头只出现一次，和右侧两栏对齐（左侧名称列用 margin-left 留白，不占额外 grid 单元） */
@@ -131,14 +151,12 @@ export const STYLES = `
 .wl-ws-days { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); white-space: nowrap; }
 .wl-ws-meta { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wl-metric { min-width: 0; }
-.wl-metric-label { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); margin-bottom: 3px; }
 .wl-metric-value { font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; margin-bottom: 5px; }
 .wl-metric-share { font-size: 11px; font-weight: 400; color: var(--dsw-alias-label-tertiary, #6b7280); margin-left: 7px; }
 .wl-metric-sub { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); margin-top: 5px; line-height: 1.5; }
 .wl-ws-foot { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); margin-top: 9px; padding-top: 7px; border-top: 1px dashed var(--dsw-alias-border-l2, #eceef1); }
 /* 窄屏：名称列收窄（名称截断、title 留全文），两条 bar 继续并排，整行不溢出 */
 @media (max-width: 720px) { .wl-bars, .wl-metrics-head { --wl-ws-left: 104px; --wl-ws-gap: 12px; } }
-.wl-bar-sub { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); margin-top: 4px; }
 .wl-state { padding: 28px; text-align: center; color: var(--dsw-alias-label-tertiary, #6b7280); font-size: 13px; }
 .wl-note { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); line-height: 1.65; border-top: 1px solid var(--dsw-alias-border-l2, #eceef1); padding-top: 12px; margin-top: 4px; }
 .wl-footer-item {
@@ -159,9 +177,12 @@ export const STYLES = `
 .wl-balance-link { color: var(--dsw-static-deepseek-500, #4d6bfe); text-decoration: none; white-space: nowrap; }
 .wl-balance-link:hover { text-decoration: underline; }
 .wl-balance[data-kind="error"] .wl-balance-text { color: var(--dsw-alias-label-tertiary, #6b7280); }
-/* 卡片头：标题 + 右侧切换 */
+/* 卡片头唯一结构（src/client/card-head.jsx）：左标题（+ 可选说明），右上控件 */
 .wl-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 6px; }
-.wl-chips-inline { margin-bottom: 10px; }
+.wl-card-head-text { min-width: 0; }
+.wl-card-head-text h3 { margin: 0; }
+.wl-card-head-text .wl-hint { margin: 2px 0 0; }
+.wl-card-head-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; }
 /* 并排两图：列宽与上面「每日趋势 + 模型用量」完全一致，上下两行左右边界对齐 */
 .wl-grid-2 { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 14px; margin-bottom: 14px; }
 .wl-grid-2 .wl-card { margin-bottom: 0; }
@@ -200,11 +221,12 @@ export const STYLES = `
   font-size: 9px; line-height: 1.1; font-weight: 650; color: var(--dsw-alias-label-primary, #1a1d21);
   font-variant-numeric: tabular-nums; pointer-events: none; white-space: nowrap;
 }
-.wl-hour-legend { margin-top: 6px; }
+.wl-hour-legend { justify-content: space-between; align-items: center; margin-top: 6px; }
+.wl-hour-legend .wl-legend-group { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.wl-hour-legend .wl-status { margin-left: auto; text-align: right; }
 .wl-hour-legend .wl-legend-bar { background: linear-gradient(180deg, var(--dsw-static-deepseek-400, #6b83ff), var(--dsw-static-deepseek-600, #3b57e0)); }
 .wl-hour-legend .wl-legend-dot { border-radius: 50%; background: var(--dsw-static-amber-500, #f59e0b); }
 .wl-hour-legend .wl-legend-peak { background: var(--dsw-static-blue-600, #2563eb); }
-.wl-hour-note { margin-top: 4px; margin-bottom: 0; }
 /* 工作区环形图 */
 .wl-pie-wrap { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
 .wl-pie-legend { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; flex: 1 1 220px; min-width: 200px; }
@@ -247,28 +269,18 @@ export const STYLES = `
 .wl-treemap-fill { height: 210px; }
 .wl-treemap-fill > svg { display: block; }
 /* 模型读日志失败提示：卡片底部小字，可读短句 + title 简化原因；用宿主 token，不新增色值 */
-.wl-fold-error {
-  margin: 10px 0 0; font-size: 11px; line-height: 1.5; color: var(--dsw-alias-label-error, #f25a5a);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
 .wl-model-subtitle { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-secondary, #4b5563); }
-.wl-model-note { margin: 8px 0 0; }
-.wl-model-links a { color: var(--dsw-static-deepseek-500, #4d6bfe); text-decoration: none; }
-.wl-model-links a:hover { text-decoration: underline; }
 .wl-model-table { margin-top: 14px; }
 .wl-model-name { display: inline-flex; align-items: center; gap: 6px; background: none; border: 0; padding: 0; cursor: pointer; color: inherit; font: inherit; }
 .wl-model-name i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
-.wl-model-raw { display: block; margin-top: 2px; }
 /* 骨架屏：卡片框架先就位，只有数值位显示「加载中…」；灰色块只是"位置占位" */
 .wl-skeleton-area { border-radius: 8px; background: var(--dsw-alias-bg-layer-2, #f2f3f5); }
 .wl-chart-fill.wl-skeleton-area { min-height: 200px; }
-.wl-skeleton-treemap { height: 210px; }
-.wl-skeleton-trend { height: 150px; margin-bottom: 8px; }
 .wl-skeleton-mid { height: 160px; }
 .wl-skeleton .wl-state { padding: 18px; }
 .wl-pending { font-size: 14px; font-weight: 500; color: var(--dsw-alias-label-tertiary, #6b7280); }
 /* 图例上边距压到 4px：柱状图的图形底边到图例 ≤ 8px，视觉上"图吃满容器" */
-.wl-legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 4px; line-height: 1.5; }
+.wl-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 4px; line-height: 1.5; font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); }
 /* legend 里的说明文字不再带 margin-top：日历/柱状图两种 legend 必须一样高，否则图表容器高度会随模式变化 */
 .wl-legend .wl-metric-sub { margin-top: 0; }
 .wl-legend-item { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); }

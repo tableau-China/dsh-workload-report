@@ -12,6 +12,9 @@ import { NS, en, languageOf, translate, zh } from "./locales.js";
 import { formatHours, formatInt, formatMoney, formatPercent, formatTokens } from "../format.js";
 import { balanceChip } from "./balance.js";
 import { MetricBarCell } from "./bar-cell.jsx";
+import { Chip, ChipGroup } from "./chips.jsx";
+import { CardHead } from "./card-head.jsx";
+import { hourTokensNote } from "./hour-status.js";
 import { sectorPath } from "../sector-path.js";
 import {
   HOUR_DOT_TOP,
@@ -311,37 +314,59 @@ function CalendarHeatmap({ calendar, t, availableHeight = 0 }) {
     "var(--dsw-static-deepseek-700, #2b3fa8)",
   ];
   const weekdayLabels = [t("cal.mon"), t("cal.tue"), t("cal.wed"), t("cal.thu"), t("cal.fri"), t("cal.sat"), t("cal.sun")];
+  /** 周末后缀（含前导分隔符）；由行号判定，周一行号为 0。 */
+  const weekendOf = (row) => (row >= 5 ? t("tip.weekend") : "");
+  /** 单行可读提示：日期 · 活跃 x · Token y [· 周末]；无记录也保留日期与周末标记。 */
+  const dayTip = (date, day, weekend) =>
+    day === null || day === undefined
+      ? `${date} · ${t("tip.noRecord")}${weekend}`
+      : t("tip.daily", { date, active: formatHours(day.activeMs ?? 0), tokens: formatTokens(day.tokensTotal ?? 0), weekend });
 
   return (
     <div className="wl-cal-scroll">
       <svg viewBox={`0 0 ${width} ${height}`} width={width} height={height} role="img" aria-label={t("cal.title")}>
+        {/* 周几轴：每个标签也带累计提示，避免悬停到轴文字时完全没有反馈 */}
         {weekdayLabels.map((label, row) => (
           <text key={label} x={0} y={topPad + row * (cell + gap) + cell * 0.72} fontSize="10" fill="var(--dsw-alias-label-tertiary, #6b7280)">
             {label}
+            <title>{t("tip.weekday", { weekday: label, total: formatHours(model.weekdayTotals[row]) })}</title>
           </text>
         ))}
         {model.list.map((column, index) => {
           const x = leftPad + index * (cell + gap);
           const showLabel = index === 0 || column.week === 1 || column.year !== model.list[index - 1]?.year || index % 4 === 0;
+          const labelText = column.week === 1 || index === 0 || column.year !== model.list[index - 1]?.year
+            ? `${column.year}W${String(column.week).padStart(2, "0")}`
+            : `W${String(column.week).padStart(2, "0")}`;
+          const columnTotal = [...column.cells.values()].reduce((sum, entry) => sum + (entry.day?.activeMs ?? 0), 0);
           return (
             <g key={column.key}>
               {showLabel ? (
                 <text x={x} y={11} fontSize="9" fill="var(--dsw-alias-label-tertiary, #6b7280)">
-                  {column.week === 1 || index === 0 || column.year !== model.list[index - 1]?.year
-                    ? `${column.year}W${String(column.week).padStart(2, "0")}`
-                    : `W${String(column.week).padStart(2, "0")}`}
+                  {labelText}
+                  <title>{t("tip.week", { year: column.year, week: String(column.week).padStart(2, "0"), total: formatHours(columnTotal) })}</title>
                 </text>
               ) : null}
               {[0, 1, 2, 3, 4, 5, 6].map((row) => {
                 const entry = column.cells.get(row);
                 if (entry === undefined) return null;
                 const activeMs = entry.day?.activeMs ?? 0;
-                const title = entry.day
-                  ? t("tip.day", { date: entry.date, active: formatHours(activeMs), conversations: entry.day.conversations, turns: entry.day.turns })
-                  : `${entry.date}\n${t("tip.noRecord")}`;
+                const weekend = weekendOf(row);
+                // title 必须直接挂在可 hover 的 rect 上（不能挂在 <g> 上，多数浏览器不弹）
                 return (
-                  <rect key={entry.date} x={x} y={topPad + row * (cell + gap)} width={cell} height={cell} rx="3" fill={fills[level(activeMs)]}>
-                    <title>{title}</title>
+                  <rect
+                    key={entry.date}
+                    data-kind="calendar-cell"
+                    data-date={entry.date}
+                    data-weekend={row >= 5 ? "true" : undefined}
+                    x={x}
+                    y={topPad + row * (cell + gap)}
+                    width={cell}
+                    height={cell}
+                    rx="3"
+                    fill={fills[level(activeMs)]}
+                  >
+                    <title>{dayTip(entry.date, entry.day ?? null, weekend)}</title>
                   </rect>
                 );
               })}
@@ -387,7 +412,7 @@ function CalendarHeatmap({ calendar, t, availableHeight = 0 }) {
  * · 顶部圆点＝人类消息密度（user/message 条数）：半径 3.4 + ratio×5.0，上沿恒留 14px。
  * · 图例只解释颜色，不写"(点越大越多)"之类的解释。
  */
-function HourChart({ hours, t, measure = "tokens", missing = 0 }) {
+function HourChart({ hours, t, measure = "tokens", status = null }) {
   const max = hourMeasureMax(hours, measure);
   const maxHuman = Math.max(0, ...hours.map((hour) => hour.humanMsgs ?? 0));
   const peak = hours.reduce(
@@ -439,25 +464,32 @@ function HourChart({ hours, t, measure = "tokens", missing = 0 }) {
           );
         })}
       </div>
+      {/* 图例行：左侧三项解释颜色，右侧一条状态（靠右对齐） */}
       <div className="wl-legend wl-hour-legend">
-        <span className="wl-legend-item" data-kind="legend-measure">
-          <i className="wl-legend-bar" />
-          {t(measure === "turns" ? "hour.legend.turns" : "hour.legend.tokens")}
-        </span>
-        <span className="wl-legend-item" data-kind="legend-humans">
-          <i className="wl-legend-dot" />
-          {t("hour.legend.humans")}
-        </span>
-        <span className="wl-legend-item" data-kind="legend-peak">
-          <i className="wl-legend-peak" />
-          {t("hour.legend.peak")}
-        </span>
+        <div className="wl-legend-group">
+          <span className="wl-legend-item" data-kind="legend-measure">
+            <i className="wl-legend-bar" />
+            {t(measure === "turns" ? "hour.legend.turns" : "hour.legend.tokens")}
+          </span>
+          <span className="wl-legend-item" data-kind="legend-humans">
+            <i className="wl-legend-dot" />
+            {t("hour.legend.humans")}
+          </span>
+          <span className="wl-legend-item" data-kind="legend-peak">
+            <i className="wl-legend-peak" />
+            {t("hour.legend.peak")}
+          </span>
+        </div>
+        {status === null ? null : (
+          <span
+            className="wl-status"
+            data-kind="hour-tokens-missing"
+            data-state={status.state}
+          >
+            {status.text}
+          </span>
+        )}
       </div>
-      {missing > 0 ? (
-        <p className="wl-hint wl-hour-note" data-kind="hour-tokens-missing">
-          {t("hour.missingTokens", { count: formatInt(missing) })}
-        </p>
-      ) : null}
     </>
   );
 }
@@ -470,9 +502,7 @@ export { sectorPath };
  * 环形占比图（Top N + others）：工作区按时长 / Token 可切换；模型固定 Token（不切换）。
  * 首页「模型 Token 占比」直接复用本组件——几何、色板、描边只有这一份实现。
  */
-function WorkspacePie({ items, t, metric: fixedMetric = null, ariaLabel = null }) {
-  const [metricState, setMetricState] = useState("activeMs");
-  const metric = fixedMetric ?? metricState;
+function WorkspacePie({ items, t, metric = "activeMs", ariaLabel = null }) {
   const slices = useMemo(() => {
     const valueOf = (item) => (metric === "activeMs" ? item.activeMs : item.tokensTotal);
     const sorted = [...items].filter((item) => valueOf(item) > 0).sort((a, b) => valueOf(b) - valueOf(a));
@@ -509,14 +539,7 @@ function WorkspacePie({ items, t, metric: fixedMetric = null, ariaLabel = null }
   const formatValue = (value) => (metric === "activeMs" ? formatHours(value) : formatInt(value));
 
   return (
-    <>
-      {fixedMetric === null ? (
-        <div className="wl-chips wl-chips-inline">
-          <button type="button" className="wl-chip" data-active={metricState === "activeMs"} onClick={() => setMetricState("activeMs")}>{t("pie.byTime")}</button>
-          <button type="button" className="wl-chip" data-active={metricState === "tokens"} onClick={() => setMetricState("tokens")}>{t("pie.byTokens")}</button>
-        </div>
-      ) : null}
-      <div className="wl-pie-wrap">
+    <div className="wl-pie-wrap">
         <svg viewBox="0 0 160 160" width="160" height="160" role="img" aria-label={ariaLabel ?? t("pie.title")}>
           <g transform="translate(80,80) rotate(-90)">
             {arcs.map((arc) => (
@@ -550,8 +573,7 @@ function WorkspacePie({ items, t, metric: fixedMetric = null, ariaLabel = null }
           ))}
           {arcs.length === 0 ? <li className="wl-metric-sub">{t("state.empty")}</li> : null}
         </ul>
-      </div>
-    </>
+    </div>
   );
 }
 
@@ -635,6 +657,7 @@ function DailyChart({ days, t }) {
       }
     }
     const bars = [];
+    const hits = [];
     const values = [];
     days.forEach((day, index) => {
       const centerX = pad.left + step * index + step / 2;
@@ -643,7 +666,14 @@ function DailyChart({ days, t }) {
       const weekday = new Date(`${day.date}T00:00:00`).getDay();
       const weekend = weekday === 0 || weekday === 6;
       const peak = index === peakIndex && peakDate !== null;
-      // 每天都画柱（0 也留 1px）：悬停提示覆盖全部日期，柱 rect 数 = 天数
+      // 单行提示：日期 · 活跃 x · Token y [· 周末]
+      const title = t("tip.daily", {
+        date: day.date,
+        active: formatHours(day.activeMs),
+        tokens: formatTokens(day.tokensTotal ?? 0),
+        weekend: weekend ? t("tip.weekend") : "",
+      });
+      // 每天都画柱（0 也留 1px）：柱 rect 数 = 天数，title 直接挂在 rect 上
       bars.push(
         <rect
           key={day.date}
@@ -657,7 +687,24 @@ function DailyChart({ days, t }) {
           rx="2"
           fill={weekend ? "var(--dsw-static-amber-500, #f59e0b)" : "var(--dsw-static-deepseek-500, #4d6bfe)"}
         >
-          <title>{t("tip.daily", { date: day.date.slice(5), active: formatHours(day.activeMs), tokens: formatTokens(day.tokensTotal), conversations: day.conversations, turns: day.turns })}</title>
+          <title>{title}</title>
+        </rect>,
+      );
+      // 每根柱一根全高透明命中区：0 值柱只有 1px 高也能悬停；title 同样挂在命中区上，
+      // 悬停柱间空白 / 柱顶数值时都有提示（不是挂在父 <g> 上）。
+      hits.push(
+        <rect
+          key={`hit-${day.date}`}
+          data-kind="active-bar-hit"
+          data-date={day.date}
+          x={centerX - step / 2}
+          y={pad.top}
+          width={Math.max(step, 1)}
+          height={innerH}
+          fill="transparent"
+          style={{ pointerEvents: "all" }}
+        >
+          <title>{title}</title>
         </rect>,
       );
       // 0 不标：柱就落在轴上，标 "0" 只会和日期挤在一起；数值标在柱顶（h/m/s 小字号）
@@ -676,14 +723,23 @@ function DailyChart({ days, t }) {
       const text = day.date.slice(5);
       const half = text.length * 2.8; // 字号 9：日期字符宽约 5.6
       const centerX = pad.left + step * index + step / 2;
+      // 日期轴刻度也带提示：悬停到坐标轴文字时仍能读到当天口径
+      const weekday = new Date(`${day.date}T00:00:00`).getDay();
+      const tip = t("tip.daily", {
+        date: day.date,
+        active: formatHours(day.activeMs),
+        tokens: formatTokens(day.tokensTotal ?? 0),
+        weekend: weekday === 0 || weekday === 6 ? t("tip.weekend") : "",
+      });
       return (
         <text key={day.date} x={Math.min(Math.max(centerX, half), width - half)} y={height - 6} textAnchor="middle" fontSize="9" fill="var(--dsw-alias-label-tertiary, #6b7280)">
           {text}
+          <title>{tip}</title>
         </text>
       );
     });
-    return { width, height, pad, innerH, innerW, bars, values, axis };
-  }, [days, width, height]);
+    return { width, height, pad, innerH, innerW, bars, hits, values, axis };
+  }, [days, width, height, t]);
 
   if (geometry === null) {
     return (
@@ -692,12 +748,13 @@ function DailyChart({ days, t }) {
       </div>
     );
   }
-  const { pad, innerH, innerW, bars, values, axis } = geometry;
+  const { pad, innerH, innerW, bars, hits, values, axis } = geometry;
   return (
     <div className="wl-chart-fill" ref={box} data-kind="daily-chart">
       <svg viewBox={`0 0 ${width} ${height}`} width={width} height={height} role="img" aria-label={t("chart.daily")}>
         <line x1={pad.left} y1={pad.top + innerH} x2={pad.left + innerW} y2={pad.top + innerH} stroke="var(--dsw-alias-border-l2, #e5e7eb)" />
         {bars}
+        {hits}
         {values}
         {axis}
       </svg>
@@ -811,7 +868,7 @@ function ModelSection({ data, t }) {
       <div className="wl-card">
         <p className="wl-state">{fold.pending > 0 ? t("model.folding") : t("model.empty")}</p>
         {foldError === null ? null : (
-          <p className="wl-fold-error" data-kind="model-fold-error" title={foldErrorReason}>
+          <p className="wl-status" data-kind="model-fold-error" data-tone="error" title={foldErrorReason}>
             {foldError}
           </p>
         )}
@@ -821,21 +878,22 @@ function ModelSection({ data, t }) {
 
   return (
     <div className="wl-card">
-      {/* 卡片里不再重复「模型用量」标题：上面的页签已经表达了 */}
-      <div className="wl-card-head">
-        <p className="wl-hint">{t("model.hint")}</p>
-        <div className="wl-chips wl-chips-inline">
-          {fold.pending > 0 ? <span className="wl-hint" data-kind="model-folding">{t("model.foldingShort", { done: fold.done, total: fold.total })}</span> : null}
+      {/* 与其它卡片同构：标题 + 右上控件（页签是页面导航，卡片仍保留标题） */}
+      <CardHead title={t("tab.model")} hint={t("model.hint")}>
+        {fold.pending > 0 ? (
+          <span className="wl-status" data-kind="model-folding">{t("model.foldingShort", { done: fold.done, total: fold.total })}</span>
+        ) : null}
+        <ChipGroup label={t("tab.model")}>
           {[["tokens", "model.metric.tokens"], ["requests", "model.metric.requests"], ["llmMs", "model.metric.llmMs"]].map(([value, key]) => (
-            <button key={value} type="button" className={`wl-chip${metric === value ? " wl-chip-active" : ""}`} onClick={() => setMetric(value)}>
+            <Chip key={value} active={metric === value} onClick={() => setMetric(value)}>
               {t(key)}
-            </button>
+            </Chip>
           ))}
           {selected.length > 0 ? (
-            <button type="button" className="wl-chip wl-chip-active" onClick={() => setSelected([])}>{t("model.clear")}</button>
+            <Chip onClick={() => setSelected([])}>{t("model.clear")}</Chip>
           ) : null}
-        </div>
-      </div>
+        </ChipGroup>
+      </CardHead>
 
       <div className="wl-model-grid">
         <div>
@@ -849,6 +907,7 @@ function ModelSection({ data, t }) {
                   const share = totalMetric > 0 ? rect.value / totalMetric : 0;
                   return (
                     <g key={rect.key} onClick={() => toggle(rect.key)} style={{ cursor: rect.key === "__others" ? "default" : "pointer", opacity: dimmed ? 0.35 : 1 }}>
+                      {/* title 挂在 rect（实际 hover 目标）而不是 <g>：父节点 title 在多数浏览器不弹 */}
                       <rect
                         x={rect.x} y={rect.y} width={Math.max(0.5, rect.w)} height={Math.max(0.5, rect.h)}
                         fill={rect.key === "__others" ? "var(--dsw-static-neutral-300, #c7cbd1)" : colorOf(rect.key)}
@@ -856,7 +915,9 @@ function ModelSection({ data, t }) {
                         strokeWidth={isSelected ? 1.4 : 0.5}
                         data-model={rect.key}
                         data-kind={rect.item === null ? "others" : "model"}
-                      />
+                      >
+                        <title>{`${rect.label}\n${t("model.requests")} ${formatInt(rect.item?.requests ?? 0)}\nToken ${formatInt(rect.item?.tokensTotal ?? rect.value)}\n${t("model.share")} ${formatPercent(share)}`}</title>
+                      </rect>
                       {rect.w > 56 && rect.h > 26 ? (
                         <text x={rect.x + 8} y={rect.y + 18} fontSize="12" fill="var(--dsw-alias-label-primary-inverted, #fff)" style={{ pointerEvents: "none" }}>
                           {rect.label.length > 22 ? `${rect.label.slice(0, 21)}\u2026` : rect.label}
@@ -867,14 +928,13 @@ function ModelSection({ data, t }) {
                           {formatPercent(share)}
                         </text>
                       ) : null}
-                      <title>{`${rect.label}\n${t("model.requests")} ${formatInt(rect.item?.requests ?? 0)}\nToken ${formatInt(rect.item?.tokensTotal ?? rect.value)}\n${t("model.share")} ${formatPercent(share)}`}</title>
                     </g>
                   );
                 })}
               </svg>
             ) : null}
           </div>
-          <p className="wl-hint wl-model-note">{t("model.clickHint")}</p>
+          <p className="wl-hint wl-hint-spaced">{t("model.clickHint")}</p>
         </div>
 
         <div>
@@ -907,7 +967,7 @@ function ModelSection({ data, t }) {
                   {item.label}
                 </button>
                 {Object.keys(item.raw ?? {}).length > 1 ? (
-                  <span className="wl-hint wl-model-raw">{t("model.merged", { list: Object.keys(item.raw).map((k) => k.split("/").pop()).join(" + ") })}</span>
+                  <span className="wl-hint wl-hint-block">{t("model.merged", { list: Object.keys(item.raw).map((k) => k.split("/").pop()).join(" + ") })}</span>
                 ) : null}
               </td>
               <td>{formatPercent(item.share)}</td>
@@ -922,11 +982,11 @@ function ModelSection({ data, t }) {
         </tbody>
       </table>
 
-      <p className="wl-hint wl-model-note">
+      <p className="wl-hint wl-hint-spaced">
         {t("model.costNote", { asOf: pricing.asOf ?? "\u2014", covered: pricing.costed?.covered ?? 0, total: pricing.costed?.total ?? 0 })}
         {pricing.totalCost === null || pricing.totalCost === undefined ? "" : ` · ${t("model.totalCost")} ${fmtCost(pricing.totalCost)}`}
       </p>
-      <p className="wl-hint wl-model-links">
+      <p className="wl-hint wl-hint-spaced">
         {t("model.priceLinks")}{" "}
         {(pricing.links ?? []).map((link, index) => (
           <span key={link.url}>
@@ -937,7 +997,7 @@ function ModelSection({ data, t }) {
       </p>
       {/* 读取失败的会话：卡片底部的小字说明，不占顶部醒目位置；原因只给简化版（原文在 /health） */}
       {foldError === null ? null : (
-        <p className="wl-fold-error" data-kind="model-fold-error" title={foldErrorReason}>
+        <p className="wl-status" data-kind="model-fold-error" data-tone="error" title={foldErrorReason}>
           {foldError}
         </p>
       )}
@@ -962,16 +1022,32 @@ function ModelTrend({ trend, t }) {
       const centerX = pad.left + step * index + step / 2;
       let y = pad.top + innerH;
       const rects = [];
+      // 每段 rect 自己有 title（父 <g> 的 title 在多数浏览器不弹）
       row.values.forEach((value, series) => {
         const h = (value.value / max) * innerH;
         if (h <= 0.3) return;
         y -= h;
-        rects.push(<rect key={series} x={centerX - barWidth / 2} y={y} width={barWidth} height={h} rx="1.5" fill={value.color} />);
+        rects.push(
+          <rect key={series} x={centerX - barWidth / 2} y={y} width={barWidth} height={h} rx="1.5" fill={value.color}>
+            <title>{`${row.date} · ${value.label} ${formatInt(value.value)} tokens`}</title>
+          </rect>,
+        );
       });
       return (
         <g key={row.date}>
-          <title>{`${row.date}\n${formatInt(row.total)} tokens`}</title>
           {rects}
+          {/* 整列命中区：0 值日期也能读到当日合计 */}
+          <rect
+            data-kind="model-trend-hit"
+            x={centerX - step / 2}
+            y={pad.top}
+            width={Math.max(step, 1)}
+            height={innerH}
+            fill="transparent"
+            style={{ pointerEvents: "all" }}
+          >
+            <title>{`${row.date} · ${formatInt(row.total)} tokens`}</title>
+          </rect>
         </g>
       );
     });
@@ -1188,6 +1264,10 @@ function ByDayView({ data, t }) {
   const [dailyMode, setDailyMode] = useState("calendar");
   // 时刻分析口径：默认 Tokens（Token 产出），可切「轮次」（该小时 starts）
   const [hourMeasure, setHourMeasure] = useState("tokens");
+  // 工作区占比口径：默认按时长，可切「按 Token」；chips 在卡片头右上角（与时刻卡同位置）
+  const [pieMetric, setPieMetric] = useState("activeMs");
+  // 回填 / 重折进行中：legend 右侧显示「正在计算中……」；判据集中在 hour-status.js
+  const hourNote = hourTokensNote(data.diagnostics, t, formatInt);
   const dailyBodyRef = useRef(null);
   const dailyBody = useChartSize(dailyBodyRef);
   const models = data.byModel ?? [];
@@ -1210,15 +1290,12 @@ function ByDayView({ data, t }) {
     <>
       <div className="wl-grid-daily-model">
       <div className="wl-card">
-        <div className="wl-card-head">
-          <div>
-            <h3>{t("chart.daily")}</h3>
-          </div>
-          <div className="wl-chips">
-            <button type="button" className="wl-chip" data-active={dailyMode === "calendar"} onClick={() => setDailyMode("calendar")}>{t("daily.calendar")}</button>
-            <button type="button" className="wl-chip" data-active={dailyMode === "bar"} onClick={() => setDailyMode("bar")}>{t("daily.bar")}</button>
-          </div>
-        </div>
+        <CardHead title={t("chart.daily")}>
+          <ChipGroup label={t("chart.daily")}>
+            <Chip active={dailyMode === "calendar"} onClick={() => setDailyMode("calendar")}>{t("daily.calendar")}</Chip>
+            <Chip active={dailyMode === "bar"} onClick={() => setDailyMode("bar")}>{t("daily.bar")}</Chip>
+          </ChipGroup>
+        </CardHead>
         {/* 图表容器固定高度：日历与柱状图切换时卡片高度不跳 */}
         <div className="wl-daily-body" ref={dailyBodyRef}>
           {dailyMode === "calendar" ? (
@@ -1231,8 +1308,7 @@ function ByDayView({ data, t }) {
 
       {/* 本卡会被左卡等高拉伸：图形区在卡内垂直居中（见 styles.js 的 .wl-pie-card） */}
       <div className="wl-card wl-pie-card">
-        <h3>{t("pie.model")}</h3>
-        <p className="wl-hint">{t("pie.modelHint")}</p>
+        <CardHead title={t("pie.model")} hint={t("pie.modelHint")} />
         {models.length === 0 ? (
           <p className="wl-state">{isModelFolding(data) ? t("model.folding") : t("state.empty")}</p>
         ) : (
@@ -1243,41 +1319,39 @@ function ByDayView({ data, t }) {
 
       <div className="wl-grid-2">
         <div className="wl-card wl-hour-card">
-          <div className="wl-card-head">
-            <div>
-              <h3>{t("hour.title")}</h3>
-            </div>
-            <div className="wl-chips">
-              <button
-                type="button"
-                className="wl-chip"
+          <CardHead title={t("hour.title")}>
+            <ChipGroup label={t("hour.title")}>
+              <Chip
                 data-measure="tokens"
-                data-active={hourMeasure === "tokens"}
+                active={hourMeasure === "tokens"}
                 onClick={() => setHourMeasure("tokens")}
               >
                 {t("hour.measure.tokens")}
-              </button>
-              <button
-                type="button"
-                className="wl-chip"
+              </Chip>
+              <Chip
                 data-measure="turns"
-                data-active={hourMeasure === "turns"}
+                active={hourMeasure === "turns"}
                 onClick={() => setHourMeasure("turns")}
               >
                 {t("hour.measure.turns")}
-              </button>
-            </div>
-          </div>
+              </Chip>
+            </ChipGroup>
+          </CardHead>
           <HourChart
             hours={data.byHour}
             t={t}
             measure={hourMeasure}
-            missing={data.diagnostics?.hourTokensSource?.missing ?? 0}
+            status={hourNote}
           />
         </div>
         <div className="wl-card wl-pie-card">
-          <h3>{t("pie.title")}</h3>
-          <WorkspacePie items={data.byWorkspace} t={t} />
+          <CardHead title={t("pie.title")}>
+            <ChipGroup label={t("pie.title")}>
+              <Chip active={pieMetric === "activeMs"} onClick={() => setPieMetric("activeMs")}>{t("pie.byTime")}</Chip>
+              <Chip active={pieMetric === "tokens"} onClick={() => setPieMetric("tokens")}>{t("pie.byTokens")}</Chip>
+            </ChipGroup>
+          </CardHead>
+          <WorkspacePie items={data.byWorkspace} t={t} metric={pieMetric} />
         </div>
       </div>
 
@@ -1548,12 +1622,15 @@ function Overlay({ control }) {
 
   // 首次建索引要冷读历史会话（可能几分钟）、模型回填要读事件日志：
   // 两者还在进行时每 5 秒自动重拉一次，回填完成（pending=0）后自动停下。
-  const modelPending = modelFoldState(state.data).pending;
+  const modelFold = modelFoldState(state.data);
+  const modelPending = modelFold.pending;
+  const modelRunning = modelFold.running;
   useEffect(() => {
-    if (!open || (!indexing && modelPending === 0)) return undefined;
+    // 回填 / 重折进行中也继续轮询：否则「正在计算中……」会停在旧快照上
+    if (!open || (!indexing && !modelRunning && modelPending === 0)) return undefined;
     const timer = setTimeout(() => setRefreshKey((value) => value + 1), 5000);
     return () => clearTimeout(timer);
-  }, [open, indexing, modelPending, refreshKey]);
+  }, [open, indexing, modelPending, modelRunning, refreshKey]);
 
   const exportReport = useCallback(() => {
     const query = new URLSearchParams({
@@ -1580,13 +1657,13 @@ function Overlay({ control }) {
             </p>
           </div>
           <div className="wl-spacer" />
-          <div className="wl-chips">
+          <ChipGroup label={t("panel.title")}>
             {RANGES.map((range) => (
-              <button key={range.key} type="button" className="wl-chip" data-active={rangeKey === range.key} onClick={() => setRangeKey(range.key)}>
+              <Chip key={range.key} active={rangeKey === range.key} onClick={() => setRangeKey(range.key)}>
                 {t(range.key)}
-              </button>
+              </Chip>
             ))}
-          </div>
+          </ChipGroup>
           <select className="wl-select" value={scope} onChange={(event) => setScope(event.target.value)} aria-label={t("scope.all")}>
             {SCOPES.map((item) => (
               <option key={item} value={item}>{t(`scope.${item}`)}</option>
