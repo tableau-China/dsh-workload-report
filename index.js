@@ -18,7 +18,7 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { PROJECTION_KEYS, aggregate, present, rowFromSession } from "./src/aggregate.js";
+import { PROJECTION_KEYS, aggregate, present, rowFromSession, tokensTotal } from "./src/aggregate.js";
 import { renderReport } from "./src/report-html.js";
 import { DEFAULT_WAIT_MIN_MS, DEFAULT_WAIT_TOOLS, foldSessionModels, resolvePricing } from "./src/models.js";
 
@@ -57,7 +57,7 @@ const DEFAULTS = {
   /** 模型维度：auto | off。off 时完全不读事件日志（行为与不含该功能一致）。 */
   modelUsage: "auto",
   /**
-   * 等待用户剔除（0.7.0）：交互工具与「调用期间夹着 user/message」的工具区间从活跃时长中剔除。
+   * 等待用户剔除（0.6.5）：交互工具与「调用期间夹着 user/message」的工具区间从活跃时长中剔除。
    * excludeWait=false 时完全不判定等待，行为与 0.6.0 一致（回归开关）。
    */
   excludeWait: true,
@@ -109,7 +109,11 @@ const MODEL_FOLD_ERROR_MAX = 200;
  *   · pending 永远 > 0 → 界面永远停在"模型维度正在回填…"；
  *   · 重启后又要从头折一遍。
  */
-const MODEL_ROW_FIELDS = ["models", "hours", "hoursSource", "waitMs", "modelFoldSeq", "modelFoldAt", "modelFoldSkipped", "modelFoldError", "modelFoldErrorAt"];
+const MODEL_ROW_FIELDS = [
+  "models", "hours", "hoursSource", "waitMs",
+  "hourTokens", "hourTokensSource", "hourHumanMsgs",
+  "modelFoldSeq", "modelFoldAt", "modelFoldSkipped", "modelFoldError", "modelFoldErrorAt",
+];
 
 /** 把上一版行的模型折叠结果搬到新行上（新行缺的字段才补，不覆盖）。 */
 function carryModelFields(row, previous) {
@@ -172,8 +176,11 @@ function sendHtml(res, status, html) {
  * v6：行上新增 `waitMs`（等待用户），且 `hours` 改为只累计非等待区间 ——
  * v5 的桶把 ask_user_question 等等待整段算作工作（用户实测 3 小时等待被算成活跃），
  * 语义已作废；不换代会把旧桶当成「净活跃分布」复用，所以必须 5 → 6。
+ * v7：行上新增 `hourTokens` / `hourHumanMsgs`（按消息时间落 UTC 小时的 Token 与人类消息），
+ * `byHour.tokensTotal` 改为取自 `hourTokens`（不再复用「会话开始小时」的 token）。
+ * v6 的行没有这两个字段，不换代会把时间图 Token 显示成全 0 且无法补折，所以必须 6 → 7。
  */
-const INDEX_VERSION = 6;
+const INDEX_VERSION = 7;
 
 /** 限制并发，避免几百个会话同时冷读把服务器压住。 */
 async function mapLimit(items, limit, worker) {
@@ -715,6 +722,8 @@ class WorkloadIndex {
             groups: this.config.modelGroups,
             sessionLlmMs: target.llmMs,
             sessionToolMs: target.toolMs,
+            // 小时 Token 的守恒目标：官方 row.tokens 四项之和（与 row.tokensTotal 同一定义）
+            sessionTokens: tokensTotal(target.tokens),
             // 会话级兜底：事件没有轮次信息时，活跃时长记到会话创建时刻所在整点
             sessionStartMs: target.createdAt,
             // 等待用户剔除（excludeWait=false 时与 0.6.0 完全一致）
@@ -733,6 +742,16 @@ class WorkloadIndex {
             delete target.hours;
             target.hoursSource = "apportioned";
           }
+          // 小时 Token / 人类消息：随索引持久化，行换代时由 MODEL_ROW_FIELDS 搬运。
+          // 读不出 usage 时 hourTokens 为 null → 聚合层计入「未计入 N 个会话」。
+          if (folded.hourTokens !== null) {
+            target.hourTokens = folded.hourTokens;
+            target.hourTokensSource = folded.hourTokensSource;
+          } else {
+            delete target.hourTokens;
+            delete target.hourTokensSource;
+          }
+          target.hourHumanMsgs = folded.hourHumanMsgs;
           target.modelFoldSeq = asOf;
           target.modelFoldAt = Date.now();
           delete target.modelFoldSkipped;
@@ -826,7 +845,11 @@ class WorkloadIndex {
       return {
         ...cached.value,
         balance: this.balanceState(),
-        diagnostics: { ...this.diagnosticsFor(), hourSource: cached.value.hourSource ?? null },
+        diagnostics: {
+          ...this.diagnosticsFor(),
+          hourSource: cached.value.hourSource ?? null,
+          hourTokensSource: cached.value.hourTokensSource ?? null,
+        },
       };
     }
     const rows = [...this.rows.values()];
@@ -848,7 +871,11 @@ class WorkloadIndex {
     return {
       ...result,
       balance: this.balanceState(),
-      diagnostics: { ...this.diagnosticsFor(), hourSource: result.hourSource ?? null },
+      diagnostics: {
+        ...this.diagnosticsFor(),
+        hourSource: result.hourSource ?? null,
+        hourTokensSource: result.hourTokensSource ?? null,
+      },
     };
   }
 

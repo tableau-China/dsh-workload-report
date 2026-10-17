@@ -11,7 +11,7 @@
  * 口径（写进 README，避免误读）：
  *   - 「官方活跃时长」= 模型时间 + 工具时间，是引擎累计工作时间，不是墙钟打开时长；
  *     并发的会话/子代理会各自累加，因此它不能读作「用了多少小时」。
- *   - 「净活跃时长」= 官方活跃时长 − 等待用户（waitMs，0.7.0）。交互工具（ask_user_question /
+ *   - 「净活跃时长」= 官方活跃时长 − 等待用户（waitMs，0.6.5）。交互工具（ask_user_question /
  *     exit_plan_mode 白名单）与「调用期间夹着 user/message」且单次 ≥ waitMinMs 的工具区间整段
  *     计为等待，从活跃中剔除；byDay / byWorkspace / byHour / calendar 全部用净活跃。
  *     官方 activeMs 仍保留在 totals.activeMs 供核对，且 netActiveMs + waitMs === activeMs。
@@ -20,6 +20,7 @@
  */
 
 import { cacheHitRate, costOf, mergeModelBuckets, modelLabel, modelTokens, emptyModelBucket, UNKNOWN_MODEL } from "./models.js";
+import { scaleTokenBuckets } from "./hour-scale.js";
 
 /** 需要向投影缓存/注册表读取的键。 */
 export const PROJECTION_KEYS = ["sessionStats", "tokenUsage", "title", "sessionListMetadata"];
@@ -274,6 +275,34 @@ function distributeEventHours(buckets, row, timeZone, referenceMs) {
 }
 
 /**
+ * 把一行的**按小时 Token**（row.hourTokens，UTC 桶）落到请求时区的小时桶。
+ *
+ * 行上的桶在折叠时已按官方 Token 合计回正；活会话续聊后 row.tokens 可能已增长，
+ * 这里再按 row.tokensTotal / sum(local) 回正一次（整数用最大余数法），
+ * 保证全局 sum(byHour[x].tokensTotal) === totals.tokensTotal（±0）。
+ *
+ * 读不出事件日志的会话（v0 老格式 / 未回填 / modelUsage=off）没有 hourTokens：
+ * 不计入任何小时的 Token，返回 "missing" 让界面标注「未计入 N 个会话」。
+ * @param buckets - 24 个小时 Token 桶。
+ * @param row - 会话行（带 hourTokens）。
+ * @param timeZone - 请求时区。
+ * @param referenceMs - 计算时区偏移的参考时刻。
+ * @returns {'events'|'scaled'|'missing'|'none'} 该行的来源。
+ */
+function distributeEventTokens(buckets, row, timeZone, referenceMs) {
+  const target = tokensTotal(row.tokens);
+  if (!(target > 0)) return "none";
+  if (!Array.isArray(row.hourTokens) || row.hourTokens.length !== 24) return "missing";
+  const local = localHoursFromUtc(row.hourTokens, timeZone, referenceMs);
+  const scaled = scaleTokenBuckets(local, target);
+  if (scaled === null) return "missing";
+  for (let hour = 0; hour < 24; hour++) {
+    if (scaled[hour] > 0) buckets[hour] += scaled[hour];
+  }
+  return row.hourTokensSource === "events-scaled" ? "scaled" : "events";
+}
+
+/**
  * 时区化的自然日键 YYYY-MM-DD。
  * @param ms - Unix epoch 毫秒。
  * @param timeZone - IANA 时区名。
@@ -460,8 +489,14 @@ export function aggregate(rows, options = {}) {
   const workspaceMap = new Map();
   /** 0–23 点的时刻分布（用于"我哪个时间段更活跃"）。 */
   const hourBuckets = Array.from({ length: 24 }, (_, hour) => ({ hour, activeMs: 0, sessions: 0, starts: 0, tokens: emptyTokens(), conversations: 0 }));
+  /** 时刻分布的 Token：按 assistant/message 的消息时间落桶（UTC → 请求时区）后再累加。 */
+  const hourTokenBuckets = new Array(24).fill(0);
+  /** 时刻分布的人类消息条数：按 user/message 时间落桶。 */
+  const hourHumanMsgs = new Array(24).fill(0);
   /** 时刻分布来源诊断：事件时间戳 / 事件缩放 / 旧法摊销 各命中多少行。 */
   const hourSource = { events: 0, scaled: 0, apportioned: 0 };
+  /** 小时 Token 来源诊断：事件 / 事件缩放 / 读不出事件（未计入）。 */
+  const hourTokensSource = { events: 0, scaled: 0, missing: 0 };
   /** 工作区 → 有活动的自然日集合（用于「活跃天数」这一列/这条 bar）。 */
   const workspaceDays = new Map();
   /** 模型维度：归并组 → 桶。 */
@@ -517,6 +552,14 @@ export function aggregate(rows, options = {}) {
       distributeHours(hourBuckets, row, timeZone);
       hourSource.apportioned += 1;
     }
+    // 小时 Token 与人类消息：即使活跃时长走旧法摊销，Token 仍只认事件消息时间
+    const tokenSource = distributeEventTokens(hourTokenBuckets, row, timeZone, now);
+    if (tokenSource === "events" || tokenSource === "scaled") hourTokensSource[tokenSource] += 1;
+    else if (tokenSource === "missing") hourTokensSource.missing += 1;
+    if (Array.isArray(row.hourHumanMsgs) && row.hourHumanMsgs.length === 24) {
+      const localHuman = localHoursFromUtc(row.hourHumanMsgs, timeZone, now);
+      for (let hour = 0; hour < 24; hour++) hourHumanMsgs[hour] += localHuman[hour];
+    }
 
     let daySet = workspaceDays.get(wkey);
     if (daySet === undefined) {
@@ -569,9 +612,17 @@ export function aggregate(rows, options = {}) {
     byWorkspace: [...workspaceMap.values()]
       .map((workspace) => withTotals({ ...workspace, activeDays: (workspaceDays.get(workspace.key) ?? new Set()).size }))
       .sort((a, b) => b.activeMs - a.activeMs || b.tokensTotal - a.tokensTotal || a.label.localeCompare(b.label)),
-    byHour: hourBuckets.map((bucket) => ({ ...bucket, tokensTotal: tokensTotal(bucket.tokens) })),
+    // tokensTotal 来自「按消息时间落桶」的 hourTokens（不是会话开始小时的 tokens）；
+    // humanMsgs 是落在该小时的 user/message 条数（顶部密度点）；starts 供「轮次」measure。
+    byHour: hourBuckets.map((bucket, hour) => ({
+      ...bucket,
+      tokensTotal: hourTokenBuckets[hour],
+      humanMsgs: hourHumanMsgs[hour],
+    })),
     // 时刻分布来源诊断：events（事件时间戳）/ scaled（事件缩放）/ apportioned（旧法摊销）
     hourSource,
+    // 小时 Token 来源诊断：missing = 有 Token 但读不出事件、时间图未计入的会话数
+    hourTokensSource,
     // 模型维度（未启用 modelUsage 时为空数组）
     byModel: buildByModel(modelMap, pricing, modelAliases, totals, activeModelMetric),
     modelDaily: days.map((date) => {

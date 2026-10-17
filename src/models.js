@@ -9,6 +9,8 @@
  * 本模块是纯函数，不读磁盘、不发请求，宿主与离线测试共用。
  */
 
+import { scaleTokenBuckets } from "./hour-scale.js";
+
 /** 未标注模型（缺 provider/model 或 usage）的桶名。 */
 export const UNKNOWN_MODEL = "(未标注模型)";
 
@@ -199,7 +201,7 @@ function turnKeyOf(event) {
  *   · 工具时间 = 按 `callId` 配对 `tool/call.time` → `tool/result.time` 的区间；
  *     **未配对 / 未结束的调用不计**（悬空调用没有可信的结束时间，宁可少算）。
  *
- * **等待用户（三层判定，0.7.0）**：单次工具区间 ≥ waitMinMs 且满足任一条件时整段计为 `waitMs`：
+ * **等待用户（三层判定，0.6.5）**：单次工具区间 ≥ waitMinMs 且满足任一条件时整段计为 `waitMs`：
  *   (a) 工具名在 `waitTools` 白名单（默认 ask_user_question / exit_plan_mode）——交互工具；
  *   (b) `tool/call` 与 `tool/result` 之间夹着 `user/message`——人类输入夹层。
  * 等待区间**不进入**活跃时长 / 小时桶；没有 user/message 的普通长任务（编译、跑批）照常算工作。
@@ -210,19 +212,27 @@ function turnKeyOf(event) {
  *
  * @param events - 事件数组（官方 SessionLogSnapshot 的 events）。
  * @param options - sessionLlmMs / sessionToolMs：会话官方口径，用于缩放守恒；
+ *   sessionTokens：会话官方 Token 合计（row.tokens 四项之和），用于小时 Token 守恒；
+ *     传 null 表示"调用方没有官方值"，此时不做回正（宿主总是传数字）；
  *   sessionStartMs：会话 createdAt，用于没有轮次事件时的会话级兜底；
  *   excludeWait：是否剔除等待用户（默认 true）；waitTools：交互工具白名单；waitMinMs：等待判定阈值。
- * @returns {{ hours: number[]|null, source: 'events'|'events-scaled'|null, rawMs: number, targetMs: number, waitMs: number }}
+ * @returns {{ hours: number[]|null, source: 'events'|'events-scaled'|null, rawMs: number, targetMs: number, waitMs: number,
+ *   hourTokens: number[]|null, hourTokensSource: 'events'|'events-scaled'|null, hourHumanMsgs: number[] }}
  */
 export function foldSessionHours(events, {
   sessionLlmMs = 0,
   sessionToolMs = 0,
+  sessionTokens = null,
   sessionStartMs = 0,
   excludeWait = true,
   waitTools = DEFAULT_WAIT_TOOLS,
   waitMinMs = DEFAULT_WAIT_MIN_MS,
 } = {}) {
   const hours = new Array(24).fill(0);
+  /** 按消息时间（UTC 小时）归桶的 Token（与 row.tokens 同一定义：输入 + 输出 + 缓存读 + 缓存写）。 */
+  const hourTokens = new Array(24).fill(0);
+  /** 按 UTC 小时统计的 user/message 条数（人类消息密度点）。 */
+  const hourHumanMsgs = new Array(24).fill(0);
   const list = Array.isArray(events) ? events : [];
   const anchorMs = epochMs(sessionStartMs) ?? 0;
   /** 轮次键 → { startMs, activeMs, fixedStart }；fixedStart 的轮次不再被更早的事件时间改写。 */
@@ -309,10 +319,20 @@ export function foldSessionHours(events, {
     if (type === "user/message") {
       // 人类输入夹层：只影响发生在它之后的工具调用（call → result 之间）
       userMark += 1;
+      // 人类消息密度：按消息时间落入 UTC 小时桶（聚合时再按请求时区平移）
+      if (time !== null) hourHumanMsgs[utcHourOf(time)] += 1;
       noteStart(key, time);
       continue;
     }
     if (type === "assistant/message") {
+      // 按小时 Token：每条 assistant/message 的 usage 全部四项，按**消息时间**归到 UTC 小时桶。
+      // 与 row.tokens 同一定义（uncachedInput + output + cacheRead + cacheWrite）。
+      if (time !== null) {
+        const usage = event.data?.usage;
+        const tokens = numOr0(usage?.inputTokens) + numOr0(usage?.outputTokens) +
+          numOr0(usage?.cacheReadTokens) + numOr0(usage?.cacheWriteTokens);
+        if (tokens > 0) hourTokens[utcHourOf(time)] += tokens;
+      }
       if (headerTime !== null && time !== null && time > headerTime) {
         // 模型时间 = request/header.time → assistant/message.time；整段归该 message 所在轮次
         addActive(key, headerTime, time - headerTime);
@@ -346,23 +366,43 @@ export function foldSessionHours(events, {
   const excludedWaitMs = excludeWait ? Math.min(waitMs, officialActiveMs) : 0;
   const targetMs = Math.max(0, officialActiveMs - excludedWaitMs);
   const sum = hours.reduce((acc, value) => acc + value, 0);
-  if (sum <= 0 || targetMs <= 0) return { hours: null, source: null, rawMs, targetMs, waitMs: excludedWaitMs };
-  if (Math.abs(sum - targetMs) <= 1) return { hours, source: "events", rawMs, targetMs, waitMs: excludedWaitMs };
+  // 小时 Token：只有调用方给了官方合计（sessionTokens !== null）才回正，保证
+  // sum(hourTokens) === row.tokensTotal（±0；整数目标用最大余数法，不产生小数 Token）。
+  // 官方合计 > 0 但事件里读不出任何 usage → 返回 null，聚合层把它计入「未计入 N 个会话」，
+  // 而不是编一个分布出来。
+  let hourTokensOut = hourTokens;
+  let hourTokensSource = hourTokens.some((value) => value > 0) ? "events" : null;
+  if (sessionTokens !== null && sessionTokens !== undefined) {
+    const officialTokens = numOr0(sessionTokens);
+    const tokenSum = hourTokens.reduce((acc, value) => acc + value, 0);
+    if (officialTokens > 0) {
+      hourTokensOut = scaleTokenBuckets(hourTokens, officialTokens);
+      hourTokensSource = hourTokensOut === null ? null : tokenSum === officialTokens ? "events" : "events-scaled";
+    } else {
+      // 官方合计为 0：事件里却有 usage → 口径冲突，宁可不展示；全 0 则保留空桶
+      hourTokensOut = tokenSum > 0 ? null : hourTokens;
+      hourTokensSource = tokenSum > 0 ? null : "events";
+    }
+  }
+  const tokenResult = { hourTokens: hourTokensOut, hourTokensSource, hourHumanMsgs };
+  if (sum <= 0 || targetMs <= 0) return { hours: null, source: null, rawMs, targetMs, waitMs: excludedWaitMs, ...tokenResult };
+  if (Math.abs(sum - targetMs) <= 1) return { hours, source: "events", rawMs, targetMs, waitMs: excludedWaitMs, ...tokenResult };
   const factor = targetMs / sum;
   for (let i = 0; i < 24; i++) hours[i] *= factor;
-  return { hours, source: "events-scaled", rawMs, targetMs, waitMs: excludedWaitMs };
+  return { hours, source: "events-scaled", rawMs, targetMs, waitMs: excludedWaitMs, ...tokenResult };
 }
 
 /**
  * 折叠一个会话的事件日志 → 每个归并组的统计。
  * @param events - 事件数组（官方 SessionLogSnapshot 的 events）。
- * @param options - groups（自定义归并）/ sessionLlmMs / sessionToolMs（会话官方口径，用于守恒分摊与时刻分布缩放）/ sessionStartMs（会话 createdAt，时刻分布兜底）/ excludeWait / waitTools / waitMinMs（等待用户剔除）。
- * @returns { models, requests, unknownRequests, totalStreamMs, hours, hoursSource, hoursRawMs, hoursTargetMs, waitMs }
+ * @param options - groups（自定义归并）/ sessionLlmMs / sessionToolMs / sessionTokens（会话官方口径，用于守恒分摊、时刻分布与小时 Token 缩放）/ sessionStartMs（会话 createdAt，时刻分布兜底）/ excludeWait / waitTools / waitMinMs（等待用户剔除）。
+ * @returns { models, requests, unknownRequests, totalStreamMs, hours, hoursSource, hoursRawMs, hoursTargetMs, waitMs, hourTokens, hourTokensSource, hourHumanMsgs }
  */
 export function foldSessionModels(events, {
   groups = [],
   sessionLlmMs = 0,
   sessionToolMs = 0,
+  sessionTokens = null,
   sessionStartMs = 0,
   excludeWait = true,
   waitTools = DEFAULT_WAIT_TOOLS,
@@ -414,8 +454,8 @@ export function foldSessionModels(events, {
 
   // 会话 llmMs 按 stream 权重分摊（守恒：最后一个模型吸收余数）
   allocateLlmMs(models, sessionLlmMs, totalStreamMs);
-  // 同一趟折叠里顺带算小时分布与等待用户（同一份 events，不额外读日志）
-  const hours = foldSessionHours(list, { sessionLlmMs, sessionToolMs, sessionStartMs, excludeWait, waitTools, waitMinMs });
+  // 同一趟折叠里顺带算小时分布、小时 Token、人类消息与等待用户（同一份 events，不额外读日志）
+  const hours = foldSessionHours(list, { sessionLlmMs, sessionToolMs, sessionTokens, sessionStartMs, excludeWait, waitTools, waitMinMs });
   return {
     models,
     requests,
@@ -426,6 +466,9 @@ export function foldSessionModels(events, {
     hoursRawMs: hours.rawMs,
     hoursTargetMs: hours.targetMs,
     waitMs: hours.waitMs,
+    hourTokens: hours.hourTokens,
+    hourTokensSource: hours.hourTokensSource,
+    hourHumanMsgs: hours.hourHumanMsgs,
   };
 }
 
