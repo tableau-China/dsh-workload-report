@@ -2,7 +2,52 @@
 
 日期用 `YYYY-MM-DD`；只记录影响后续决策的事实。
 
-## 2026-10-17 小时统一 1 位小数 / 日期明细比例条（v0.7.1）
+## 2026-10-17 时刻分析 Tokens 口径 + 人类消息密度点（v0.6.5）
+
+> 版本号统一：此前的等待剔除、formatHours / 比例条 / 删日历提示等条目内容并入本版，
+> package.json、README、CHANGELOG、docs 一律以 **0.6.5** 为准。
+
+### 背景
+
+- 时刻分析原先的柱高是「以轮次开始时刻计的净活跃时长」，用户要的是设计稿里的 **Token 产出**口径与顶部**人类消息密度**点。
+- Token 只在投影里有总量，没有「按小时」分布；需要从事件日志的 `assistant/message` usage 按消息时间落桶，并严格守恒到官方总量。
+
+### 关键决策
+
+| 决策 | 取舍 |
+| --- | --- |
+| 小时 Token = 每条 `assistant/message` 的 usage（输入 + 输出 + 缓存读 + 缓存写）按**消息时间**归 UTC 桶 | 与 `row.tokens` 同一定义；不按轮次起点（一条跨小时消息会落在它自己的小时） |
+| `row.hourTokens` / `row.hourHumanMsgs` 随索引持久化，聚合用 `localHoursFromUtc` 平移 | 折叠在后台、不带查询时区；UTC 是唯一可持久化的稳定表示 |
+| 守恒 `Σ hourTokens === row.tokensTotal`，整数目标用最大余数法 | 官方 Token 与事件累计不等（未闭合步 / crash 补写）时按比例回正，且不产生小数 Token |
+| 读不出事件 → 无 `hourTokens`，`hourTokensSource.missing` 计数 | 不伪造分布；卡片与报告写「Token 未计入 N 个会话」，总量仍含该会话 |
+| `byHour.tokensTotal` 取自 hourTokens，`starts` 留给「轮次」measure | 同一份 byHour 支持 Tokens / 轮次切换；旧 `tokens`（会话开始小时）字段保留兼容 |
+| `INDEX_VERSION` 6 → 7 | v6 行没有新字段，不换代会把时间图 Token 显示成全 0 且无法补折 |
+| 圆点几何抽到 `src/hour-scale.js` | 看板 DOM 与报告 SVG 共用半径 / 上沿 / 顶部空间；纯函数可直接断言 |
+
+### 已完成
+
+- `src/models.js`：`foldSessionHours` 新增 `hourTokens` / `hourHumanMsgs` / `hourTokensSource`，`sessionTokens` 作为守恒目标；
+  `foldSessionModels` 透传并返回。
+- `src/hour-scale.js`（新）：measure 取值 / 最大值 / 柱高百分比、`r = 3.4 + ratio×5.0`、上沿 14px、
+  顶部预留 64px、`scaleTokenBuckets`（最大余数法）。
+- `src/aggregate.js`：`distributeEventTokens()` 落小时 Token；`byHour` 增加 `tokensTotal` / `humanMsgs`；
+  新增 `hourTokensSource { events, scaled, missing }`。
+- `index.js`：`MODEL_ROW_FIELDS` 搬运新字段；折叠传 `sessionTokens: tokensTotal(row.tokens)`；
+  `INDEX_VERSION` 6 → 7；`/snapshot.diagnostics` 带 `hourTokensSource`。
+- 客户端：`HourChart` 默认 Tokens / 可切轮次、只在最大柱标值、顶部密度点、图例三项；卡片删除 `hour.sub` 小标题；
+  `hour.tip` 改为一行 `小时 · Token · 轮次 · 人类消息`；缺失会话在卡片底部标注。
+- 报告：`hourChart()` 改 Tokens + 密度点 + 峰值数值 + 同款图例 + 未计入提示。
+- 文档：README（中英）断言数 / 口径、`docs/metrics.md` 的时刻 Token 与人类消息定义；版本统一 0.6.5。
+
+### 测试
+
+- 离线断言 **415 → 502**（连跑 2 次 exit 0）：跨小时 Token 归桶、`Σ hourTokens === tokensTotal`、缩放整数守恒、
+  humanMsgs 计数与时区平移、measure 切换取数、未回填 / 读不出不计入并标注、圆点几何与图例文案、
+  报告同步、宿主 `/snapshot.diagnostics.hourTokensSource`。
+- 同构量测（无头 Chrome 1560×1000，真实客户端组件 + 真实快照）：默认 Tokens、chips 切换生效、
+  最大圆直径 16.8px 且上沿留白 14px、图例无括号解释、卡片无小标题、缺失提示可见。
+
+## 2026-10-17 小时统一 1 位小数 / 日期明细比例条（v0.6.5 · 并入）
 
 ### 背景
 
@@ -24,14 +69,14 @@
 - `src/client/index.jsx` / `src/report-html.js`：所有时长展示改走 `formatHours`，无各自的 `/ 3600000` 或 `toFixed`。
 - `src/client/bar-cell.jsx` / `bar-width.js`：新增通用比例条；主要会话四列 + 日期明细四列（对话 / 轮次 / 活跃 / Token）共用。
 - `src/client/locales.js` / `index.jsx`：删除「全历史；右侧＝各周几累计」；每日用量趋势卡片头不再渲染提示段落。
-- 文档：README（中英）/ release 断言数 384 → 415；package 版本 0.7.1。
+- 文档：README（中英）/ release 断言数 384 → 415；package 版本随后统一为 0.6.5。
 
 ### 测试
 
 - 离线断言 384 → 415（连跑 2 次 exit 0）：格式化边界与三处一致、两表共用组件、bar 宽度比例、删除提示键。
 
 
-## 2026-10-17 等待用户剔除 / 净活跃口径（v0.7.0）
+## 2026-10-17 等待用户剔除 / 净活跃口径（v0.6.5 · 并入）
 
 ### 背景
 
@@ -59,7 +104,7 @@
   `MODEL_ROW_FIELDS` 增加 `waitMs`；`INDEX_VERSION` 5 → 6（注释写明原因）。
 - 客户端：KPI 活跃显示净活跃，副标题「含等待用户 {wait}」；工作区 foot 单列等待（zh/en 新键）。
 - 报告：KPI / 每日柱 / 时刻图用净活跃，footer 写明净活跃 + 等待 = 官方 activeMs。
-- 文档：`docs/metrics.md` 新增「等待用户（0.7.0）」章节；README（中英）/ release 断言数 326 → 384。
+- 文档：`docs/metrics.md` 新增「等待用户（0.6.5）」章节；README（中英）/ release 断言数 326 → 384。
 
 ### 测试
 

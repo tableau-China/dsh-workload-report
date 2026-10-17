@@ -1,8 +1,48 @@
 # CHANGELOG — dsh-workload-report
 
-## v0.7.1（2026-10-17）— 小时统一 1 位小数、日期明细比例条、删除日历提示
+## v0.6.5（2026-10-17）— 时刻分析 Token 口径 + 人类消息密度；等待剔除、时长/比例条并入
 
 ### 变更
+
+- **时刻分析默认按 Token 产出**：折叠事件时把每条 `assistant/message` 的 usage（与 `row.tokens` 同一定义：
+  未命中输入 + 输出 + 缓存读 + 缓存写）按**消息时间**归到 **UTC 小时桶** → `row.hourTokens[24]`；
+  `user/message` 同样按时间计数 → `row.hourHumanMsgs[24]`。聚合时用 `localHoursFromUtc` 平移到请求时区，
+  `byHour` 新增 `tokensTotal`（来自 hourTokens）与 `humanMsgs`；`starts` 保留给「轮次」measure。
+- **守恒**：`sum(hourTokens) === row.tokensTotal`（整数目标用最大余数法回正，不产生小数 Token，±0）；
+  读不出事件的会话（v0 老日志 / 未回填 / `modelUsage: off`）没有 `hourTokens`，时间图**不计入 Token**，
+  卡片与报告标注「Token 未计入 N 个会话」；`hourTokensSource { events, scaled, missing }` 进快照与
+  `/snapshot.diagnostics`（与 `hourSource` 同源）。
+- **索引**：`INDEX_VERSION` 6 → 7（新增 `hourTokens` / `hourHumanMsgs`；v6 行没有这两个字段，
+  不换代会把时间图 Token 显示成全 0 且无法补折）。字段随行持久化，行换代时由 `carryModelFields` 搬运。
+- **看板时刻卡片**：删掉标题下的小标题（`hour.sub` 键与渲染一并删除）；新增 `Tokens`（默认）/ `轮次` chips，
+  柱高按当前 measure，**只在最大柱上标数值**；顶部圆点＝人类消息密度（`--dsw-static-amber-500` 一类 token，
+  `r = 3.4 + ratio×5.0`，上沿恒留 14px，图表顶部预留 64px，最大圆不被裁）；
+  tooltip 为 `0:00–0:59 · Token x · 轮次 n · 人类消息 m`；图例只说明颜色：`Token 产出` / `人类消息密度` / `峰值`。
+- **报告**：`src/report-html.js` 的时刻图同步（默认 Tokens + 密度点 + 峰值数值 + 同款图例与未计入提示）。
+- **文档**：README（中英）断言数与口径、`docs/metrics.md` 的时刻 Token / 人类消息定义同步；版本号统一为 0.6.5。
+
+### 并入：等待用户剔除（净活跃口径）
+
+- **问题**：「活跃时长」= `llmMs + toolMs`，而 `toolMs` 是 `tool/call → tool/result` 的墙钟间隔。
+  用户用 `ask_user_question` 让 AI 等他回答，**一等 3 小时**，这 3 小时被整段算成活跃时长 → 严重虚高。
+- **三层等待判定**（单次工具区间 ≥ `waitMinMs` 且满足任一条件时，整段计为 `waitMs`）：
+  1. 工具名在 `waitTools` 白名单（默认 `ask_user_question` / `exit_plan_mode`，可扩展）；
+  2. `tool/call → tool/result` 之间夹着 `user/message`（人类输入夹层，任意工具适用）；
+  3. 短于 `waitMinMs`（默认 60s）的交互不剔除，避免碎片化。
+- **长任务豁免**：没有 `user/message` 且不在白名单的长工具（编译 / 跑批）照常算工作，不误伤。
+- **折叠**：`foldSessionHours` / `foldSessionModels` 在同一趟 events 里累计 `waitMs`；小时桶只累计非等待区间
+  （保持「按轮次整段归起始小时」语义不变，只剔除等待）。`row.waitMs` 随索引持久化，行换代由 `carryModelFields` 搬运。
+- **聚合**：`totals.waitMs`、`totals.netActiveMs = activeMs - waitMs`；`totals.activeMs` 仍保留官方值供核对，
+  `totals.llmMs / toolMs` 为净口径（`toolMs` 已扣等待，故 `llmMs + toolMs === netActiveMs`）。
+  `byDay / byWorkspace / byHour / calendar / bySession` 的 `activeMs` 一律为净活跃；`byWorkspace` 另带 `waitMs`。
+  守恒：`netActiveMs + waitMs === activeMs`（±1ms），`sum(byHour) === totals.netActiveMs`。
+- **配置**：`excludeWait: true`（默认开）/ `waitTools` / `waitMinMs`；`excludeWait: false` 时不做任何等待判定，
+  `waitMs = 0`、`netActiveMs === activeMs`，小时桶与 0.6.0 完全一致（有回归断言）。
+- **展示**：KPI「活跃时长」显示净活跃，副标题追加「含等待用户 {wait}」；工作区视图 foot 单列等待；
+  报告 KPI / 每日柱同样用净活跃，footer 写明新口径与守恒关系。
+- **文档**：`docs/metrics.md` 增补 `waitMs`（三层判定）、`netActiveMs`、"官方 activeMs 保留用于核对"。
+
+### 并入：小时统一 1 位小数、日期明细比例条、删除日历提示
 
 - **时长格式统一**：新增 `formatHours(ms)` 作为全站唯一换算入口——不足 1 小时用分钟（不足 1 分钟用秒），
   ≥1 小时固定保留 1 位小数并去掉 `.0`（`1.63 h → "1.6 h"`、`20 min → "20 m"`）。
@@ -14,45 +54,16 @@
 
 ### 测试
 
-- 离线断言 **384 → 415**（连跑 2 次 exit 0）：`formatHours` 边界与 1.63→1.6、KPI/表格/报告三处一致、
-  两表共用 `MetricBarCell`（两处调用点）、bar 宽度比例、i18n 键删除与「每日用量趋势」提示节点为 0。
-
-## v0.7.0（2026-10-17）— 等待用户从活跃时长中剔除（净活跃口径）
-
-### 问题
-
-- 「活跃时长」= `llmMs + toolMs`，而 `toolMs` 是 `tool/call → tool/result` 的墙钟间隔。
-  用户用 `ask_user_question` 让 AI 等他回答，**一等 3 小时**，这 3 小时被整段算成活跃时长 → 严重虚高。
-
-### 变更
-
-- **三层等待判定**（单次工具区间 ≥ `waitMinMs` 且满足任一条件时，整段计为 `waitMs`）：
-  1. 工具名在 `waitTools` 白名单（默认 `ask_user_question` / `exit_plan_mode`，可扩展）；
-  2. `tool/call → tool/result` 之间夹着 `user/message`（人类输入夹层，任意工具适用）；
-  3. 短于 `waitMinMs`（默认 60s）的交互不剔除，避免碎片化。
-- **长任务豁免**：没有 `user/message` 且不在白名单的长工具（编译 / 跑批）照常算工作，不误伤。
-- **折叠**：`foldSessionHours` / `foldSessionModels` 在同一趟 events 里累计 `waitMs`；小时桶只累计非等待区间
-  （保持「按轮次整段归起始小时」语义不变，只剔除等待）。
-- **行字段**：`row.waitMs` 随索引持久化，行换代时由 `carryModelFields` 搬运；`INDEX_VERSION` 5 → 6
-  （v5 的 `hours` 把等待算成工作，语义作废，必须换代重建）。
-- **聚合**：`totals.waitMs`、`totals.netActiveMs = activeMs - waitMs`；`totals.activeMs` 仍保留官方值供核对，`totals.llmMs / toolMs` 为净口径（`toolMs` 已扣等待，故 `llmMs + toolMs === netActiveMs`）。
-  `byDay / byWorkspace / byHour / calendar / bySession` 的 `activeMs` 一律为净活跃（row 级剔除，不事后减）；
-  `byWorkspace` 另带 `waitMs`。守恒：`netActiveMs + waitMs === activeMs`（±1ms），
-  `sum(byHour) === totals.netActiveMs`。
-- **配置**：`excludeWait: true`（默认开）/ `waitTools` / `waitMinMs`；`excludeWait: false` 时不做任何等待判定，
-  `waitMs = 0`、`netActiveMs === activeMs`，小时桶与 0.6.0 完全一致（有回归断言）。
-- **展示**：KPI「活跃时长」显示净活跃，副标题追加「含等待用户 {wait}」（zh/en）；工作区视图 foot 单列等待；
-  报告 KPI / 每日柱 / 时刻图同样用净活跃，footer 写明新口径与守恒关系。
-- **文档**：`docs/metrics.md` 增补 `waitMs`（三层判定）、`netActiveMs`、"官方 activeMs 保留用于核对"。
-
-### 测试
-
-- 离线断言 **326 → 384**（+58，连跑 2 次 exit 0）：
-  ① 交互工具 3h（含 user/message）→ `waitMs=180min`、净活跃 20min、小时桶不含等待；
-  ② 非白名单 10min 有 user/message → 判等待；③ 同样的 10min 无 user/message → 仍算工作；
-  ④ 30s 短交互 < 60s → 不剔除；⑤ 守恒 `netActiveMs + waitMs === activeMs`；
-  ⑥ `excludeWait:false` → 与 0.6.0 一致；⑦ 一段 3h 等待前后各有工作 → 不抬高任何小时桶；
-  另含宿主配置端到端（true / false 两种）与报告/i18n 展示断言。
+- 离线断言 **326 → 384 → 415 → 502**（连跑 2 次 exit 0）：
+  · 小时 Token：跨小时消息按**消息时间**落桶（不按轮次起点）、`Σ hourTokens === row.tokensTotal`、
+    官方合计与事件不等时 `events-scaled` 且整数守恒、聚合 `Σ byHour.tokensTotal === totals.tokensTotal`；
+  · 人类消息：逐小时计数与总数、时区平移；
+  · 未计入：v0 读不出 / 未回填 / hourTokens 全 0 时 `hourTokensSource.missing` 计数、byHour 不计入、界面与报告标注；
+  · measure：默认 tokens、切 turns 取 `starts`、柱高归一与最小 3%、峰值数值格式；
+  · 几何：`r = 3.4 + ratio×5.0`、最大圆上沿 14px、顶部 64px 容得下最大圆；
+  · 等待剔除 ①–⑦（白名单 / user/message 夹层 / 短交互 / 长任务豁免 / 净活跃守恒 / `excludeWait:false` 回归）。
+- 同构量测（无头 Chrome 1560×1000，真实客户端组件 + 真实快照）：默认 measure = Tokens、chips 切换生效、
+  最大圆直径 16.8px 且上沿留白 14px、图例无括号解释、卡片无小标题、缺失提示可见；报告同款图例 + 密度点。
 
 ## v0.6.0（2026-10-16）— 时刻分析改按轮次（turn）落桶（不分摊、不切分）
 
