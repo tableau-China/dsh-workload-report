@@ -13,6 +13,11 @@ import {
   DEFAULT_PRICING, DEFAULT_WAIT_TOOLS, allocateLlmMs, cacheHitRate, costOf, emptyModelBucket, foldSessionModels,
   groupKeyFor, isPeak, modelLabel, modelTokens, resolvePricing, UNKNOWN_MODEL,
 } from "../src/models.js";
+import {
+  HOUR_CHART_TOP_SPACE, HOUR_DOT_BASE_RADIUS, HOUR_DOT_RADIUS_SPAN, HOUR_DOT_TOP,
+  hourBarPercent, hourDotCenterY, hourDotRadius, hourMeasureMax, hourMeasureValue,
+  normalizeHourMeasure, scaleTokenBuckets,
+} from "../src/hour-scale.js";
 
 let failures = 0;
 const ok = (condition, label, detail = "") => {
@@ -278,7 +283,149 @@ console.log("\n—— 时刻分析（按轮次落桶，新口径）——");
   eq(minutesOf(case3, 13), 0, "⑨ 13 点为 0（不整体前移）");
 }
 
-console.log("\n—— 等待用户剔除（0.7.0）——");
+console.log("\n—— 时刻分析（Token 口径 + 人类消息密度）——");
+{
+  const MIN = 60000;
+  const H0 = Date.UTC(2026, 9, 14, 0); // 周三 00:00 UTC
+  const usage = (input, output, cacheRead = 0, cacheWrite = 0) => ({ inputTokens: input, outputTokens: output, cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite });
+  const turnStart = (seq, time, turn) => ({ type: "turn/start", seq, time, data: { turn } });
+  const reqHeader = (seq, time, turn) => ({ type: "request/header", seq, time, data: { turn, header: { config: { provider: "deepseek-official", model: "deepseek-flash" } } } });
+  const assistant = (seq, time, turn, tokenUsage) => ({
+    type: "assistant/message", seq, time,
+    data: {
+      turn, step: 1,
+      message: { role: "assistant", source: { kind: "model", provider: "deepseek-official", model: "deepseek-flash" } },
+      usage: tokenUsage,
+      stream: [],
+    },
+  });
+  const userMessage = (seq, time, turn) => ({ type: "user/message", seq, time, data: { turn, message: { role: "user", content: [] } } });
+  const sum = (list) => list.reduce((acc, value) => acc + value, 0);
+
+  // 同一会话：9 点一轮（含一条 10:05 的跨小时消息）、13 点一轮；Token 按**消息时间**落桶
+  const events = [
+    turnStart(1, H0 + 9 * HOUR, 1),
+    reqHeader(2, H0 + 9 * HOUR, 1),
+    assistant(3, H0 + 9 * HOUR + 10 * MIN, 1, usage(100, 20, 5, 0)), // 125
+    userMessage(4, H0 + 9 * HOUR + 20 * MIN, 1),
+    userMessage(5, H0 + 9 * HOUR + 30 * MIN, 1),
+    assistant(6, H0 + 10 * HOUR + 5 * MIN, 1, usage(5, 2, 0, 0)), // 7：消息时间 10:05，轮次起点仍是 9 点
+    userMessage(7, H0 + 10 * HOUR + 10 * MIN, 1),
+    turnStart(8, H0 + 13 * HOUR, 2),
+    reqHeader(9, H0 + 13 * HOUR, 2),
+    assistant(10, H0 + 13 * HOUR + 10 * MIN, 2, usage(300, 40, 10, 0)), // 350
+    userMessage(11, H0 + 13 * HOUR + 20 * MIN, 2),
+  ];
+  const folded = foldSessionModels(events, { sessionLlmMs: 20 * MIN, sessionToolMs: 0, sessionTokens: 482, sessionStartMs: H0 });
+  eq(folded.hourTokens[9], 125, "小时 Token：9 点消息 125 落 9 桶");
+  eq(folded.hourTokens[10], 7, "小时 Token：10:05 的消息落 10 桶（按消息时间，不按轮次起点）");
+  eq(folded.hourTokens[13], 350, "小时 Token：13 点消息 350 落 13 桶");
+  eq(sum(folded.hourTokens), 482, "Σ hourTokens === 官方 tokensTotal（未缩放，±0）");
+  eq(folded.hourTokensSource, "events", "小时 Token 来源 = events（事件累计 = 官方合计）");
+  eq(folded.hourHumanMsgs[9], 2, "人类消息：9 点 2 条");
+  eq(folded.hourHumanMsgs[10], 1, "人类消息：10 点 1 条");
+  eq(folded.hourHumanMsgs[13], 1, "人类消息：13 点 1 条");
+  eq(sum(folded.hourHumanMsgs), 4, "人类消息总数 = user/message 条数（4）");
+
+  const foldedScaled = foldSessionModels(events, { sessionLlmMs: 20 * MIN, sessionToolMs: 0, sessionTokens: 500, sessionStartMs: H0 });
+  eq(foldedScaled.hourTokensSource, "events-scaled", "事件 Token ≠ 官方合计 → events-scaled");
+  eq(sum(foldedScaled.hourTokens), 500, "缩放后 Σ hourTokens === 官方 500（±0）");
+  ok(foldedScaled.hourTokens.every((value) => Number.isInteger(value)), "缩放后的小时 Token 仍是整数（最大余数法）");
+  const foldedNoUsage = foldSessionModels([], { sessionLlmMs: 0, sessionToolMs: 0, sessionTokens: 100, sessionStartMs: H0 });
+  eq(foldedNoUsage.hourTokens, null, "官方有 Token 但事件读不出 usage → 无 hourTokens（不编分布）");
+  eq(foldedNoUsage.hourTokensSource, null, "无 hourTokens 时来源为 null");
+
+  // 聚合：按消息时间落桶后的 Token 进入 byHour.tokensTotal；humanMsgs 进入同名字段
+  const tokenRow = {
+    ...makeRow({ id: "tok", cwd: "/tmp/tok", createdAt: H0, turns: 2, steps: 3, llmMs: 20 * MIN, toolMs: 0, input: 300, output: 100, cacheRead: 82 }),
+    hours: folded.hours,
+    hoursSource: folded.hoursSource,
+    hourTokens: folded.hourTokens,
+    hourTokensSource: folded.hourTokensSource,
+    hourHumanMsgs: folded.hourHumanMsgs,
+  };
+  const tokenNow = H0 + 14 * HOUR;
+  const tokenSnap = present(aggregate([tokenRow], { days: 1, timeZone: "UTC", now: tokenNow }));
+  eq(tokenSnap.byHour[9].tokensTotal, 125, "聚合 UTC：9 点 tokensTotal = 125");
+  eq(tokenSnap.byHour[10].tokensTotal, 7, "聚合 UTC：10 点 tokensTotal = 7");
+  eq(tokenSnap.byHour[13].tokensTotal, 350, "聚合 UTC：13 点 tokensTotal = 350");
+  eq(sum(tokenSnap.byHour.map((hour) => hour.tokensTotal)), tokenSnap.totals.tokensTotal, "Σ byHour.tokensTotal === totals.tokensTotal（482）");
+  eq(tokenSnap.byHour[9].humanMsgs, 2, "聚合：9 点 humanMsgs = 2");
+  eq(tokenSnap.byHour[10].humanMsgs, 1, "聚合：10 点 humanMsgs = 1");
+  eq(tokenSnap.byHour[13].humanMsgs, 1, "聚合：13 点 humanMsgs = 1");
+  eq(sum(tokenSnap.byHour.map((hour) => hour.humanMsgs)), 4, "聚合：Σ humanMsgs = 4");
+  eq(tokenSnap.hourTokensSource.events, 1, "诊断：小时 Token 事件口径命中 1 行");
+  eq(tokenSnap.byHour[0].tokensTotal, 0, "没有消息的 0 点 tokensTotal = 0");
+
+  // 时区平移：UTC 9/10/13 → 上海 17/18/21
+  const tokenShSnap = present(aggregate([tokenRow], { days: 1, timeZone: "Asia/Shanghai", now: tokenNow }));
+  eq(tokenShSnap.byHour[17].tokensTotal, 125, "聚合上海：UTC 9 点 → 17 点 125");
+  eq(tokenShSnap.byHour[18].tokensTotal, 7, "聚合上海：UTC 10 点 → 18 点 7");
+  eq(tokenShSnap.byHour[21].tokensTotal, 350, "聚合上海：UTC 13 点 → 21 点 350");
+  eq(tokenShSnap.byHour[9].tokensTotal, 0, "聚合上海：9 点不再有 Token（已平移）");
+  eq(sum(tokenShSnap.byHour.map((hour) => hour.tokensTotal)), tokenShSnap.totals.tokensTotal, "换时区只改分布、不改 Token 总量");
+
+  // 读不出事件（v0 老日志 / 未回填）：不计入时间图 Token，并计入 missing
+  const missingRow = makeRow({ id: "miss", cwd: "/tmp/miss", createdAt: H0, turns: 1, steps: 1, llmMs: 10 * MIN, toolMs: 0, input: 10, output: 5, cacheRead: 5 });
+  const missSnap = present(aggregate([tokenRow, missingRow], { days: 1, timeZone: "UTC", now: tokenNow }));
+  eq(missSnap.hourTokensSource.missing, 1, "读不出事件的会话计入 hourTokensSource.missing = 1");
+  eq(sum(missSnap.byHour.map((hour) => hour.tokensTotal)), tokenSnap.totals.tokensTotal, "未计入的会话不进入任何小时 Token");
+  ok(sum(missSnap.byHour.map((hour) => hour.tokensTotal)) < missSnap.totals.tokensTotal, "总 Token 仍含该会话（只是时间图不计入）");
+  const zeroHourRow = { ...tokenRow, id: "zero-hour", hourTokens: new Array(24).fill(0) };
+  eq(present(aggregate([zeroHourRow], { days: 1, timeZone: "UTC", now: tokenNow })).hourTokensSource.missing, 1, "hourTokens 全 0 但有官方 Token → 也计入未计入");
+  const tokenReport = renderReport(missSnap, { theme: "light", generatedAt: tokenNow });
+  ok(tokenReport.includes("Token 未计入 1 个会话"), "报告图下标注「Token 未计入 N 个会话」");
+  ok(tokenReport.includes('data-kind="hour-dot"'), "报告渲染人类消息密度点（circle）");
+  ok(tokenReport.includes("Token 产出") && tokenReport.includes("人类消息密度") && tokenReport.includes("峰值"), "报告图例只说明颜色：Token 产出 / 人类消息密度 / 峰值");
+  ok(!tokenReport.includes("0–23 点分摊活跃时长"), "报告不再写旧的活跃时长口径");
+
+  // 活会话续聊后 row.tokens 增长：聚合时按比例回正到新总量，仍严格守恒
+  const grownRow = { ...tokenRow, id: "grown", tokens: { ...tokenRow.tokens, output: tokenRow.tokens.output + 18 } };
+  const grownSnap = present(aggregate([grownRow], { days: 1, timeZone: "UTC", now: tokenNow }));
+  eq(sum(grownSnap.byHour.map((hour) => hour.tokensTotal)), grownSnap.totals.tokensTotal, "row.tokens 增长后 Σ byHour.tokensTotal 仍 === totals.tokensTotal（500）");
+
+  // measure：默认 Tokens，切「轮次」取 starts（同一批 byHour 数据）
+  eq(normalizeHourMeasure(undefined), "tokens", "measure 缺省 = tokens");
+  eq(normalizeHourMeasure("bogus"), "tokens", "非法 measure 回退 tokens");
+  eq(normalizeHourMeasure("turns"), "turns", "measure 支持 turns");
+  const measureHour = { tokensTotal: 1234, starts: 7, humanMsgs: 3 };
+  eq(hourMeasureValue(measureHour, "tokens"), 1234, "measure=tokens 取 tokensTotal");
+  eq(hourMeasureValue(measureHour, "turns"), 7, "measure=turns 取该小时 starts");
+  eq(hourMeasureMax([{ tokensTotal: 10, starts: 2 }, { tokensTotal: 30, starts: 9 }], "tokens"), 30, "measure=tokens 的最大值取 Token");
+  eq(hourMeasureMax([{ tokensTotal: 10, starts: 2 }, { tokensTotal: 30, starts: 9 }], "turns"), 9, "measure=turns 的最大值取轮次");
+  eq(hourMeasureMax([], "tokens"), 1, "空数据时最大值为 1（不除零）");
+  eq(hourBarPercent(0, 30), 0, "0 值柱高 0");
+  eq(hourBarPercent(15, 30), 50, "柱高按当前 measure 的最大值归一");
+  ok(hourBarPercent(1, 1000) >= 3, "有值柱至少 3%（细柱可见）");
+
+  // 圆点几何：半径公式、上沿 14px、顶部 64px 容得下最大圆
+  eq(HOUR_DOT_TOP, 14, "圆点上沿留白 = 14px");
+  eq(HOUR_DOT_BASE_RADIUS, 3.4, "圆点最小半径 = 3.4");
+  eq(HOUR_DOT_RADIUS_SPAN, 5.0, "半径增量 = 5.0");
+  ok(Math.abs(hourDotRadius(0) - 3.4) < 1e-9, "ratio=0 → r=3.4");
+  ok(Math.abs(hourDotRadius(1) - 8.4) < 1e-9, "ratio=1 → r=8.4（最大圆）");
+  ok(Math.abs(hourDotCenterY(hourDotRadius(1)) - hourDotRadius(1) - 14) < 1e-9, "最大圆上沿仍是 14px（不被裁）");
+  ok(HOUR_CHART_TOP_SPACE >= 14 + hourDotRadius(1) * 2, "顶部 64px 完整容纳最大圆（14 + 16.8）");
+
+  // Token 回正纯函数
+  eq(scaleTokenBuckets(new Array(24).fill(0), 10), null, "全 0 桶无法回正 → null（不编分布）");
+  eq(scaleTokenBuckets(new Array(24).fill(1), 0), null, "目标 0 → null");
+  const scaledTen = scaleTokenBuckets(new Array(24).fill(0).map((_, index) => (index === 0 || index === 5 ? 1 : 0)), 10);
+  eq(sum(scaledTen), 10, "scaleTokenBuckets 的和恰好等于目标");
+  ok(scaledTen.every((value) => Number.isInteger(value)), "scaleTokenBuckets 不产生小数 Token");
+
+  // 文案：图例只解释颜色（不要括号解释），tooltip 一行三口径
+  eq(translate("zh", "hour.legend.tokens"), "Token 产出", "图例「Token 产出」");
+  eq(translate("zh", "hour.legend.humans"), "人类消息密度", "图例「人类消息密度」");
+  eq(translate("en", "hour.legend.peak"), "Peak", "英文图例「Peak」");
+  const legendText = ["tokens", "turns", "humans", "peak"].map((key) => translate("zh", "hour.legend." + key)).join("|");
+  ok(!/[()（）]/.test(legendText), "图例文案不含括号解释", legendText);
+  const tip = translate("zh", "hour.tip", { hour: 9, tokens: "12.3K", turns: "4", humans: "2" });
+  ok(tip.includes("9:00–9:59") && tip.includes("Token 12.3K") && tip.includes("轮次 4") && tip.includes("人类消息 2"), "tooltip = 小时 · Token · 轮次 · 人类消息", tip);
+  ok(translate("zh", "hour.missingTokens", { count: 3 }).includes("未计入 3 个会话"), "缺失提示写「未计入 N 个会话」");
+}
+
+console.log("\n—— 等待用户剔除（0.6.5）——");
 {
   const MIN = 60000;
   const H0 = Date.UTC(2026, 9, 14, 0); // 周三 00:00 UTC，整点便于核对 UTC 桶
@@ -577,6 +724,9 @@ console.log("\n—— 文案（i18n）一致性 ——");
   ok(dead.length === 0, "字典里没有无人使用的死键", dead.join(", "));
   // 「每日用量趋势」的旧提示（全历史；右侧＝各周几累计）已删除：键与渲染一起消失，不留空标签
   ok(!zhKeys.includes("cal.hint") && !enKeys.includes("cal.hint"), "日历提示键已从 zh/en 删除");
+  ok(!zhKeys.includes("hour.sub") && !enKeys.includes("hour.sub"), "时刻卡片小标题键已从 zh/en 删除（无死键）");
+  ok(!zhKeys.includes("hour.peak") && !enKeys.includes("hour.peak"), "旧「最活跃」文案键已删除（图例只解释颜色）");
+  ok(!clientSource.includes("hour.sub") && !clientSource.includes("hour.peak"), "时刻卡片不再渲染小标题与「最活跃」行");
   ok(!clientSource.includes("cal.hint"), "看板不再引用日历提示键");
   ok(!localesSource.includes("全历史；右侧") && !localesSource.includes("Full history; right edge"), "中英文提示文案均已从字典删除");
   const byDayBlock = clientSource.slice(clientSource.indexOf("function ByDayView"), clientSource.indexOf("function ByWorkspaceView"));
@@ -592,6 +742,28 @@ console.log("\n—— 文案（i18n）一致性 ——");
     return value.length > 80;
   });
   ok(longKeys.length === 0, "没有超长文案（>80 字，发布前应压短）", longKeys.join(", "));
+}
+
+console.log("\n—— 时刻卡片（默认 Tokens / chips / 顶部密度点）——");
+{
+  const clientSource = await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8");
+  const stylesSource = await readFile(new URL("../src/client/styles.js", import.meta.url), "utf8");
+  const reportSource = await readFile(new URL("../src/report-html.js", import.meta.url), "utf8");
+  const hostSource = await readFile(new URL("../index.js", import.meta.url), "utf8");
+  ok(/useState\("tokens"\)/.test(clientSource), "默认 measure = Tokens");
+  ok(clientSource.includes('data-measure="tokens"') && clientSource.includes('data-measure="turns"'), "两个 measure chips 都在 DOM（Tokens / 轮次）");
+  ok(/onClick=\{\(\) => setHourMeasure\("tokens"\)\}/.test(clientSource) && /onClick=\{\(\) => setHourMeasure\("turns"\)\}/.test(clientSource), "chips 点击切换 measure 状态");
+  ok(/hourMeasure === "tokens"/.test(clientSource) && /hourMeasure === "turns"/.test(clientSource), "chip 选中态跟随 measure");
+  ok(/className="wl-hour-grid"/.test(clientSource) && !clientSource.includes("hour.sub"), "卡片头无小标题、图表仍是 24 列网格");
+  ok(/\.wl-hour-grid \{[^}]*height: 196px/s.test(stylesSource), "图表总高 196px");
+  ok(/\.wl-hour-track \{[^}]*height: 116px/s.test(stylesSource) && /\.wl-hour-track \{[^}]*bottom: 16px/s.test(stylesSource), "柱形区 116px + 标签 16px → 顶部预留 64px");
+  ok(/\.wl-hour-dot \{[^}]*top: 14px/s.test(stylesSource), "密度点 CSS 上沿固定 14px");
+  ok(clientSource.includes("hourDotRadius") && clientSource.includes("hour.dotTip"), "密度点用统一半径函数，并带「小时 + 人类消息条数」title");
+  ok(clientSource.includes("wl-hour-legend") && clientSource.includes("hour.legend.tokens") && clientSource.includes("hour.legend.humans") && clientSource.includes("hour.legend.peak"), "图例三项：Token 产出 / 人类消息密度 / 峰值");
+  ok(clientSource.includes("data-kind=\"hour-tokens-missing\"") && clientSource.includes("hour.missingTokens"), "读不出事件的会话在卡片里标注「未计入 N 个会话」");
+  ok(reportSource.includes("hourDotRadius") && reportSource.includes("人类消息密度") && reportSource.includes("Token 产出"), "报告时刻图同步 Tokens 口径与密度点");
+  ok(/const INDEX_VERSION = 7\b/.test(hostSource), "INDEX_VERSION 6 → 7（新增字段必须重折）");
+  ok(hostSource.includes('"hourTokens"') && hostSource.includes('"hourHumanMsgs"') && /MODEL_ROW_FIELDS[\s\S]{0,400}hourTokens/.test(hostSource), "hourTokens / hourHumanMsgs 随行持久化并由 carryModelFields 搬运");
 }
 
 console.log("\n—— 宿主路由（stub ctx）——");
@@ -983,7 +1155,8 @@ function bootLifecycle() {
     sessionProjections: { snapshot: () => ({ asOfSeq: lcSnapshots.L2.asOfSeq, values: lcSnapshots.L2.values }) },
     sessionQuery: {
       listSessions: async () => lcRecords,
-      observeSession: async (id) => ({ header: lcRecords.find((r) => r.header.id === id).header, projections: { asOfSeq: 5, values: {} }, dispose() {} }),
+      // L3 也能从投影拿到 Token（只是事件日志读不出）：用来验证「时间图未计入但总量仍含它」
+      observeSession: async (id) => ({ header: lcRecords.find((r) => r.header.id === id).header, projections: { asOfSeq: 5, values: values(id) }, dispose() {} }),
       readSession: async (id) => {
         state.reads += 1;
         if (id === "L3") throw new Error("unsupported descriptor version 2");
@@ -1005,6 +1178,13 @@ ok(String(settledFold.diagnostics.modelFold.lastError ?? "").includes("unsupport
 ok(typeof settledFold.diagnostics.modelFold.lastErrorAt === "number" && settledFold.diagnostics.modelFold.lastErrorAt > 0, "lastError 带时间戳");
 const lifecycleSnap = JSON.parse((await callOn(first.routeList, "/workload-report/v1/snapshot?days=30&tz=UTC")).body);
 eq(lifecycleSnap.byModel.length, 2, "回填后 /snapshot.byModel 有两个模型（L2 pro + L1 flash）");
+// 小时 Token：L1/L2 可读（事件 usage 420 → 按官方 115 回正，events-scaled）；L3 读不出 → missing
+const lifecycleTokens = lifecycleSnap.byHour.reduce((sum, hour) => sum + hour.tokensTotal, 0);
+eq(lifecycleSnap.diagnostics.hourTokensSource.scaled, 2, "宿主诊断：2 行小时 Token 走 events-scaled");
+eq(lifecycleSnap.diagnostics.hourTokensSource.missing, 1, "宿主诊断：1 行读不出事件 → hourTokensSource.missing");
+eq(lifecycleSnap.byHour[2].tokensTotal, 230, "宿主：小时 Token 落在消息时间（UTC 02 点）230");
+eq(lifecycleTokens, lifecycleSnap.totals.tokensTotal - 115, "宿主：未计入会话的 Token 不进入 byHour（345 − 115）");
+eq(lifecycleSnap.byHour[2].humanMsgs, 0, "宿主：该会话没有 user/message，humanMsgs = 0");
 const readsAfterFirst = first.state.reads;
 eq(readsAfterFirst, 3, "首次回填把 3 个会话各读一次（含 1 个失败）");
 
@@ -1049,7 +1229,7 @@ ok(
 );
 await rm(LIFECYCLE_INDEX, { force: true }).catch(() => {});
 
-// ---------------------------------------------------------------- 等待用户剔除的宿主配置（0.7.0）
+// ---------------------------------------------------------------- 等待用户剔除的宿主配置（0.6.5）
 console.log("\n—— 等待用户剔除的宿主配置（excludeWait）——");
 
 /** 起一个隔离宿主实例：投影 llmMs=20min / toolMs=180min，事件里有一段 3h 的 ask_user_question。 */

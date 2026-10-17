@@ -336,6 +336,14 @@ try {
       peak: document.querySelectorAll(".wl-hour-col[data-peak]").length,
       hourTip: document.querySelector(".wl-hour-col[data-peak]")?.getAttribute("title") ?? "",
       hourPeakValue: document.querySelector(".wl-hour-value")?.textContent ?? "",
+      hourChips: [...document.querySelectorAll(".wl-grid-2 .wl-card:first-child .wl-chips .wl-chip")].map((n) => ({ text: n.textContent.trim(), measure: n.getAttribute("data-measure"), active: n.getAttribute("data-active") === "true" })),
+      hourLegend: [...document.querySelectorAll(".wl-grid-2 .wl-card:first-child .wl-hour-legend .wl-legend-item")].map((n) => n.textContent.trim()),
+      hourHint: document.querySelectorAll(".wl-grid-2 .wl-card:first-child > .wl-hint:not(.wl-hour-note)").length,
+      hourDots: [...document.querySelectorAll(".wl-hour-dot")].map((n) => {
+        const dot = n.getBoundingClientRect();
+        const grid = n.closest(".wl-hour-grid").getBoundingClientRect();
+        return { diameter: Math.round(dot.width * 10) / 10, topInset: Math.round((dot.top - grid.top) * 10) / 10 };
+      }),
       // 只数并排两图里的工作区环形图（首页右列的模型环形图不在 .wl-grid-2 内）
       pieSlices: document.querySelectorAll(".wl-grid-2 .wl-pie-wrap svg circle, .wl-grid-2 .wl-pie-wrap svg path").length,
       pieLegend: [...document.querySelectorAll(".wl-grid-2 .wl-pie-legend li")].map((n) => n.textContent).slice(0, 3),
@@ -347,7 +355,11 @@ try {
   ok(sideCharts.hourCols === 24, "时刻分析有 24 个小时柱", String(sideCharts.hourCols));
   ok(sideCharts.peak === 1, "最活跃时段被高亮", String(sideCharts.peak));
   ok(/\d+:00/.test(sideCharts.hourTip), "时刻柱带原生 title tooltip（跟随鼠标）", sideCharts.hourTip.replace(/\n/g, " | "));
-  ok(/[hms]\b/.test(sideCharts.hourPeakValue), "最活跃时刻柱顶显示活跃时长标签", sideCharts.hourPeakValue);
+  ok(/^[\d.,]+\s*[KMB]?$/.test(sideCharts.hourPeakValue), "最大柱顶显示 Token 数值标签", sideCharts.hourPeakValue);
+  ok(sideCharts.hourChips.length === 2 && sideCharts.hourChips[0].active && sideCharts.hourChips[0].measure === "tokens", "时刻图默认 measure = Tokens（chips: Tokens / 轮次）", JSON.stringify(sideCharts.hourChips));
+  ok(sideCharts.hourLegend.length === 3 && sideCharts.hourLegend.every((text) => !/[()（）]/.test(text)), "图例只说明颜色（Token 产出 / 人类消息密度 / 峰值，无括号解释）", JSON.stringify(sideCharts.hourLegend));
+  ok(sideCharts.hourHint === 0, "时刻分析卡片标题下没有小标题", String(sideCharts.hourHint));
+  ok(sideCharts.hourDots.every((dot) => dot.topInset >= 13.5) && sideCharts.hourDots.every((dot) => dot.diameter <= 17.4), "密度点上沿留白 ≥14px、最大圆完整", JSON.stringify(sideCharts.hourDots.slice(0, 2)));
   // 柱/标签索引对齐：第 i 根柱的标签、tooltip 小时都必须是 i（防"柱画在 i、标签写着 i+1"这类渲染错位）
   const hourAlign = await page.evaluate(() => {
     const cols = [...document.querySelectorAll(".wl-hour-col")];
