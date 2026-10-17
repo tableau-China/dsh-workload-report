@@ -997,9 +997,16 @@ function Kpis({ data, t }) {
     tokens: "kpi.topModel.metric.tokens",
     llmMs: "kpi.topModel.metric.llmMs",
   };
-  // KPI 里的时长统一走「一位小数的小时 / 整数分钟 / 整数秒」（223.2 h），比明细表更短更好扫
+  // KPI 里的时长统一走「一位小数的小时 / 整数分钟 / 整数秒」（223.2 h），比明细表更短更好扫。
+  // 活跃时长展示**净活跃**（totals.activeMs 是官方值，含等待用户）；等待单独写在副标题里。
+  const netActive = totals.netActiveMs ?? totals.activeMs;
+  const activeWait = totals.waitMs ?? 0;
   const cards = [
-    ["kpi.active", formatKpiDuration(totals.activeMs), t("kpi.active.sub", { llm: formatKpiDuration(totals.llmMs), tool: formatKpiDuration(totals.toolMs) })],
+    [
+      "kpi.active",
+      formatKpiDuration(netActive),
+      `${t("kpi.active.sub", { llm: formatKpiDuration(totals.llmMs), tool: formatKpiDuration(totals.toolMs) })} · ${t("kpi.active.waitSub", { wait: formatKpiDuration(activeWait) })}`,
+    ],
     // 总 Token 直接给完整整数（可核对的真实值），小字里才用 K/M/B 缩写
     ["kpi.tokens", formatInt(totals.tokensTotal), t("kpi.tokens.sub", { input: formatTokens(totals.tokens.input), output: formatTokens(totals.tokens.output), cache: formatTokens(totals.tokens.cacheRead) })],
     // 第 8 张：模型费用（插在活跃天数前，与 Tokens 卡一样跨 2 列，两行正好排满）
@@ -1260,6 +1267,7 @@ function ByWorkspaceView({ data, t }) {
                 <div className="wl-ws-foot">
                   {formatInt(item.sessions)} {t("table.sessions")} · {formatInt(item.conversations)} {t("table.conversations")} ·{" "}
                   {t("metric.chatsSub", { avg: formatDuration(item.avgActiveMsPerConversation) })}
+                  {item.waitMs > 0 ? ` · ${t("ws.wait", { wait: formatDuration(item.waitMs) })}` : ""}
                 </div>
               </li>
             ))}

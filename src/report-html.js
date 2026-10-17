@@ -31,7 +31,8 @@ function isWeekend(dateKey) {
 
 /**
  * 渲染每日「活跃时长柱」SVG —— 与看板「柱状图」模式同构：
- * **单序列、无折线**，柱高＝活跃时长（day.activeMs），周六 / 周日换强调色，数值标在柱顶。
+ * **单序列、无折线**，柱高＝净活跃时长（day.activeMs，聚合时已剔除等待用户），
+ * 周六 / 周日换强调色，数值标在柱顶。
  * @param days - byDay 数组。
  * @param palette - 色板。
  * @returns SVG 字符串。
@@ -126,7 +127,7 @@ function workspaceBars(items, palette, metric, rangeDays = 0) {
 
 
 /**
- * 时刻分析：24 根柱，柱高＝以轮次开始时刻计的活跃时长，最高的一根高亮。
+ * 时刻分析：24 根柱，柱高＝以轮次开始时刻计的净活跃时长（不含等待用户），最高的一根高亮。
  * @param hours - byHour 数组。
  * @param palette - 色板。
  * @returns SVG 字符串。
@@ -358,8 +359,10 @@ export function renderReport(snapshot, options = {}) {
   const money = (value) => (value === null || value === undefined ? "—" : symbol + (value < 1 ? value.toFixed(4) : value.toFixed(2)));
   const costed = pricing.costed ?? { covered: 0, total: 0 };
 
+  // 活跃时长 KPI 用净活跃（totals.activeMs 是官方值，含等待用户）；等待在副标题里单列
+  const netActiveMs = totals.netActiveMs ?? totals.activeMs;
   const kpis = [
-    ["累计活跃时长", formatDuration(totals.activeMs), `模型 ${formatDuration(totals.llmMs)} · 工具 ${formatDuration(totals.toolMs)}`],
+    ["累计活跃时长", formatDuration(netActiveMs), `模型 ${formatDuration(totals.llmMs)} · 工具 ${formatDuration(totals.toolMs)} · 含等待用户 ${formatDuration(totals.waitMs ?? 0)}`],
     ["总 Token", formatTokens(totals.tokensTotal), `输入 ${formatTokens(totals.tokens.input)} · 输出 ${formatTokens(totals.tokens.output)} · 缓存 ${formatTokens(totals.tokens.cacheRead)}`],
     ["模型费用(估算)", money(pricing.totalCost), costed.total > 0 ? `${formatInt(costed.covered)}/${formatInt(costed.total)} 个模型有官方价 · as-of ${pricing.asOf ?? "—"}` : "无带官方价的模型"],
     ["对话次数", formatInt(totals.conversations), `会话总数 ${formatInt(totals.sessions)}（含空会话 ${formatInt(totals.emptySessions)}）`],
@@ -529,7 +532,11 @@ export function renderReport(snapshot, options = {}) {
   ${sessionSection}
 
   <footer>
-    活跃时长＝模型＋工具时间（累计，非墙钟）；对话＝有步骤的会话数；Token 取自官方投影；按会话创建日在 ${escapeHtml(range.timeZone)} 归属。
+    活跃时长＝净活跃（模型＋工具时间，已剔除等待用户 ${escapeHtml(formatDuration(totals.waitMs ?? 0))}；累计，非墙钟）。
+    官方 activeMs 保留在接口字段 <code>totals.activeMs</code> 供核对：净活跃 + 等待用户 = 官方 activeMs（守恒）。
+    等待用户＝交互工具（ask_user_question / exit_plan_mode 白名单）或工具调用期间夹着 user/message、且单次 ≥ 60s 的区间；
+    没有人类输入的长任务（编译 / 跑批）照常算工作。每日 / 时刻图同样用净活跃。
+    对话＝有步骤的会话数；Token 取自官方投影；按会话创建日在 ${escapeHtml(range.timeZone)} 归属。
     模型口径：一次 assistant/message = 一次请求；模型取自事件的 provider/model；各模型耗时按流式窗口占比分摊会话模型时间（守恒）。
     费用＝按官方公开单价估算（DeepSeek 峰谷价：峰时 01:00-04:00 与 06:00-10:00 UTC 周一至周五，谷价为其半；中国法定节假日按峰价计入，略微高估），非官方账单。
     官方计费标准：${(snapshot.pricing?.links ?? []).map((link) => `<a href="${escapeHtml(link.url)}">${escapeHtml(link.label ?? link.provider)}</a>`).join(" · ")}
