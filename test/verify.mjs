@@ -532,6 +532,14 @@ console.log("\n—— 文案（i18n）一致性 ——");
   ok(missing.length === 0, "组件引用的文案键都存在于字典", missing.join(", "));
   const dead = zhKeys.filter((key) => !referenced.has(key) && !dynamicFamilies.some((family) => key.startsWith(family)));
   ok(dead.length === 0, "字典里没有无人使用的死键", dead.join(", "));
+  // 「每日用量趋势」的旧提示（全历史；右侧＝各周几累计）已删除：键与渲染一起消失，不留空标签
+  ok(!zhKeys.includes("cal.hint") && !enKeys.includes("cal.hint"), "日历提示键已从 zh/en 删除");
+  ok(!clientSource.includes("cal.hint"), "看板不再引用日历提示键");
+  ok(!localesSource.includes("全历史；右侧") && !localesSource.includes("Full history; right edge"), "中英文提示文案均已从字典删除");
+  const byDayBlock = clientSource.slice(clientSource.indexOf("function ByDayView"), clientSource.indexOf("function ByWorkspaceView"));
+  const dailyHead = byDayBlock.slice(byDayBlock.indexOf('className="wl-card-head"'), byDayBlock.indexOf('className="wl-daily-body"'));
+  ok(dailyHead.length > 0 && !dailyHead.includes("wl-hint"), "「每日用量趋势」卡片头不再渲染提示段落（节点数 0）");
+  ok(!/<p className="wl-hint">\s*<\/p>/.test(clientSource), "没有留下空提示标签");
   // 长文案检查：直接按行取字典里的值长度，避免动态正则转义
   const zhLines = localesSource.slice(zhStart, enStart).split("\n");
   const longKeys = zhKeys.filter((key) => {

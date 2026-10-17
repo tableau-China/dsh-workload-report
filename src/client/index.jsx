@@ -1130,7 +1130,6 @@ function ByDayView({ data, t }) {
         <div className="wl-card-head">
           <div>
             <h3>{t("chart.daily")}</h3>
-            <p className="wl-hint">{dailyMode === "calendar" ? t("cal.hint") : t("chart.hint")}</p>
           </div>
           <div className="wl-chips">
             <button type="button" className="wl-chip" data-active={dailyMode === "calendar"} onClick={() => setDailyMode("calendar")}>{t("daily.calendar")}</button>
