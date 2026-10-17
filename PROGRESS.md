@@ -2,6 +2,52 @@
 
 日期用 `YYYY-MM-DD`；只记录影响后续决策的事实。
 
+## 2026-10-17 UI 一致性（chips / CardHead / tooltip / 状态右对齐）
+
+### 背景
+
+- 用户实测「每日用量趋势」悬停无提示、工作区切换不在右上、模型用量 chips 没有底色、
+  时刻卡「Token 未计入」孤零零挂在图例下方，且各卡开关/图例/提示样式各写一套。
+- 排查结论：日历格与柱的 `<title>` 在旧构建里确实存在（60/60、7/7），但可见柱命中面积小
+  （0 值柱 1px）、日期轴/周标签 0 个 title、旧文案三行且缺 Token/周末；审计另发现模型 treemap /
+  趋势图的 title 挂在 `<g>` 上（多数浏览器不弹）。修复为「title 直接挂在形状 + 每列全高命中区」。
+
+### 关键决策
+
+| 决策 | 取舍 |
+| --- | --- |
+| 切换控件统一 `ChipGroup` / `Chip`（`src/client/chips.jsx`） | 五处共用；样式只在 `styles.js` 定义一次，禁止变体 class |
+| 卡片头统一 `CardHead`（`src/client/card-head.jsx`） | 标题在左、控件右上；模型卡补回标题，卡片内不再重复页面标题 |
+| 状态判据抽到 `src/client/hour-status.js` | 只读 `diagnostics`，可单测；组件不写死 running/idle |
+| 状态只跟 `modelFold.running` | 排队中的 refold 不显示「正在计算中」，避免活会话水位让提示常驻 |
+| 每日柱每列一根透明命中区 | 0 值/1px 柱可 hover；title 不挂 `<g>`，避免浏览器不弹 |
+
+### 已完成
+
+- tooltip：日历格 / 每日柱 / 命中区 / 周几轴 / Year-Week 标签；单行文案 + 周末后缀；模型 treemap、趋势图 title 下移到 rect/命中区。
+- chips：顶部范围、每日、时刻、工作区、模型五处共用；工作区开关移到卡片右上；模型 chips 恢复底色与选中态。
+- 时刻：legend 行 `space-between`，右侧状态三态；回填期间继续 5 秒轮询。
+- 样式：唯一 class 102 → 94；`.wl-legend` 合并；一次性提示类收敛为 `.wl-status` / hint 修饰。
+- 文档：`docs/ui-conventions.md`；README 不动（版本仍 0.6.5，未发布）。
+
+### 量测（无头 Chrome 1560×1000，zh-CN，7 天区间）
+
+| 项 | 结果 |
+| --- | --- |
+| 日历格 title | 60/60 直接子 `<title>`；周几轴 7/7；周标签 3/3；周几条 7/7 |
+| 每日柱 title | 可见柱 7/7 + 命中区 7/7；日期轴 7/7 |
+| 样例 | `2026-08-19 · 活跃 46.2 m · Token 83.01 M`；`2026-09-05 · 活跃 57.8 m · Token 109 M · 周末`；`2026-10-12 · 活跃 20.4 m · Token 10.88 M` |
+| chips 盒模型 | 四组均 24px 高 / 999px 圆角 / 0 10px 内边距 / 12px 字；右上间距均 17px（右）、15px（上） |
+| chips 颜色 | 选中 `rgb(65,118,230)` + 白字；未选中 `color(srgb .9478 .9624 .9931)` 浅蓝底 + 1px 边框 |
+| 状态 running | 「正在计算中……」右缘 826.6 = legend 右缘 826.6；`data-state=running` |
+| 状态 idle | 「Token 未计入 5 个会话」右缘 826.6 = legend 右缘 826.6；`data-state=idle` |
+| 状态 idle N=0 | 节点数 0（整条不渲染） |
+
+### 测试
+
+- `node build.mjs && node test/verify.mjs` 连跑 2 次：**533 项断言，exit 0**。
+- 截图：`.tmp/shots/ui-daily-calendar.png`、`ui-daily-bars.png`、`ui-chips-hour-workspace.png`、
+  `ui-chips-model.png`、`ui-hour-status-running.png`、`ui-hour-status-idle.png`。
 ## 2026-10-17 时刻分析 Tokens 口径 + 人类消息密度点（v0.6.5）
 
 > 版本号统一：此前的等待剔除、formatHours / 比例条 / 删日历提示等条目内容并入本版，

@@ -1,5 +1,38 @@
 # CHANGELOG — dsh-workload-report
 
+## 未发布（基于 v0.6.5）— UI 一致性：ChipGroup / CardHead / tooltip 全覆盖
+
+### 变更
+
+- **每日用量趋势 tooltip 逐元素补齐**：日历每格、每日柱、周几累计条、周几轴、Year-Week 标签都有
+  直接挂在形状/文字上的原生 `<title>`（不挂 `<g>`）；柱状图每列新增全高透明命中区
+  （`data-kind="active-bar-hit"`），0 值/1px 柱也能稳定 hover。文案统一为单行
+  `日期 · 活跃 x · Token y[ · 周末]`，周末由本地日期判定。
+- **chips 组件化**：新增 `src/client/chips.jsx` 的 `ChipGroup` / `Chip`，顶部时间范围、
+  每日用量、时刻分析、工作区占比、模型用量五处共用；默认态为 7% 强调色 + `bg-layer-2` 的浅底 +
+  `border-l2` 边框，选中态为 `static-deepseek-500` 实底 + 白字；尺寸/圆角/间距只在
+  `styles.js` 定义一次。删除 `wl-chip-active` / `wl-chips-inline` 等变体。
+- **工作区占比切换移到右上角**：`按时长 / 按 Token` 与「时刻分析」的 chips 同位置、同样式；
+  `WorkspacePie` 改为受控（metric 由卡片状态传入），不再在图形内部渲染开关。
+- **模型用量 chips 统一底色**：`按 Token / 按请求数 / 按模型耗时` 改用同一套 chip，
+  默认浅底 + 边框、选中强调色实底 + 白字；清除筛选也用同组件。
+- **卡片头统一**：新增 `src/client/card-head.jsx` 的 `CardHead`（左标题 + 可选说明、右上控件），
+  每日用量 / 模型 Token 占比 / 时刻分析 / 工作区占比 / 模型用量五处共用；模型卡补回卡片标题。
+- **时刻分析状态移到 legend 行右侧**：`Token 未计入 N 个会话` 紧跟「峰值」图例项之后、整体右对齐
+  （`justify-content: space-between`）；状态判据集中到 `src/client/hour-status.js`：
+  `modelFold.running` → 「正在计算中……」；空闲且 `hourTokensSource.missing > 0` → 「Token 未计入 N 个会话」；
+  空闲且 N=0 → 整条不渲染。回填/重折期间继续每 5 秒轮询。
+- **样式收敛**：唯一样式 class 102 → 94；`.wl-legend` 两处定义合并为一处；
+  `wl-hour-note / wl-fold-error / wl-model-note / wl-model-links / wl-model-raw` 收敛到
+  `.wl-status` 与 `.wl-hint-spaced / .wl-hint-block`；删除 8 条无用样式。
+- **文档**：新增 `docs/ui-conventions.md`（铁律、共享组件清单、卡片头/图例/状态结构、tooltip 规则）。
+
+### 测试
+
+- 离线断言 **503 → 533**（连跑 2 次 exit 0）：新增 chip 组件与复用点、CardHead 结构、
+  `hourTokensNote` 三态、tooltip 逐元素、样式收敛与 UI 约定文档断言；i18n 死键扫描扩展到全部客户端模块。
+
+
 ## v0.6.5（2026-10-17）— 时刻分析 Token 口径 + 人类消息密度；等待剔除、时长/比例条并入
 
 ### 变更

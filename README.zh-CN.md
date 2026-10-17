@@ -137,7 +137,7 @@ dsh plugin --profile web add dsh-workload-report
 | --- | --- |
 | `pnpm add -D esbuild puppeteer-core` | 安装构建与 E2E 依赖（也可用 `ESBUILD_PATH` / `WL_PUPPETEER_DIR` 指向已有安装） |
 | `node build.mjs` | 用 esbuild 把 `src/client/` 打成 `lib/client.js`（ModuleLoader 工厂格式） |
-| `node test/verify.mjs` | 离线验证 503 项：聚合口径、时区、时刻事件落桶与守恒（含多轮分开 / 跨小时整段归起始 / 跨时区 / 新环境不摊平 / 旧法兜底）、**按消息时间的小时 Token（Σ hourTokens === row.tokensTotal、整数回正、时区平移、读不出事件的会话不计入并计数）与人类消息密度（逐小时计数 / 圆点几何 / Tokens 与轮次 measure 切换）**、等待用户剔除（交互工具白名单 / 人类输入夹层 / 短交互门槛 / 长任务豁免 / 净活跃守恒 / `excludeWait:false` 0.6.0 回归）、全部档起点、日历数据源、HTML 转义、token 两种形状、冷读兜底、inject 声明、宿主路由，以及余额五种情形（默认关闭 / 已登录 / 未登录 / 失败 / 服务不存在）与 chip 同构文案 |
+| `node test/verify.mjs` | 离线验证 533 项：聚合口径、时区、时刻事件落桶与守恒（含多轮分开 / 跨小时整段归起始 / 跨时区 / 新环境不摊平 / 旧法兜底）、**按消息时间的小时 Token（Σ hourTokens === row.tokensTotal、整数回正、时区平移、读不出事件的会话不计入并计数）与人类消息密度（逐小时计数 / 圆点几何 / Tokens 与轮次 measure 切换）**、等待用户剔除（交互工具白名单 / 人类输入夹层 / 短交互门槛 / 长任务豁免 / 净活跃守恒 / `excludeWait:false` 0.6.0 回归）、全部档起点、日历数据源、HTML 转义、token 两种形状、冷读兜底、inject 声明、宿主路由，以及余额五种情形（默认关闭 / 已登录 / 未登录 / 失败 / 服务不存在）与 chip 同构文案 |
 | `./test/e2e-boot.sh 3299` | 起一个**隔离实例**（独立 DSH_HOME + 端口，复制真实投影数据），不影响正在用的 GUI |
 | `node test/e2e-ui.mjs` | 真实浏览器 E2E 67 项：日历/柱状图切换、并排几何校验、周几条、环形图切换、明细折叠、导出报告，以及时刻卡片（默认 Tokens / measure chips / 密度点上沿 / 图例无括号解释 / 无小标题） |
 
