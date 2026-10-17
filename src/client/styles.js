@@ -171,19 +171,33 @@ export const STYLES = `
    于是纵向也冒出滚动条，故这里显式 overflow-y:hidden；svg 改块级以去掉行内基线间隙。 */
 .wl-cal-scroll { overflow-x: auto; overflow-y: hidden; }
 .wl-cal-scroll > svg { display: block; }
-/* 时刻分析 */
-.wl-hour-grid { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 3px; align-items: end; height: 150px; margin-top: 6px; }
-.wl-hour-col { position: relative; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; cursor: default; }
-.wl-hour-track { height: 118px; display: flex; align-items: flex-end; }
+/* 时刻分析：196 = 顶部 64（14 上沿 + 最大圆 16.8 + 峰值数值）+ 柱形区 116 + 标签 16 */
+.wl-hour-grid {
+  display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 3px;
+  height: 196px; margin-top: 6px;
+}
+.wl-hour-col { position: relative; height: 100%; cursor: default; }
+/* 柱形区固定在底部：顶部 64px 永远留给密度点与峰值数值，切换 measure 不跳 */
+.wl-hour-track { position: absolute; left: 0; right: 0; bottom: 16px; height: 116px; display: flex; align-items: flex-end; }
 .wl-hour-fill { width: 100%; border-radius: 3px 3px 0 0; background: linear-gradient(180deg, var(--dsw-static-deepseek-400, #6b83ff), var(--dsw-static-deepseek-600, #3b57e0)); min-height: 2px; }
 .wl-hour-col[data-peak] .wl-hour-fill { background: linear-gradient(180deg, var(--dsw-static-amber-400, #f7ad31), var(--dsw-static-amber-600, #dd8629)); }
-.wl-hour-label { font-size: 9px; text-align: center; color: var(--dsw-alias-label-tertiary, #6b7280); margin-top: 3px; }
-/* 峰值柱的数值标签：贴在柱顶、不占布局高度（tooltip 已改用原生 title，跟随鼠标） */
+/* 人类消息密度点：top 固定 14px（上沿留白），圆心 = 14 + r；最大 r=8.4 也不会被裁 */
+.wl-hour-dot {
+  position: absolute; left: 50%; top: 14px; transform: translateX(-50%);
+  border-radius: 50%; background: var(--dsw-static-amber-500, #f59e0b); opacity: 0.9;
+}
+.wl-hour-label { position: absolute; left: 0; right: 0; bottom: 0; font-size: 9px; text-align: center; color: var(--dsw-alias-label-tertiary, #6b7280); }
+/* 峰值柱的数值标签：贴在柱顶（bottom 由柱高算），不占布局高度 */
 .wl-hour-value {
-  position: absolute; left: 0; right: 0; top: 0; text-align: center;
+  position: absolute; left: 0; right: 0; text-align: center;
   font-size: 9px; line-height: 1.1; font-weight: 650; color: var(--dsw-alias-label-primary, #1a1d21);
   font-variant-numeric: tabular-nums; pointer-events: none; white-space: nowrap;
 }
+.wl-hour-legend { margin-top: 6px; }
+.wl-hour-legend .wl-legend-bar { background: linear-gradient(180deg, var(--dsw-static-deepseek-400, #6b83ff), var(--dsw-static-deepseek-600, #3b57e0)); }
+.wl-hour-legend .wl-legend-dot { border-radius: 50%; background: var(--dsw-static-amber-500, #f59e0b); }
+.wl-hour-legend .wl-legend-peak { background: linear-gradient(180deg, var(--dsw-static-amber-400, #f7ad31), var(--dsw-static-amber-600, #dd8629)); }
+.wl-hour-note { margin-top: 4px; }
 /* 工作区环形图 */
 .wl-pie-wrap { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
 .wl-pie-legend { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; flex: 1 1 220px; min-width: 200px; }

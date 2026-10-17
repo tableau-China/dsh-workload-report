@@ -7,6 +7,7 @@
 
 import { escapeHtml, formatHours, formatInt, formatPercent, formatTokens } from "./format.js";
 import { sectorPath } from "./sector-path.js";
+import { HOUR_CHART_TOP_SPACE, HOUR_DOT_TOP, hourDotRadius } from "./hour-scale.js";
 
 /** 主题色板（浅色/深色）。报告是独立文件，用不了宿主 token，因此自带一套与看板一致的色板。 */
 const PALETTES = {
@@ -127,31 +128,57 @@ function workspaceBars(items, palette, metric, rangeDays = 0) {
 
 
 /**
- * 时刻分析：24 根柱，柱高＝以轮次开始时刻计的净活跃时长（不含等待用户），最高的一根高亮。
+ * 时刻分析：24 根柱，柱高＝该小时按消息时间落桶的 Token 产出（静态报告固定 Tokens 口径），
+ * 顶部圆点＝人类消息密度（半径 3.4 + ratio×5.0，上沿恒留 14px），最高的一根标数值。
  * @param hours - byHour 数组。
  * @param palette - 色板。
- * @returns SVG 字符串。
+ * @param missing - 读不出事件、Token 未计入的会话数。
+ * @returns SVG + 图例 + 缺失提示的 HTML 字符串。
  */
-function hourChart(hours, palette) {
+function hourChart(hours, palette, missing = 0) {
   const width = 520;
-  const height = 170;
-  const pad = { top: 14, right: 6, bottom: 22, left: 6 };
+  const height = 210;
+  // 顶部 64px 留给密度点与峰值数值；柱形区从这之下开始
+  const pad = { top: HOUR_CHART_TOP_SPACE, right: 6, bottom: 22, left: 6 };
   const innerW = width - pad.left - pad.right;
   const innerH = height - pad.top - pad.bottom;
-  const max = Math.max(1, ...hours.map((hour) => hour.activeMs));
-  const peak = hours.reduce((best, hour) => (hour.activeMs > best.activeMs ? hour : best), hours[0]);
+  const max = Math.max(1, ...hours.map((hour) => hour.tokensTotal ?? 0));
+  const peak = hours.reduce((best, hour) => ((hour.tokensTotal ?? 0) > (best.tokensTotal ?? 0) ? hour : best), hours[0]);
+  const maxHuman = Math.max(0, ...hours.map((hour) => hour.humanMsgs ?? 0));
   const step = innerW / hours.length;
-  const barW = Math.max(3, step * 0.68);
+  const barW = Math.max(3, step * 0.62);
   const bars = hours
     .map((hour, index) => {
-      const h = (hour.activeMs / max) * innerH;
+      const tokens = hour.tokensTotal ?? 0;
+      const humans = Math.round(hour.humanMsgs ?? 0);
+      const h = (tokens / max) * innerH;
       const x = pad.left + step * index + (step - barW) / 2;
       const y = pad.top + innerH - h;
-      const fill = hour.hour === peak?.hour ? palette.accent : palette.input;
-      const title = `${hour.hour}:00–${hour.hour}:59\n活跃 ${formatHours(hour.activeMs)}\n覆盖 ${hour.sessions} 个会话 · ${hour.starts} 次开始`;
-      // 柱自带 tooltip，且 24 根柱恒存在（0 值给 1px）：原来 h ≤ 0.5 时整根柱被删掉，
-      // 该小时连可命中的形状都没有 → 悬停无任何提示。
+      const isPeak = hour.hour === peak?.hour && tokens > 0;
+      const fill = isPeak ? palette.weekend : palette.input;
+      const title = `${hour.hour}:00–${hour.hour}:59 · Token ${formatInt(tokens)} · 轮次 ${formatInt(hour.starts ?? 0)} · 人类消息 ${formatInt(humans)}`;
+      // 柱自带 tooltip，且 24 根柱恒存在（0 值给 1px），悬停总有提示
       return `<g><rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${barW.toFixed(2)}" height="${Math.max(h, 1).toFixed(2)}" rx="2" fill="${fill}"><title>${escapeHtml(title)}</title></rect></g>`;
+    })
+    .join("");
+  // 只在最大柱上标数值（Token 整数，切到报告仍是 Tokens 口径）
+  const peakLabel = (() => {
+    const tokens = peak?.tokensTotal ?? 0;
+    if (!(tokens > 0)) return "";
+    const index = hours.indexOf(peak);
+    const h = (tokens / max) * innerH;
+    const x = pad.left + step * index + step / 2;
+    const y = pad.top + innerH - h - 4;
+    return `<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" text-anchor="middle" font-size="9" font-weight="650" fill="${palette.text}">${escapeHtml(formatInt(tokens))}</text>`;
+  })();
+  const dots = hours
+    .map((hour, index) => {
+      const humans = Math.round(hour.humanMsgs ?? 0);
+      if (humans <= 0) return "";
+      const r = hourDotRadius(maxHuman > 0 ? humans / maxHuman : 0);
+      const cx = pad.left + step * index + step / 2;
+      const cy = HOUR_DOT_TOP + r;
+      return `<circle data-kind="hour-dot" cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${r.toFixed(1)}" fill="${palette.weekend}" opacity="0.9"><title>${escapeHtml(`${hour.hour}:00 · 人类消息 ${formatInt(humans)}`)}</title></circle>`;
     })
     .join("");
   const labels = hours
@@ -161,12 +188,21 @@ function hourChart(hours, palette) {
         : "",
     )
     .join("");
-  return `<svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" role="img" aria-label="时刻分析">
+  const legend = `<div class="legend">
+    <span><i style="background:${palette.input}"></i>Token 产出</span>
+    <span><i style="background:${palette.weekend};border-radius:50%"></i>人类消息密度</span>
+    <span><i style="background:${palette.weekend}"></i>峰值</span>
+  </div>`;
+  const note = missing > 0 ? `<p class="empty" style="margin:6px 0 0">Token 未计入 ${formatInt(missing)} 个会话</p>` : "";
+  return `<svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" role="img" aria-label="时刻分析：Token 产出与人类消息密度">
   <line x1="${pad.left}" y1="${pad.top + innerH}" x2="${width - pad.right}" y2="${pad.top + innerH}" stroke="${palette.border}" />
   ${bars}
+  ${peakLabel}
+  ${dots}
   ${labels}
 </svg>
-<p class="empty" style="margin:6px 0 0">最活跃：${peak ? peak.hour : 0}:00（${escapeHtml(formatHours(peak ? peak.activeMs : 0))}）</p>`;
+${legend}
+${note}`;
 }
 
 /**
@@ -501,8 +537,8 @@ export function renderReport(snapshot, options = {}) {
   <div class="two-col">
     <section class="card">
       <h2>时刻分析</h2>
-      <p class="hint">0–23 点分摊活跃时长</p>
-      ${hourChart(snapshot.byHour, palette)}
+      <p class="hint">柱＝Token 产出 · 点＝人类消息密度</p>
+      ${hourChart(snapshot.byHour, palette, snapshot.hourTokensSource?.missing ?? 0)}
     </section>
     <section class="card">
       <h2>工作区占比</h2>
@@ -535,7 +571,9 @@ export function renderReport(snapshot, options = {}) {
     活跃时长＝净活跃（模型＋工具时间，已剔除等待用户 ${escapeHtml(formatHours(totals.waitMs ?? 0))}；累计，非墙钟）。
     官方 activeMs 保留在接口字段 <code>totals.activeMs</code> 供核对：净活跃 + 等待用户 = 官方 activeMs（守恒）。
     等待用户＝交互工具（ask_user_question / exit_plan_mode 白名单）或工具调用期间夹着 user/message、且单次 ≥ 60s 的区间；
-    没有人类输入的长任务（编译 / 跑批）照常算工作。每日 / 时刻图同样用净活跃。
+    没有人类输入的长任务（编译 / 跑批）照常算工作。每日图同样用净活跃。
+    时刻图柱＝按 assistant/message 消息时间落桶的 Token（与总量同口径），点＝user/message 条数；
+    读不出事件日志的会话不计入 Token，图下标注数量。
     对话＝有步骤的会话数；Token 取自官方投影；按会话创建日在 ${escapeHtml(range.timeZone)} 归属。
     模型口径：一次 assistant/message = 一次请求；模型取自事件的 provider/model；各模型耗时按流式窗口占比分摊会话模型时间（守恒）。
     费用＝按官方公开单价估算（DeepSeek 峰谷价：峰时 01:00-04:00 与 06:00-10:00 UTC 周一至周五，谷价为其半；中国法定节假日按峰价计入，略微高估），非官方账单。

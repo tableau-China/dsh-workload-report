@@ -13,6 +13,14 @@ import { formatHours, formatInt, formatMoney, formatPercent, formatTokens } from
 import { balanceChip } from "./balance.js";
 import { MetricBarCell } from "./bar-cell.jsx";
 import { sectorPath } from "../sector-path.js";
+import {
+  HOUR_DOT_TOP,
+  hourBarPercent,
+  hourDotRatio,
+  hourDotRadius,
+  hourMeasureMax,
+  hourMeasureValue,
+} from "../hour-scale.js";
 
 /** 宿主半部注册的只读接口前缀（与 index.js 的默认 apiPath 一致）。 */
 const API_PATH = "/workload-report/v1";
@@ -371,38 +379,85 @@ function CalendarHeatmap({ calendar, t, availableHeight = 0 }) {
   );
 }
 
-/** 24 小时时刻分析（横轴 0–23，柱＝以轮次开始时刻计的活跃时长）。 */
-function HourChart({ hours, t }) {
-  const max = Math.max(1, ...hours.map((hour) => hour.activeMs));
-  const peak = hours.reduce((best, hour) => (hour.activeMs > best.activeMs ? hour : best), hours[0]);
+/**
+ * 24 小时时刻分析（横轴 0–23）。
+ *
+ * · 柱高＝当前 measure：Tokens（默认，该小时 assistant/message 的 Token 合计）或轮次（starts）。
+ * · 只在最大柱上标数值（切 measure 时同步换数值与格式）。
+ * · 顶部圆点＝人类消息密度（user/message 条数）：半径 3.4 + ratio×5.0，上沿恒留 14px。
+ * · 图例只解释颜色，不写"(点越大越多)"之类的解释。
+ */
+function HourChart({ hours, t, measure = "tokens", missing = 0 }) {
+  const max = hourMeasureMax(hours, measure);
+  const maxHuman = Math.max(0, ...hours.map((hour) => hour.humanMsgs ?? 0));
+  const peak = hours.reduce(
+    (best, hour) => (hourMeasureValue(hour, measure) > hourMeasureValue(best, measure) ? hour : best),
+    hours[0],
+  );
+  const peakValue = hourMeasureValue(peak, measure);
+  const valueText = (value) => (measure === "turns" ? formatInt(value) : formatTokens(value));
   const tip = (hour) =>
     t("hour.tip", {
       hour: hour.hour,
-      active: formatHours(hour.activeMs),
-      sessions: formatInt(hour.sessions),
-      starts: formatInt(hour.starts),
+      tokens: formatTokens(hour.tokensTotal ?? 0),
+      turns: formatInt(hour.starts ?? 0),
+      humans: formatInt(hour.humanMsgs ?? 0),
     });
   return (
     <>
-      <div className="wl-hour-grid">
+      <div className="wl-hour-grid" data-measure={measure}>
         {hours.map((hour) => {
-          const ratio = hour.activeMs / max;
-          const isPeak = hour.hour === peak?.hour;
+          const value = hourMeasureValue(hour, measure);
+          const isPeak = hour.hour === peak?.hour && value > 0;
+          const ratio = hourDotRatio(hour.humanMsgs, maxHuman);
+          const radius = hourDotRadius(ratio);
           return (
-            // 原生 title 提示跟随鼠标（不再用固定在容器顶部的浮动层）
+            // 原生 title 提示跟随鼠标；密度点另有自己的 title（小时 + 人类消息条数）
             <div className="wl-hour-col" key={hour.hour} data-peak={isPeak || undefined} title={tip(hour)}>
-              {isPeak && hour.activeMs > 0 ? <div className="wl-hour-value">{formatHours(hour.activeMs)}</div> : null}
+              {hour.humanMsgs > 0 ? (
+                <span
+                  className="wl-hour-dot"
+                  data-kind="hour-dot"
+                  title={t("hour.dotTip", { hour: hour.hour, humans: formatInt(hour.humanMsgs) })}
+                  style={{
+                    width: `${(radius * 2).toFixed(1)}px`,
+                    height: `${(radius * 2).toFixed(1)}px`,
+                    top: `${HOUR_DOT_TOP}px`,
+                  }}
+                />
+              ) : null}
               <div className="wl-hour-track">
-                <div className="wl-hour-fill" style={{ height: `${Math.max(ratio * 100, hour.activeMs > 0 ? 3 : 0).toFixed(1)}%` }} />
+                {isPeak ? (
+                  <div className="wl-hour-value" style={{ bottom: `calc(${hourBarPercent(value, max).toFixed(1)}% + 3px)` }}>
+                    {valueText(peakValue)}
+                  </div>
+                ) : null}
+                <div className="wl-hour-fill" style={{ height: `${hourBarPercent(value, max).toFixed(1)}%` }} />
               </div>
               <div className="wl-hour-label">{hour.hour}</div>
             </div>
           );
         })}
       </div>
-      <div className="wl-legend">
-        <span>{t("hour.peak", { hour: peak?.hour ?? 0, active: formatHours(peak?.activeMs ?? 0) })}</span>
+      <div className="wl-legend wl-hour-legend">
+        <span className="wl-legend-item" data-kind="legend-measure">
+          <i className="wl-legend-bar" />
+          {t(measure === "turns" ? "hour.legend.turns" : "hour.legend.tokens")}
+        </span>
+        <span className="wl-legend-item" data-kind="legend-humans">
+          <i className="wl-legend-dot" />
+          {t("hour.legend.humans")}
+        </span>
+        <span className="wl-legend-item" data-kind="legend-peak">
+          <i className="wl-legend-peak" />
+          {t("hour.legend.peak")}
+        </span>
       </div>
+      {missing > 0 ? (
+        <p className="wl-hint wl-hour-note" data-kind="hour-tokens-missing">
+          {t("hour.missingTokens", { count: formatInt(missing) })}
+        </p>
+      ) : null}
     </>
   );
 }
@@ -1099,7 +1154,6 @@ function SkeletonBody({ t }) {
       <div className="wl-grid-2">
         <div className="wl-card">
           <h3>{t("hour.title")}</h3>
-          <p className="wl-hint">{t("hour.sub")}</p>
           <div className="wl-skeleton-area wl-skeleton-mid" />
         </div>
         <div className="wl-card">
@@ -1132,6 +1186,8 @@ function SkeletonBody({ t }) {
  */
 function ByDayView({ data, t }) {
   const [dailyMode, setDailyMode] = useState("calendar");
+  // 时刻分析口径：默认 Tokens（Token 产出），可切「轮次」（该小时 starts）
+  const [hourMeasure, setHourMeasure] = useState("tokens");
   const dailyBodyRef = useRef(null);
   const dailyBody = useChartSize(dailyBodyRef);
   const models = data.byModel ?? [];
@@ -1187,9 +1243,37 @@ function ByDayView({ data, t }) {
 
       <div className="wl-grid-2">
         <div className="wl-card">
-          <h3>{t("hour.title")}</h3>
-          <p className="wl-hint">{t("hour.sub")}</p>
-          <HourChart hours={data.byHour} t={t} />
+          <div className="wl-card-head">
+            <div>
+              <h3>{t("hour.title")}</h3>
+            </div>
+            <div className="wl-chips">
+              <button
+                type="button"
+                className="wl-chip"
+                data-measure="tokens"
+                data-active={hourMeasure === "tokens"}
+                onClick={() => setHourMeasure("tokens")}
+              >
+                {t("hour.measure.tokens")}
+              </button>
+              <button
+                type="button"
+                className="wl-chip"
+                data-measure="turns"
+                data-active={hourMeasure === "turns"}
+                onClick={() => setHourMeasure("turns")}
+              >
+                {t("hour.measure.turns")}
+              </button>
+            </div>
+          </div>
+          <HourChart
+            hours={data.byHour}
+            t={t}
+            measure={hourMeasure}
+            missing={data.diagnostics?.hourTokensSource?.missing ?? 0}
+          />
         </div>
         <div className="wl-card">
           <h3>{t("pie.title")}</h3>
