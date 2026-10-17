@@ -672,13 +672,18 @@ console.log("\n—— 通用 chip / 卡片头 / 样式收敛 ——");
   ok(/\.wl-chips \{[^}]*display: inline-flex[^}]*gap: 6px/s.test(stylesSource) && /\.wl-chip \{[^}]*height: 24px[^}]*border-radius: 999px/s.test(stylesSource), "尺寸 / 间距 / 圆角只有一份");
   ok(headSource.includes("export function CardHead") && (indexSource.match(/<CardHead/g) ?? []).length >= 5, "卡片头统一用 CardHead（5 处：每日 / 模型占比 / 时刻 / 工作区 / 模型用量）");
   ok(/\.wl-card-head \{[^}]*justify-content: space-between/s.test(stylesSource) && /\.wl-card-head-actions \{[^}]*margin-left: auto/s.test(stylesSource), "卡片头：标题在左、控件右上");
+  ok(headSource.includes("wl-card-head-hint") && /title=\{hint\}/.test(headSource) && !headSource.includes('<p className="wl-hint">'), "CardHead.hint 渲染在标题右侧，并带 title 保留全文（不再走标题下方段落）");
+  ok(/\.wl-card-head-text \{[^}]*align-items: baseline/s.test(stylesSource) && !/\.wl-card-head-text \.wl-hint/.test(stylesSource), "说明与标题同一行且基线对齐，旧的下方 hint 规则已删除");
+  ok(/\.wl-card-head-hint \{[^}]*font-size: 11px/s.test(stylesSource) && /\.wl-card-head-hint \{[^}]*white-space: nowrap/s.test(stylesSource) && /\.wl-card-head-hint \{[^}]*text-overflow: ellipsis/s.test(stylesSource) && /\.wl-card-head-hint \{[^}]*var\(--dsw-alias-label-tertiary/s.test(stylesSource), "hint 固定样式：11px muted 单行截断（宿主 token）");
+  ok(!/<h3>[\s\S]{0,160}<p className="wl-hint">/.test(indexSource), "标题下方不再有 hint 节点（统一到标题右侧）");
   eq((stylesSource.match(/\.wl-legend \{/g) ?? []).length, 1, "legend 基础样式只定义一次");
   ok(!/wl-hour-note|wl-fold-error|wl-model-note|wl-model-links|wl-model-raw/.test(stylesSource), "旧的一次性提示 class 已收敛到 .wl-status / .wl-hint 修饰");
   ok(/status|提示/.test(docsSource) && docsSource.includes("ChipGroup") && docsSource.includes("MetricBarCell") && docsSource.includes("CardHead"), "docs/ui-conventions.md 写明共享组件与固定结构");
+  ok(docsSource.includes("CardHead.hint") && docsSource.includes("禁止再在标题下方加 hint"), "docs 写明卡片说明统一放标题右侧、禁止标题下方加 hint");
   // 构建产物必须包含本轮 UI：防止忘记 node build.mjs 导致用户加载旧 bundle
   const builtSource = await readFile(new URL("../lib/client.js", import.meta.url), "utf8");
   ok(
-    builtSource.includes("calendar-cell") && builtSource.includes("active-bar-hit") && builtSource.includes("hour.calculating") && builtSource.includes("wl-card-head-actions"),
+    builtSource.includes("calendar-cell") && builtSource.includes("active-bar-hit") && builtSource.includes("hour.calculating") && builtSource.includes("wl-card-head-actions") && builtSource.includes("wl-card-head-hint"),
     "lib/client.js 含本轮 UI（构建产物与源码同步）",
   );
 }
@@ -776,9 +781,13 @@ console.log("\n—— 文案（i18n）一致性 ——");
   ok(!clientSource.includes("cal.hint"), "看板不再引用日历提示键");
   ok(!localesSource.includes("全历史；右侧") && !localesSource.includes("Full history; right edge"), "中英文提示文案均已从字典删除");
   const byDayBlock = clientSource.slice(clientSource.indexOf("function ByDayView"), clientSource.indexOf("function ByWorkspaceView"));
-  // 卡片头统一由 CardHead 渲染（结构在同名组件里）：标题在左、chips 在右，且本卡不传 hint
+  // 三张卡的说明都走 CardHead.hint（标题右侧），标题下方节点数为 0
   const dailyHead = byDayBlock.slice(byDayBlock.indexOf('title={t("chart.daily")}'), byDayBlock.indexOf('className="wl-daily-body"'));
-  ok(dailyHead.length > 0 && !dailyHead.includes("hint="), "「每日用量趋势」卡片头不再渲染提示段落（节点数 0）");
+  ok(dailyHead.length > 0 && dailyHead.includes('hint={t("chart.hint")}'), "「每日用量趋势」说明走 CardHead.hint（标题右侧，不在标题下方）");
+  const hourHead = byDayBlock.slice(byDayBlock.indexOf('title={t("hour.title")}'), byDayBlock.indexOf("<HourChart"));
+  ok(hourHead.length > 0 && hourHead.includes('hint={t(hourMeasure === "turns" ? "hour.hintTurns" : "hour.hint")}'), "「时刻分析」说明走 CardHead.hint，并随口径切换文案");
+  ok(byDayBlock.includes('<CardHead title={t("pie.model")} hint={t("pie.modelHint")} />'), "「模型 Token 占比」小标题改为 CardHead.hint（与另两张卡同一位置）");
+  ok(byDayBlock.includes('<CardHead title={t("pie.title")}>') && !byDayBlock.includes('hint={t("pie.byTime")}'), "「工作区占比」标题下方不再挂口径 hint（口径由右上 chips 表达）");
   ok(!/<p className="wl-hint">\s*<\/p>/.test(clientSource), "没有留下空提示标签");
   // 长文案检查：直接按行取字典里的值长度，避免动态正则转义
   const zhLines = localesSource.slice(zhStart, enStart).split("\n");
@@ -789,6 +798,17 @@ console.log("\n—— 文案（i18n）一致性 ——");
     return value.length > 80;
   });
   ok(longKeys.length === 0, "没有超长文案（>80 字，发布前应压短）", longKeys.join(", "));
+  // 卡片说明：只讲"看什么"，每条 ≤ 约 18 个汉字；口径细节留给 tooltip / 报告 footer
+  const hintKeys = ["chart.hint", "hour.hint", "hour.hintTurns", "pie.modelHint", "model.hint"];
+  const cjkCount = (text) => (text.match(/[\u4e00-\u9fff]/g) ?? []).length;
+  const hintValue = (key) => {
+    const line = zhLines.find((item) => item.trim().startsWith(`"${key}":`));
+    return line === undefined ? null : line.slice(line.indexOf(":") + 1).trim().replace(/,$/, "").replace(/^"|"$/g, "");
+  };
+  ok(hintKeys.every((key) => zhKeys.includes(key) && enKeys.includes(key)), "三张卡的说明键 zh/en 齐全（逐键对齐）");
+  const longHints = hintKeys.filter((key) => cjkCount(hintValue(key) ?? "") > 18);
+  ok(longHints.length === 0, "卡片说明 ≤ 18 个汉字（只解释看什么）", longHints.map((key) => `${key}=${hintValue(key)}`).join(", "));
+  ok(hintKeys.every((key) => clientSource.includes(`"${key}"`) || clientSource.includes(`t("${key}")`)), "说明键全部在客户端被引用（无死键）");
 }
 
 console.log("\n—— 时刻卡片（默认 Tokens / chips / 顶部密度点）——");
