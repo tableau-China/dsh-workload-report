@@ -16,11 +16,14 @@ const PALETTES = {
     input: "#3b82f6", output: "#10b981", cache: "#c7cbd1", accent: "#4f46e5", barBg: "#eef0f3",
     /** 周末柱：与看板同一个强调色（--dsw-static-amber-500 的浅色值）。 */
     weekend: "#f59e0b",
+    /** 时刻图峰值柱：深蓝（预览稿 #2f4bd8），与人类消息点的 amber 区分。 */
+    peak: "#2f4bd8",
   },
   dark: {
     bg: "#15171c", surface: "#1d2026", text: "#e8eaed", muted: "#9aa1ac", border: "#2b2f37",
     input: "#60a5fa", output: "#34d399", cache: "#4b5563", accent: "#818cf8", barBg: "#282c34",
     weekend: "#f59e0b",
+    peak: "#2f4bd8",
   },
 };
 
@@ -155,7 +158,8 @@ function hourChart(hours, palette, missing = 0) {
       const x = pad.left + step * index + (step - barW) / 2;
       const y = pad.top + innerH - h;
       const isPeak = hour.hour === peak?.hour && tokens > 0;
-      const fill = isPeak ? palette.weekend : palette.input;
+      // 峰值柱用深蓝（palette.peak），人类消息点用 amber（palette.weekend），两者不撞色
+      const fill = isPeak ? palette.peak : palette.input;
       const title = `${hour.hour}:00–${hour.hour}:59 · Token ${formatInt(tokens)} · 轮次 ${formatInt(hour.starts ?? 0)} · 人类消息 ${formatInt(humans)}`;
       // 柱自带 tooltip，且 24 根柱恒存在（0 值给 1px），悬停总有提示
       return `<g><rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${barW.toFixed(2)}" height="${Math.max(h, 1).toFixed(2)}" rx="2" fill="${fill}"><title>${escapeHtml(title)}</title></rect></g>`;
@@ -191,7 +195,7 @@ function hourChart(hours, palette, missing = 0) {
   const legend = `<div class="legend">
     <span><i style="background:${palette.input}"></i>Token 产出</span>
     <span><i style="background:${palette.weekend};border-radius:50%"></i>人类消息密度</span>
-    <span><i style="background:${palette.weekend}"></i>峰值</span>
+    <span><i style="background:${palette.peak}"></i>峰值</span>
   </div>`;
   const note = missing > 0 ? `<p class="empty" style="margin:6px 0 0">Token 未计入 ${formatInt(missing)} 个会话</p>` : "";
   return `<svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" role="img" aria-label="时刻分析：Token 产出与人类消息密度">

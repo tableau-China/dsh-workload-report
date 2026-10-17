@@ -1242,7 +1242,7 @@ function ByDayView({ data, t }) {
       </div>
 
       <div className="wl-grid-2">
-        <div className="wl-card">
+        <div className="wl-card wl-hour-card">
           <div className="wl-card-head">
             <div>
               <h3>{t("hour.title")}</h3>
@@ -1275,7 +1275,7 @@ function ByDayView({ data, t }) {
             missing={data.diagnostics?.hourTokensSource?.missing ?? 0}
           />
         </div>
-        <div className="wl-card">
+        <div className="wl-card wl-pie-card">
           <h3>{t("pie.title")}</h3>
           <WorkspacePie items={data.byWorkspace} t={t} />
         </div>

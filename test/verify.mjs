@@ -755,8 +755,9 @@ console.log("\n—— 时刻卡片（默认 Tokens / chips / 顶部密度点）�
   ok(/onClick=\{\(\) => setHourMeasure\("tokens"\)\}/.test(clientSource) && /onClick=\{\(\) => setHourMeasure\("turns"\)\}/.test(clientSource), "chips 点击切换 measure 状态");
   ok(/hourMeasure === "tokens"/.test(clientSource) && /hourMeasure === "turns"/.test(clientSource), "chip 选中态跟随 measure");
   ok(/className="wl-hour-grid"/.test(clientSource) && !clientSource.includes("hour.sub"), "卡片头无小标题、图表仍是 24 列网格");
-  ok(/\.wl-hour-grid \{[^}]*height: 196px/s.test(stylesSource), "图表总高 196px");
-  ok(/\.wl-hour-track \{[^}]*height: 116px/s.test(stylesSource) && /\.wl-hour-track \{[^}]*bottom: 16px/s.test(stylesSource), "柱形区 116px + 标签 16px → 顶部预留 64px");
+  ok(/\.wl-hour-card \{[^}]*display: flex[^}]*flex-direction: column/s.test(stylesSource) && /\.wl-hour-grid \{[^}]*flex: 1 1 auto/s.test(stylesSource) && /\.wl-hour-grid \{[^}]*min-height: 240px/s.test(stylesSource) && /\.wl-grid-2 > \.wl-pie-card \{[^}]*display: flex/s.test(stylesSource), "图表区 flex 填充卡片（最小 240px），右侧饼图同行拉伸并居中");
+  ok(/\.wl-hour-track \{[^}]*top: 64px/s.test(stylesSource) && /\.wl-hour-track \{[^}]*bottom: 16px/s.test(stylesSource) && !/\.wl-hour-track \{[^}]*height: 116px/s.test(stylesSource), "柱形区从顶部 64px 撑到底部 16px（随卡片高度伸缩）");
+  ok(/\.wl-hour-col\[data-peak\] \.wl-hour-fill \{[^}]*var\(--dsw-static-blue-600/s.test(stylesSource) && /\.wl-hour-dot \{[^}]*var\(--dsw-static-amber-500/s.test(stylesSource) && /\.wl-hour-legend \.wl-legend-peak \{[^}]*var\(--dsw-static-blue-600/s.test(stylesSource) && /peak: "#2f4bd8"/.test(reportSource) && /isPeak \? palette\.peak : palette\.input/.test(reportSource), "峰值柱/图例用深蓝 token，人类消息点用 amber token（报告同色）");
   ok(/\.wl-hour-dot \{[^}]*top: 14px/s.test(stylesSource), "密度点 CSS 上沿固定 14px");
   ok(clientSource.includes("hourDotRadius") && clientSource.includes("hour.dotTip"), "密度点用统一半径函数，并带「小时 + 人类消息条数」title");
   ok(clientSource.includes("wl-hour-legend") && clientSource.includes("hour.legend.tokens") && clientSource.includes("hour.legend.humans") && clientSource.includes("hour.legend.peak"), "图例三项：Token 产出 / 人类消息密度 / 峰值");
