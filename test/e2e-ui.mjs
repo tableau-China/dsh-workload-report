@@ -388,13 +388,13 @@ try {
 
   // 环形图切换 按时长 / 按 Token
   await page.evaluate(() => {
-    const chip = [...document.querySelectorAll(".wl-chips-inline .wl-chip")].find((node) => /Token/i.test(node.textContent || ""));
+    const chip = [...document.querySelectorAll(".wl-grid-2 > .wl-pie-card .wl-card-head .wl-chip")].find((node) => /Token/i.test(node.textContent || ""));
     chip?.click();
   });
   await sleep(800);
   const pieAfter = await page.evaluate(() => ({
     center: document.querySelector(".wl-pie-wrap svg text")?.textContent ?? "",
-    active: document.querySelector(".wl-chips-inline .wl-chip[data-active='true']")?.textContent ?? "",
+    active: document.querySelector(".wl-grid-2 > .wl-pie-card .wl-card-head .wl-chip[data-active='true']")?.textContent ?? "",
   }));
   ok(/Token/i.test(pieAfter.active), "环形图可切到「按 Token」", JSON.stringify(pieAfter));
 
@@ -414,20 +414,21 @@ try {
   // 模型维度是后台渐进回填的（要读事件日志），所以先等模型表出现
   await page.waitForFunction(() => document.querySelectorAll(".wl-model-table tbody tr").length > 0, { timeout: 900000 });
   const modelBlock = await page.evaluate(() => ({
-    // 卡片里不再重复「模型用量」标题（页签已表达）：同一个卡片里不应再有这个 h3
-    duplicatedTitle: [...document.querySelectorAll(".wl-card h3")].some((n) => /模型用量|Model usage/.test(n.textContent || "")),
+    // 卡片头与其它卡一致：有「模型用量」标题，控件在右上
+    cardTitle: [...document.querySelectorAll(".wl-card-head h3")].map((n) => n.textContent || "").find((text) => /模型用量|Model usage/.test(text)) ?? null,
+    headChips: document.querySelectorAll(".wl-card-head .wl-chips .wl-chip").length,
     // 界面语言可能是中文或英文，两种都要认
     treemapTitle: [...document.querySelectorAll(".wl-card h4")].map((n) => n.textContent || "").some((text) => /模型占比|Model share/.test(text)),
     tiles: document.querySelectorAll('rect[data-kind="model"]').length,
     others: document.querySelectorAll('rect[data-kind="others"]').length,
     rows: document.querySelectorAll(".wl-model-table tbody tr").length,
-    links: [...document.querySelectorAll(".wl-model-links a")].map((a) => a.getAttribute("href") ?? ""),
+    links: [...document.querySelectorAll(".wl-hint a")].map((a) => a.getAttribute("href") ?? ""),
     costs: [...document.querySelectorAll(".wl-model-table tbody tr")].map((tr) => tr.lastElementChild?.textContent ?? ""),
     hits: [...document.querySelectorAll(".wl-model-table tbody tr")].map((tr) => tr.children[6]?.textContent ?? ""),
     trendBars: document.querySelectorAll(".wl-model-grid svg rect").length,
     trendLabels: [...document.querySelectorAll(".wl-model-grid svg text")].map((n) => n.textContent ?? "").filter((x) => /\d\d-\d\d/.test(x)).length,
   }));
-  ok(!modelBlock.duplicatedTitle, "模型卡片里不再重复「模型用量」标题（页签已表达）");
+  ok(modelBlock.cardTitle !== null && modelBlock.headChips === 3, "模型卡片头与其它卡一致（标题 + 右上 3 个 chips）", JSON.stringify({ title: modelBlock.cardTitle, chips: modelBlock.headChips }));
   ok(modelBlock.treemapTitle, "treemap 带小标题「模型占比 · 面积 = Token」");
   ok(modelBlock.tiles > 0, "模型 treemap 渲染出矩形", String(modelBlock.tiles));
   ok(modelBlock.rows > 0, "模型明细表有数据行", String(modelBlock.rows));

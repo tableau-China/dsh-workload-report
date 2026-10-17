@@ -4,10 +4,11 @@
 import { readFile, rm } from "node:fs/promises";
 
 import { aggregate, dateKey, present, resolveRange, rowFromSession, workspaceLabel } from "../src/aggregate.js";
-import { escapeHtml, formatHours, formatMoney, formatTokens } from "../src/format.js";
+import { escapeHtml, formatHours, formatInt, formatMoney, formatTokens } from "../src/format.js";
 import { barPercent } from "../src/client/bar-width.js";
 import { renderReport } from "../src/report-html.js";
 import { balanceChip } from "../src/client/balance.js";
+import { hourTokensNote } from "../src/client/hour-status.js";
 import { translate } from "../src/client/locales.js";
 import {
   DEFAULT_PRICING, DEFAULT_WAIT_TOOLS, allocateLlmMs, cacheHitRate, costOf, emptyModelBucket, foldSessionModels,
@@ -652,6 +653,50 @@ eq(barPercent(1200, 1000), 100, "异常值夹紧到 100%");
   ok(cellSource.includes('from "./bar-width.js"') && widthSource.includes("export function barPercent"), "宽度计算只有一份实现");
   ok(/key: "tokens", labelKey: "table.tokens"/.test(indexSource), "日期明细覆盖 Token 合计列");
 }
+
+console.log("\n—— 通用 chip / 卡片头 / 样式收敛 ——");
+{
+  const indexSource = await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8");
+  const chipsSource = await readFile(new URL("../src/client/chips.jsx", import.meta.url), "utf8");
+  const headSource = await readFile(new URL("../src/client/card-head.jsx", import.meta.url), "utf8");
+  const stylesSource = await readFile(new URL("../src/client/styles.js", import.meta.url), "utf8");
+  const docsSource = await readFile(new URL("../docs/ui-conventions.md", import.meta.url), "utf8");
+  ok(chipsSource.includes("export function ChipGroup") && chipsSource.includes("export function Chip"), "通用 chip 组件存在（ChipGroup / Chip）");
+  ok(indexSource.includes('from "./chips.jsx"') && indexSource.includes('from "./card-head.jsx"'), "看板从共享组件导入，不复制实现");
+  ok((indexSource.match(/<ChipGroup/g) ?? []).length >= 5, "ChipGroup 至少 5 处：顶部范围 / 每日 / 时刻 / 工作区 / 模型");
+  eq((indexSource.match(/<button[^>]*className="wl-chip"/g) ?? []).length, 0, "index.jsx 不再手写 wl-chip 按钮");
+  ok(!/wl-chip-active|wl-chips-inline/.test(indexSource) && !/wl-chip-active|wl-chips-inline/.test(stylesSource), "没有 wl-chip-active / wl-chips-inline 变体 class");
+  ok(/className="wl-chip"/.test(chipsSource) && /data-active={active \? "true"/.test(chipsSource), "chip 的默认/选中态由 data-active 驱动");
+  ok(/\.wl-chip \{[^}]*border: 1px solid var\(--dsw-alias-border-l2/s.test(stylesSource) && /\.wl-chip \{[^}]*background: color-mix\(in srgb, var\(--dsw-static-deepseek-500[^}]*var\(--dsw-alias-bg-layer-2/s.test(stylesSource), "默认态：浅底 + 边框（token 混色，不写死色值）");
+  ok(/\.wl-chip\[data-active="true"\] \{[^}]*background: var\(--dsw-static-deepseek-500/s.test(stylesSource) && /\.wl-chip\[data-active="true"\] \{[^}]*color: var\(--dsw-alias-label-primary-inverted/s.test(stylesSource), "选中态：主题强调色实底 + 白字");
+  ok(/\.wl-chips \{[^}]*display: inline-flex[^}]*gap: 6px/s.test(stylesSource) && /\.wl-chip \{[^}]*height: 24px[^}]*border-radius: 999px/s.test(stylesSource), "尺寸 / 间距 / 圆角只有一份");
+  ok(headSource.includes("export function CardHead") && (indexSource.match(/<CardHead/g) ?? []).length >= 5, "卡片头统一用 CardHead（5 处：每日 / 模型占比 / 时刻 / 工作区 / 模型用量）");
+  ok(/\.wl-card-head \{[^}]*justify-content: space-between/s.test(stylesSource) && /\.wl-card-head-actions \{[^}]*margin-left: auto/s.test(stylesSource), "卡片头：标题在左、控件右上");
+  eq((stylesSource.match(/\.wl-legend \{/g) ?? []).length, 1, "legend 基础样式只定义一次");
+  ok(!/wl-hour-note|wl-fold-error|wl-model-note|wl-model-links|wl-model-raw/.test(stylesSource), "旧的一次性提示 class 已收敛到 .wl-status / .wl-hint 修饰");
+  ok(/status|提示/.test(docsSource) && docsSource.includes("ChipGroup") && docsSource.includes("MetricBarCell") && docsSource.includes("CardHead"), "docs/ui-conventions.md 写明共享组件与固定结构");
+  // 构建产物必须包含本轮 UI：防止忘记 node build.mjs 导致用户加载旧 bundle
+  const builtSource = await readFile(new URL("../lib/client.js", import.meta.url), "utf8");
+  ok(
+    builtSource.includes("calendar-cell") && builtSource.includes("active-bar-hit") && builtSource.includes("hour.calculating") && builtSource.includes("wl-card-head-actions"),
+    "lib/client.js 含本轮 UI（构建产物与源码同步）",
+  );
+}
+
+console.log("\n—— 图表 tooltip 逐元素（原生 title）——");
+{
+  const indexSource = await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8");
+  const localesSource = await readFile(new URL("../src/client/locales.js", import.meta.url), "utf8");
+  ok(indexSource.includes('data-kind="calendar-cell"') && /data-kind="calendar-cell"[\s\S]{0,700}<title>/.test(indexSource), "日历每格 rect 自带 title（不挂父 g）");
+  ok(indexSource.includes('data-kind="active-bar-hit"') && /data-kind="active-bar-hit"[\s\S]{0,500}<title>/.test(indexSource), "柱状图每根柱有全高命中区 + title（1px 柱也能 hover）");
+  ok(indexSource.includes("weekend: weekend ? t(\"tip.weekend\")") && indexSource.includes("tip.weekday") && indexSource.includes("tip.week"), "柱/日历/周几轴/周标签都有可读提示");
+  ok(!indexSource.includes('t("tip.day"') && !localesSource.includes('"tip.day"'), "旧的 tip.day 三行文案已删除（统一 tip.daily）");
+  ok(/"tip.daily": "\{date\} · 活跃 \{active\} · Token \{tokens\}\{weekend\}"/.test(localesSource), "tip.daily = 日期 · 活跃 x · Token y[ · 周末]");
+  ok(/"tip.weekend": " · 周末"/.test(localesSource) && /"tip.weekend": " · weekend"/.test(localesSource), "zh/en 都有周末后缀");
+  // 审计发现的父节点 title：模型 treemap 与模型趋势都必须挂在实际形状上
+  ok(/data-kind=\{rect\.item === null \? "others" : "model"\}[\s\S]{0,600}<title>/.test(indexSource), "模型 treemap 的 title 挂在 rect（不是 g）");
+  ok(/data-kind="model-trend-hit"[\s\S]{0,300}<title>/.test(indexSource), "模型趋势每列有命中区 title（不是 g）");
+}
 eq(formatTokens(1500), "1.50 K", "Token 紧凑格式");
 
 // ---------------------------------------------------------------- 报告
@@ -696,11 +741,12 @@ ok(!/https?:\/\//.test(html.replace(/https?:\/\/www\.w3\.org/g, "")), "无外部
 console.log("\n—— 文案（i18n）一致性 ——");
 {
   const localesSource = await readFile(new URL("../src/client/locales.js", import.meta.url), "utf8");
-  // 文案引用可能出现在 index.jsx 或拆分出去的客户端模块（balance.js）；一起扫描，死键检查才完整
-  const clientSource = [
-    await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8"),
-    await readFile(new URL("../src/client/balance.js", import.meta.url), "utf8"),
-  ].join("\n");
+  // 文案引用可能出现在任意客户端模块（chips / card-head / hour-status / balance…）；
+  // 全部一起扫描，死键检查才完整（否则新组件里的 key 会被误判为死键）。
+  const clientModules = ["index.jsx", "balance.js", "chips.jsx", "card-head.jsx", "hour-status.js", "bar-cell.jsx"];
+  const clientSource = (await Promise.all(
+    clientModules.map((name) => readFile(new URL(`../src/client/${name}`, import.meta.url), "utf8")),
+  )).join("\n");
   const zhStart = localesSource.indexOf("export const zh = {");
   const enStart = localesSource.indexOf("export const en = {");
   const keyOf = (block) => [...block.matchAll(/^\s*"([^"]+)":/gm)].map((match) => match[1]);
@@ -730,8 +776,9 @@ console.log("\n—— 文案（i18n）一致性 ——");
   ok(!clientSource.includes("cal.hint"), "看板不再引用日历提示键");
   ok(!localesSource.includes("全历史；右侧") && !localesSource.includes("Full history; right edge"), "中英文提示文案均已从字典删除");
   const byDayBlock = clientSource.slice(clientSource.indexOf("function ByDayView"), clientSource.indexOf("function ByWorkspaceView"));
-  const dailyHead = byDayBlock.slice(byDayBlock.indexOf('className="wl-card-head"'), byDayBlock.indexOf('className="wl-daily-body"'));
-  ok(dailyHead.length > 0 && !dailyHead.includes("wl-hint"), "「每日用量趋势」卡片头不再渲染提示段落（节点数 0）");
+  // 卡片头统一由 CardHead 渲染（结构在同名组件里）：标题在左、chips 在右，且本卡不传 hint
+  const dailyHead = byDayBlock.slice(byDayBlock.indexOf('title={t("chart.daily")}'), byDayBlock.indexOf('className="wl-daily-body"'));
+  ok(dailyHead.length > 0 && !dailyHead.includes("hint="), "「每日用量趋势」卡片头不再渲染提示段落（节点数 0）");
   ok(!/<p className="wl-hint">\s*<\/p>/.test(clientSource), "没有留下空提示标签");
   // 长文案检查：直接按行取字典里的值长度，避免动态正则转义
   const zhLines = localesSource.slice(zhStart, enStart).split("\n");
@@ -747,6 +794,7 @@ console.log("\n—— 文案（i18n）一致性 ——");
 console.log("\n—— 时刻卡片（默认 Tokens / chips / 顶部密度点）——");
 {
   const clientSource = await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8");
+  const statusSource = await readFile(new URL("../src/client/hour-status.js", import.meta.url), "utf8");
   const stylesSource = await readFile(new URL("../src/client/styles.js", import.meta.url), "utf8");
   const reportSource = await readFile(new URL("../src/report-html.js", import.meta.url), "utf8");
   const hostSource = await readFile(new URL("../index.js", import.meta.url), "utf8");
@@ -761,7 +809,19 @@ console.log("\n—— 时刻卡片（默认 Tokens / chips / 顶部密度点）�
   ok(/\.wl-hour-dot \{[^}]*top: 14px/s.test(stylesSource), "密度点 CSS 上沿固定 14px");
   ok(clientSource.includes("hourDotRadius") && clientSource.includes("hour.dotTip"), "密度点用统一半径函数，并带「小时 + 人类消息条数」title");
   ok(clientSource.includes("wl-hour-legend") && clientSource.includes("hour.legend.tokens") && clientSource.includes("hour.legend.humans") && clientSource.includes("hour.legend.peak"), "图例三项：Token 产出 / 人类消息密度 / 峰值");
-  ok(clientSource.includes("data-kind=\"hour-tokens-missing\"") && clientSource.includes("hour.missingTokens"), "读不出事件的会话在卡片里标注「未计入 N 个会话」");
+  ok(clientSource.includes("data-kind=\"hour-tokens-missing\"") && statusSource.includes("hour.missingTokens"), "读不出事件的会话在卡片里标注「未计入 N 个会话」");
+  // 状态提示判据：只读 diagnostics（modelFold / hourTokensSource），不在组件里写死
+  const tZh = (key, vars) => translate("zh", key, vars);
+  const runningNote = hourTokensNote({ modelFold: { running: true }, hourTokensSource: { missing: 4 } }, tZh, String);
+  eq(runningNote?.state, "running", "回填/重折进行中 → running");
+  eq(runningNote?.text, "正在计算中……", "回填/重折进行中文案");
+  const idleNote = hourTokensNote({ modelFold: { running: false }, hourTokensSource: { missing: 4 } }, tZh, (value) => formatInt(value));
+  eq(idleNote?.state, "idle", "空闲且有未计入 → idle");
+  eq(idleNote?.text, "Token 未计入 4 个会话", "空闲且 N>0 文案（N 来自 diagnostics）");
+  eq(hourTokensNote({ modelFold: { running: false }, hourTokensSource: { missing: 0 } }, tZh, String), null, "空闲且 N=0：整条不渲染（返回 null）");
+  ok(statusSource.includes("diagnostics?.modelFold") && statusSource.includes("hourTokensSource?.missing"), "状态判据来自 diagnostics，不写死");
+  ok(/\.wl-hour-legend \{[^}]*justify-content: space-between/s.test(stylesSource), "图例行 space-between（左侧图例、右侧状态）");
+  ok(/\.wl-hour-legend \.wl-status \{[^}]*margin-left: auto/s.test(stylesSource), "状态提示靠右对齐");
   ok(reportSource.includes("hourDotRadius") && reportSource.includes("人类消息密度") && reportSource.includes("Token 产出"), "报告时刻图同步 Tokens 口径与密度点");
   ok(/const INDEX_VERSION = 7\b/.test(hostSource), "INDEX_VERSION 6 → 7（新增字段必须重折）");
   ok(hostSource.includes('"hourTokens"') && hostSource.includes('"hourHumanMsgs"') && /MODEL_ROW_FIELDS[\s\S]{0,400}hourTokens/.test(hostSource), "hourTokens / hourHumanMsgs 随行持久化并由 carryModelFields 搬运");
