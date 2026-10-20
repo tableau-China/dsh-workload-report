@@ -1803,7 +1803,7 @@ console.log("\n—— AI 用户画像（默认关闭 / 缓存 / 降级 / 超时�
 
 /** llm 服务桩：listProviders / listModels / prepareCall / stream 全本地，spy 记录次数。 */
 function makeLlm({ providers = [{ id: "p" }], models = [{ id: "m" }], text = "", finishKind = "stop", hang = false, prepareError = null } = {}) {
-  const spy = { providers: 0, models: 0, prepare: 0, stream: 0, payload: null };
+  const spy = { providers: 0, models: 0, prepare: 0, stream: 0, payload: null, prepareConfig: null };
   const service = {
     listProviders() {
       spy.providers += 1;
@@ -1815,6 +1815,7 @@ function makeLlm({ providers = [{ id: "p" }], models = [{ id: "m" }], text = "",
     },
     async prepareCall(config) {
       spy.prepare += 1;
+      spy.prepareConfig = { ...config };
       if (prepareError !== null) throw prepareError;
       if (hang) return new Promise(() => {});
       return {
@@ -1974,6 +1975,7 @@ async function cleanupProfile(host, body) {
   ok(elapsed < 1000, "超时：路由在 1s 内返回（不悬挂）", elapsed + "ms");
   eq(res.body.source, "local", "超时：降级 source=local");
   eq(res.body.code, "AI_TIMEOUT", "超时：code=AI_TIMEOUT");
+  eq(res.body.diagnostic?.error?.stage, "prepareCall", "超时：stage 标记卡住的阶段");
   eq(llm.spy.prepare, 1, "超时：模型准备只发起一次");
   await cleanupProfile(host, res.body);
 }
@@ -2028,6 +2030,123 @@ async function cleanupProfile(host, body) {
   eq(res.body.source, "llm", "默认模型：成功 source=llm");
   eq(res.body.model.provider, "p", "默认模型：provider 来自 agentDefaultModel");
   eq(res.body.model.model, "m", "默认模型：model 来自 agentDefaultModel");
+  eq(res.body.route.origin, "agentDefaultModel", "默认模型：route.origin=agentDefaultModel");
+  await cleanupProfile(host, res.body);
+}
+
+// 8) 失败诊断：保留底层 code / message / stage，并暴露 route / precheck
+{
+  const prepareError = new Error("X");
+  prepareError.code = "PROVIDER_NOT_FOUND";
+  const llm = makeLlm({ prepareError });
+  const host = bootProfile({ llm: llm.service, aiProfile: { provider: "p", model: "m" } });
+  await waitHealth(host.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "诊断失败实例索引完成");
+  const res = await routeJson(host.routeList, "/workload-report/v1/profile?days=30&tz=UTC");
+  eq(res.status, 200, "诊断：失败仍返回 200（不抛给 UI）");
+  eq(res.body.source, "local", "诊断：失败降级 source=local");
+  eq(res.body.code, "AI_FAILED", "诊断：映射码 AI_FAILED");
+  eq(res.body.diagnostic?.source, "local", "诊断：diagnostic.source=local");
+  eq(res.body.diagnostic?.code, "AI_FAILED", "诊断：diagnostic.code=映射码");
+  eq(res.body.diagnostic?.error?.code, "PROVIDER_NOT_FOUND", "诊断：底层错误码被保留（PROVIDER_NOT_FOUND）");
+  eq(res.body.diagnostic?.error?.stage, "prepareCall", "诊断：stage 标记 prepareCall");
+  ok(String(res.body.diagnostic?.error?.message ?? "").includes("X"), "诊断：保留底层 message");
+  eq(
+    JSON.stringify(Object.keys(res.body.diagnostic.error).sort()),
+    JSON.stringify(["code", "message", "stage"]),
+    "诊断：diagnostic.error 固定 code / message / stage",
+  );
+  eq(res.body.route?.provider, "p", "诊断：route.provider 可见");
+  eq(res.body.route?.model, "m", "诊断：route.model 可见");
+  eq(res.body.route?.origin, "config", "诊断：route.origin=config");
+  eq(JSON.stringify(res.body.precheck?.providers), JSON.stringify(["p"]), "诊断：precheck.providers 来自 listProviders");
+  eq(JSON.stringify(res.body.precheck?.models), JSON.stringify(["m"]), "诊断：precheck.models 来自 listModels");
+  ok(Array.isArray(res.body.traits) && res.body.traits.length >= 3 && res.body.traits.length <= 5, "诊断：默认路径仍为 3–5 条本地特征");
+  ok(typeof res.body.advice === "string" && res.body.advice.length > 0, "诊断：默认路径仍有 1 条本地建议");
+
+  const health = await routeJson(host.routeList, "/workload-report/v1/health");
+  const aiProfile = health.body.diagnostics.aiProfile;
+  eq(
+    JSON.stringify(Object.keys(aiProfile).sort()),
+    JSON.stringify(["enabled", "lastAt", "lastCode", "lastError", "lastStage", "route"]),
+    "/health：aiProfile 字段固定",
+  );
+  eq(aiProfile.enabled, true, "/health：aiProfile.enabled=true");
+  eq(aiProfile.lastCode, "AI_FAILED", "/health：lastCode=AI_FAILED");
+  eq(aiProfile.lastStage, "prepareCall", "/health：lastStage=prepareCall");
+  ok(String(aiProfile.lastError ?? "").includes("X"), "/health：lastError 保留底层 message");
+  ok(aiProfile.lastAt > 0, "/health：lastAt 有值");
+  eq(aiProfile.route?.provider, "p", "/health：route.provider 与 /profile 同源");
+  await cleanupProfile(host, res.body);
+}
+
+// 9) 诊断脱敏与截断：token / key 字样与明文密钥都不出现，message ≤ 300 字符
+{
+  const prepareError = new Error("X token=sk-live-abc123 key=super-secret " + "a".repeat(400));
+  prepareError.code = "PROVIDER_NOT_FOUND";
+  const llm = makeLlm({ prepareError });
+  const host = bootProfile({ llm: llm.service, aiProfile: { provider: "p", model: "m" } });
+  await waitHealth(host.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "脱敏实例索引完成");
+  const res = await routeJson(host.routeList, "/workload-report/v1/profile?days=30&tz=UTC");
+  const message = String(res.body.diagnostic?.error?.message ?? "");
+  ok(message.includes("X"), "脱敏：保留非敏感信息");
+  ok(!/token|key/i.test(message), "脱敏：message 不含 key / token 字样", message);
+  ok(!message.includes("sk-live-abc123") && !message.includes("super-secret"), "脱敏：不泄露明文密钥");
+  const chars = Array.from(message).length;
+  ok(chars > 0 && chars <= 300, "截断：message 不超过 300 字符", String(chars));
+  const health = await routeJson(host.routeList, "/workload-report/v1/health");
+  const lastError = String(health.body.diagnostics.aiProfile.lastError ?? "");
+  ok(!/token|key/i.test(lastError) && Array.from(lastError).length <= 300, "/health：lastError 同样脱敏并截断");
+  await cleanupProfile(host, res.body);
+}
+
+// 10) 调试用 provider/model 查询覆盖：只影响本次请求，且不写缓存
+{
+  const llm = makeLlm({
+    providers: [{ id: "p" }, { id: "q" }],
+    models: [{ id: "m" }, { id: "n" }],
+    text: JSON.stringify({ traits: ["a", "b", "c"], advice: "d" }),
+  });
+  const host = bootProfile({ llm: llm.service, aiProfile: { provider: "p", model: "m" } });
+  await waitHealth(host.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "调试覆盖实例索引完成");
+  const res = await routeJson(host.routeList, "/workload-report/v1/profile?days=30&tz=UTC&provider=q&model=n");
+  eq(res.body.source, "llm", "查询覆盖：成功 source=llm");
+  eq(res.body.route?.origin, "query", "查询覆盖：route.origin=query");
+  eq(llm.spy.prepareConfig?.provider, "q", "查询覆盖：prepareCall 收到 provider=q");
+  eq(llm.spy.prepareConfig?.model, "n", "查询覆盖：prepareCall 收到 model=n");
+  eq(res.body.model?.provider, "q", "查询覆盖：响应 model.provider=q");
+  eq(res.body.model?.model, "n", "查询覆盖：响应 model.model=n");
+  ok(res.body.precheck?.models?.includes("n"), "查询覆盖：precheck.models 含调试模型");
+
+  const normal = await routeJson(host.routeList, "/workload-report/v1/profile?days=30&tz=UTC");
+  eq(normal.body.cached, false, "查询覆盖：不写缓存，正常请求重新生成");
+  eq(llm.spy.prepareConfig?.provider, "p", "查询覆盖：正常路径仍用配置 provider=p");
+  eq(normal.body.route?.origin, "config", "查询覆盖：正常路径 origin=config");
+  eq(llm.spy.prepare, 2, "查询覆盖：调试请求与正常请求各调用一次模型");
+  await cleanupProfile(host, res.body);
+  await cleanupProfile(host, normal.body);
+}
+
+// 11) 现场场景：宿主默认模型 provider 不在 listProviders 里
+{
+  const llm = makeLlm({ providers: [{ id: "deepseek-official" }], models: [{ id: "deepseek-flash" }] });
+  const host = bootProfile({
+    llm: llm.service,
+    defaultSelection: { provider: "magpie", model: "workbuddy-ai/default-model" },
+  });
+  await waitHealth(host.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "未注册 provider 实例索引完成");
+  const res = await routeJson(host.routeList, "/workload-report/v1/profile?days=30&tz=UTC");
+  eq(res.body.code, "MISSING_CREDENTIAL", "未注册 provider：code=MISSING_CREDENTIAL");
+  eq(res.body.diagnostic?.error?.code, "MISSING_CREDENTIAL", "未注册 provider：底层 code 可见");
+  eq(res.body.diagnostic?.error?.stage, "route", "未注册 provider：stage=route");
+  eq(res.body.route?.provider, "magpie", "未注册 provider：route 仍显示默认 provider");
+  eq(res.body.route?.model, "workbuddy-ai/default-model", "未注册 provider：route 仍显示默认 model");
+  eq(res.body.route?.origin, "agentDefaultModel", "未注册 provider：origin=agentDefaultModel");
+  eq(JSON.stringify(res.body.precheck?.providers), JSON.stringify(["deepseek-official"]), "未注册 provider：precheck 暴露已注册列表");
+  eq(res.body.precheck?.models?.length, 0, "未注册 provider：models 为空数组（不伪造）");
+  const health = await routeJson(host.routeList, "/workload-report/v1/health");
+  eq(health.body.diagnostics.aiProfile.lastCode, "MISSING_CREDENTIAL", "/health：现场场景 lastCode 可见");
+  eq(health.body.diagnostics.aiProfile.lastStage, "route", "/health：现场场景 lastStage=route");
+  eq(health.body.diagnostics.aiProfile.route?.provider, "magpie", "/health：现场场景 route.provider 可见");
   await cleanupProfile(host, res.body);
 }
 
