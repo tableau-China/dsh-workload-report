@@ -15,6 +15,7 @@ import { MetricBarCell } from "./bar-cell.jsx";
 import { Chip, ChipGroup } from "./chips.jsx";
 import { CardHead } from "./card-head.jsx";
 import { ProfileCard } from "./profile-card.jsx";
+import { SESSION_PAGE_SECTIONS } from "./session-layout.js";
 import { hourTokensNote } from "./hour-status.js";
 import { sectorPath } from "../sector-path.js";
 import {
@@ -1253,7 +1254,7 @@ function SkeletonBody({ t }) {
  *   4) 「按日期明细」默认折叠
  * 模型明细 / treemap / 按日趋势已移到独立页签「模型用量」。
  */
-function ByDayView({ data, t, lang, days, scope, allTime = false }) {
+function ByDayView({ data, t }) {
   const [dailyMode, setDailyMode] = useState("calendar");
   // 时刻分析口径：默认 Tokens（Token 产出），可切「轮次」（该小时 starts）
   const [hourMeasure, setHourMeasure] = useState("tokens");
@@ -1388,9 +1389,6 @@ function ByDayView({ data, t, lang, days, scope, allTime = false }) {
           </table>
         </div>
       </details>
-
-      {/* AI 用户画像：默认关闭时组件 probe 到 enabled=false，整卡不渲染 */}
-      <ProfileCard t={t} lang={lang} days={days} scope={scope} allTime={allTime} tz={localTimeZone()} />
     </>
   );
 }
@@ -1522,7 +1520,7 @@ function sessionMetric(row, key) {
  *   轮次 / 步骤 / 活跃时长 / 输出 四列带浅色条形图（宽度 ＝ 该行数值占本列最大值的比例），
  *   数字显示在条形图内；这四列的表头可点击排序（降序 → 升序 → 恢复默认），排序只是视图内状态。
  */
-function BySessionView({ data, t }) {
+function BySessionView({ data, t, lang = "zh", days = 0, scope = "all", allTime = false }) {
   const [sort, setSort] = useState(null);
   const rows = useMemo(() => {
     const list = [...(data.bySession ?? [])];
@@ -1542,52 +1540,73 @@ function BySessionView({ data, t }) {
       return previous.dir === "desc" ? { key, dir: "asc" } : null;
     });
 
+  // 区块顺序由 SESSION_PAGE_SECTIONS 决定（与 verify 的 DOM 顺序断言同源）：
+  // 会话表在前，AI 画像卡紧随其后，同一滚动流。
   return (
-    <div className="wl-card">
-      <h3>{t("tab.bySession")}</h3>
-      <table className="wl-table">
-        <thead>
-          <tr>
-            <th>{t("table.session")}</th><th>{t("table.workspace")}</th><th>{t("table.date")}</th>
-            {SESSION_METRICS.map(({ key, labelKey }) => (
-              <th key={key} aria-sort={sort?.key === key ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}>
-                <button type="button" className="wl-th-sort" data-active={sort?.key === key || undefined} title={t("table.sortHint")} onClick={() => toggleSort(key)}>
-                  {t(labelKey)}
-                  <span className="wl-sort-mark" aria-hidden="true">{sort?.key === key ? (sort.dir === "asc" ? "▲" : "▼") : "↕"}</span>
-                </button>
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.length === 0 ? (
-            <tr><td colSpan={7} className="wl-state">{t("state.empty")}</td></tr>
-          ) : (
-            rows.map((row) => (
-              <tr key={row.id}>
-                <td className="wl-name" title={row.title}>{row.title || "(无标题)"}</td>
-                <td className="wl-name">{row.workspaceLabel}</td>
-                <td>{row.date}</td>
-                {SESSION_METRICS.map(({ key, labelKey, format }) => {
-                  const value = sessionMetric(row, key);
-                  return (
-                    <td key={key}>
-                      <MetricBarCell
-                        value={value}
-                        max={maxima[key]}
-                        kind={key}
-                        text={format(value)}
-                        title={`${t(labelKey)} ${format(value)}`}
-                      />
-                    </td>
-                  );
-                })}
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
-    </div>
+    <>
+      {SESSION_PAGE_SECTIONS.map((section) => {
+        if (section === "sessions") {
+          return (
+            <div className="wl-card" key="sessions" data-section="sessions">
+              <h3>{t("tab.bySession")}</h3>
+              <table className="wl-table">
+                <thead>
+                  <tr>
+                    <th>{t("table.session")}</th><th>{t("table.workspace")}</th><th>{t("table.date")}</th>
+                    {SESSION_METRICS.map(({ key, labelKey }) => (
+                      <th key={key} aria-sort={sort?.key === key ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}>
+                        <button type="button" className="wl-th-sort" data-active={sort?.key === key || undefined} title={t("table.sortHint")} onClick={() => toggleSort(key)}>
+                          {t(labelKey)}
+                          <span className="wl-sort-mark" aria-hidden="true">{sort?.key === key ? (sort.dir === "asc" ? "▲" : "▼") : "↕"}</span>
+                        </button>
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.length === 0 ? (
+                    <tr><td colSpan={7} className="wl-state">{t("state.empty")}</td></tr>
+                  ) : (
+                    rows.map((row) => (
+                      <tr key={row.id}>
+                        <td className="wl-name" title={row.title}>{row.title || "(无标题)"}</td>
+                        <td className="wl-name">{row.workspaceLabel}</td>
+                        <td>{row.date}</td>
+                        {SESSION_METRICS.map(({ key, labelKey, format }) => {
+                          const value = sessionMetric(row, key);
+                          return (
+                            <td key={key}>
+                              <MetricBarCell
+                                value={value}
+                                max={maxima[key]}
+                                kind={key}
+                                text={format(value)}
+                                title={`${t(labelKey)} ${format(value)}`}
+                              />
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          );
+        }
+        return (
+          <ProfileCard
+            key="profile"
+            t={t}
+            lang={lang}
+            days={days}
+            scope={scope}
+            allTime={allTime}
+            tz={localTimeZone()}
+          />
+        );
+      })}
+    </>
   );
 }
 
@@ -1689,10 +1708,12 @@ function Overlay({ control }) {
                   </button>
                 ))}
               </div>
-              {tab === "byDay" ? <ByDayView data={state.data} t={t} lang={lang} days={days} scope={scope} allTime={allTime} /> : null}
+              {tab === "byDay" ? <ByDayView data={state.data} t={t} /> : null}
               {tab === "model" ? <ModelSection data={state.data} t={t} /> : null}
               {tab === "byWorkspace" ? <ByWorkspaceView data={state.data} t={t} /> : null}
-              {tab === "bySession" ? <BySessionView data={state.data} t={t} /> : null}
+              {tab === "bySession" ? (
+                <BySessionView data={state.data} t={t} lang={lang} days={days} scope={scope} allTime={allTime} />
+              ) : null}
               <p className="wl-note">
                 <strong>{t("note.title")}</strong>：{t("note.body")}
                 {state.data.diagnostics?.missing > 0 ? t("note.unavailable", { count: formatInt(state.data.diagnostics.missing) }) : ""}

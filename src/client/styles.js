@@ -174,7 +174,13 @@ export const STYLES = `
 .wl-footer-item:hover { background: var(--dsw-alias-interactive-bg-hover, #f2f3f5); color: var(--dsw-alias-label-primary, #111); }
 .wl-icon { flex: 0 0 auto; display: block; }
 /* AI 用户画像：正文复用 .wl-hint / .wl-status；这里只定义来源徽标与特征列表 */
-.wl-profile-card { margin-bottom: 14px; }
+/* 特别底色：普通卡片是 bg-layer-1，这里用 bg-layer-2 叠 6% 品牌色（只走宿主 token）。
+   浅色下是极淡的蓝灰、深色下是极淡的深蓝，与普通卡片有可辨差异但不刺眼。 */
+.wl-profile-card {
+  margin-bottom: 14px;
+  background: color-mix(in srgb, var(--dsw-static-deepseek-500, #4d6bfe) 6%, var(--dsw-alias-bg-layer-2, #f2f3f5));
+  border-color: color-mix(in srgb, var(--dsw-static-deepseek-500, #4d6bfe) 16%, var(--dsw-alias-border-l2, #e5e7eb));
+}
 .wl-profile-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 2px 0 10px; }
 .wl-profile-source {
   display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: 999px;
@@ -206,11 +212,11 @@ export const STYLES = `
   color: var(--dsw-alias-label-secondary, #4b5563);
 }
 .wl-profile-risk {
-  margin: 10px 0 0; padding: 7px 10px; border-left: 3px solid #f59e0b; border-radius: 4px;
-  background: color-mix(in srgb, #f59e0b 10%, transparent);
+  margin: 10px 0 0; padding: 7px 10px; border-left: 3px solid var(--dsw-static-amber-500, #f59e0b); border-radius: 4px;
+  background: color-mix(in srgb, var(--dsw-static-amber-500, #f59e0b) 10%, transparent);
   font-size: 11.5px; line-height: 1.55; color: var(--dsw-alias-label-primary, #1a1d21);
 }
-.wl-profile-risk strong { margin-right: 6px; color: #b45309; font-weight: 600; }
+.wl-profile-risk strong { margin-right: 6px; color: var(--dsw-alias-label-primary, #1a1d21); font-weight: 600; }
 .wl-profile-advice-list { margin-top: 12px; display: grid; gap: 6px; }
 .wl-profile-advice-label { font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-primary, #1a1d21); }
 .wl-profile-advice-item {

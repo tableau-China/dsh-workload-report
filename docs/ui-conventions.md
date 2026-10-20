@@ -18,7 +18,7 @@
 | `MetricBarCell` | `src/client/bar-cell.jsx`（宽度纯函数 `src/client/bar-width.js`） | 表格内的指标比例条 | 主要会话、按日期明细 |
 | `hourTokensNote` | `src/client/hour-status.js` | 时刻图 legend 右侧状态文案判据 | 时刻分析（running / idle / 隐藏三态） |
 | `sectorPath` | `src/sector-path.js` | 环形图扇区几何（看板与 HTML 报告共用） | 工作区 / 模型环形图、报告 |
-| `ProfileCard` | `src/client/profile-card.jsx` | AI 用户画像卡片（CardHead + `.wl-hint` / `.wl-status`，不另造卡片头） | 按日期页 |
+| `ProfileCard` | `src/client/profile-card.jsx` | AI 用户画像卡片（CardHead + `.wl-hint` / `.wl-status`，不另造卡片头） | 主要会话页（紧随会话表） |
 
 ## 2. 切换控件：只有 `ChipGroup` + `Chip`
 
