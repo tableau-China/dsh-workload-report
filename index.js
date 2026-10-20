@@ -19,7 +19,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { PROJECTION_KEYS, aggregate, present, rowFromSession, tokensTotal } from "./src/aggregate.js";
-import { AI_PROFILE_DEFAULTS, ProfileService, profileCodeOf } from "./src/profile-service.js";
+import { AI_PROFILE_DEFAULTS, ProfileService, buildProfileDiagnostic, profileCodeOf } from "./src/profile-service.js";
 import { buildProfilePayload, localProfile, profileFingerprint } from "./src/ai-profile.js";
 import { renderReport } from "./src/report-html.js";
 import { DEFAULT_WAIT_MIN_MS, DEFAULT_WAIT_TOOLS, foldSessionModels, resolvePricing } from "./src/models.js";
@@ -1026,6 +1026,10 @@ class WorkloadIndex {
       foldReadyAt: fold.readyAt ?? 0,
       foldWarmupAt: fold.warmupAt ?? 0,
       foldLastAt: fold.lastAt ?? 0,
+      // AI 画像诊断（默认关闭时也保留固定形状）：最近一次生成的 code / stage / error / route。
+      aiProfile: typeof this.profile?.healthState === "function"
+        ? this.profile.healthState()
+        : { enabled: false, lastCode: null, lastStage: null, lastError: null, lastAt: 0, route: null },
     };
   }
 }
@@ -1161,6 +1165,9 @@ export function apply(ctx, config = {}) {
             lang,
             force: params.get("force") === "1",
             probe: params.get("probe") === "1",
+            // 调试入口：只覆盖本次请求的 provider/model，不写配置、不需要重启。
+            provider: params.get("provider") ?? "",
+            model: params.get("model") ?? "",
           });
         } catch (error) {
           // 连续计快照都失败时也要降级，不把异常抛给 UI。
@@ -1175,6 +1182,9 @@ export function apply(ctx, config = {}) {
             generatedAt: Date.now(),
             fingerprint: profileFingerprint(payload),
             cached: false,
+            route: index.profile.last?.route ?? null,
+            precheck: index.profile.last?.precheck ?? { providers: [], models: [] },
+            diagnostic: buildProfileDiagnostic(error, "route"),
           };
         }
         sendJson(res, 200, body);

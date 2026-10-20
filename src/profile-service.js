@@ -30,8 +30,8 @@ export const AI_PROFILE_DEFAULTS = Object.freeze({
   cacheTtlMs: 86400000,
 });
 
-/** 缓存文件格式版本（改字段时 +1；不影响索引 INDEX_VERSION）。 */
-const PROFILE_CACHE_VERSION = 1;
+/** 缓存文件格式版本（改字段时 +1；不影响索引 INDEX_VERSION）。v2 起缓存带 route / precheck / diagnostic。 */
+const PROFILE_CACHE_VERSION = 2;
 
 /** 稳定错误码：前端按它显示原因，并一律降级为本地规则版。 */
 export const PROFILE_CODES = Object.freeze({
@@ -46,13 +46,93 @@ export const PROFILE_CODES = Object.freeze({
   failed: "AI_FAILED",
 });
 
-/** 带稳定 code 的画像错误（路由只认 code，不向 UI 抛文本）。 */
+/** 带稳定 code / 失败阶段 的画像错误（路由只认 code，不向 UI 抛文本）。 */
 export class ProfileError extends Error {
-  constructor(code, message) {
+  constructor(code, message, stage = null) {
     super(message);
     this.name = "ProfileError";
     this.code = code;
+    if (typeof stage === "string" && stage !== "") this.stage = stage;
   }
+}
+
+/** 失败阶段（diagnostic.error.stage）；顺序即调用链。 */
+export const PROFILE_STAGES = Object.freeze(["route", "precheck", "prepareCall", "stream", "parse", "finish"]);
+
+/** 诊断 message 上限（字符数，按 Unicode 码点算）。 */
+const MAX_DIAGNOSTIC_CHARS = 300;
+
+/**
+ * 诊断 message 脱敏：
+ *   · 先抹掉 token / key / secret / bearer 等赋值与裸密钥；
+ *   · 再把敏感**词本身**替换为 [redacted]（避免"有 key 但没值"也被当泄漏）；
+ *   · 最后压到 300 字符（超出用省略号，仍不超过 300）。
+ * 只用于 diagnostic，不参与 UI 文案。
+ */
+export function sanitizeDiagnosticMessage(value) {
+  let text = String(value ?? "").replace(/\s+/g, " ").trim();
+  if (text === "") return "";
+  text = text
+    .replace(/(?:api[\s_-]*key|access[\s_-]*key|key|secret|token|password|credential|authorization)[\s_-]*[=:]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, "[redacted]")
+    .replace(/\bBearer\s+[^\s,;]+/gi, "[redacted]")
+    .replace(/\bsk-[A-Za-z0-9._-]{6,}/g, "[redacted]")
+    .replace(/api[\s_-]*key|access[\s_-]*key|key|secret|token|password|credential|authorization|bearer/gi, "[redacted]");
+  const chars = Array.from(text);
+  if (chars.length > MAX_DIAGNOSTIC_CHARS) text = chars.slice(0, MAX_DIAGNOSTIC_CHARS - 1).join("") + "…";
+  return text;
+}
+
+/** 底层错误码：优先保留 error.code（如 PROVIDER_NOT_FOUND），没有才退回映射码。 */
+export function diagnosticErrorCode(error, fallback = PROFILE_CODES.failed) {
+  const code = typeof error?.code === "string" ? error.code.trim() : "";
+  if (code !== "") return code;
+  return fallback;
+}
+
+/**
+ * 构造失败诊断（/profile 的 diagnostic 与 /health 的 aiProfile.last* 同源）。
+ * @param error - 底层异常（保留其 code / message / stage）。
+ * @param fallbackStage - 异常没带 stage 时的阶段。
+ */
+export function buildProfileDiagnostic(error, fallbackStage = "route") {
+  const code = profileCodeOf(error);
+  const rawStage = typeof error?.stage === "string" && PROFILE_STAGES.includes(error.stage) ? error.stage : fallbackStage;
+  const stage = PROFILE_STAGES.includes(rawStage) ? rawStage : "route";
+  return {
+    source: "local",
+    code,
+    error: {
+      code: diagnosticErrorCode(error, code),
+      message: sanitizeDiagnosticMessage(error?.message ?? error),
+      stage,
+    },
+  };
+}
+
+/** 合并调试用 provider/model 覆盖（空串 = 不覆盖）。 */
+function normalizeOverrides(input = {}) {
+  const raw = input !== null && typeof input === "object" ? input : {};
+  return {
+    provider: typeof raw.provider === "string" ? raw.provider.trim() : "",
+    model: typeof raw.model === "string" ? raw.model.trim() : "",
+  };
+}
+
+/** listModels 返回值归一化为模型 id 列表（兼容字符串 / { id } / { model }）。 */
+function modelIds(list) {
+  if (!Array.isArray(list)) return [];
+  return list
+    .map((item) => (typeof item === "string" ? item : item?.id ?? item?.model ?? item?.name))
+    .filter((id) => typeof id === "string" && id !== "");
+}
+
+/** 给任意异常打上失败阶段与路由快照（不覆盖已有 stage）。 */
+function tagStage(value, stage, trace) {
+  const error = value instanceof Error ? value : new Error(String(value ?? "未知错误"));
+  if (typeof error.stage !== "string" || error.stage === "") error.stage = stage;
+  if (error.route === undefined) error.route = trace?.route ?? null;
+  if (error.precheck === undefined) error.precheck = trace?.precheck ?? { providers: [], models: [] };
+  return error;
 }
 
 /** 配置归一化：数值兜底、字符串裁剪；未知字段忽略。 */
@@ -164,6 +244,38 @@ export class ProfileService {
     this.inflight = new Map();
     /** 测试用：真正发起模型准备的次数。 */
     this.calls = 0;
+    /**
+     * 最近一次生成诊断（/health.diagnostics.aiProfile 的数据源）：
+     *   · code / stage / error 保留底层失败事实（error 已脱敏、≤300 字）；
+     *   · route / precheck 记录路由与预检结果；
+     *   · at 为毫秒时间戳（0 = 还没生成过）。
+     */
+    this.last = { code: null, stage: null, error: null, at: 0, route: null, precheck: null };
+  }
+
+  /** 记录最近一次生成结果（成功也记，成功时 code=null）。 */
+  recordLast({ code = null, stage = null, error = null, route = null, precheck = null } = {}) {
+    this.last = {
+      code: typeof code === "string" && code !== "" ? code : null,
+      stage: typeof stage === "string" && stage !== "" ? stage : null,
+      error: typeof error === "string" && error !== "" ? error : null,
+      at: Date.now(),
+      route: route ?? null,
+      precheck: precheck ?? { providers: [], models: [] },
+    };
+  }
+
+  /** /health 用的精简快照（字段固定，方便一条命令看全）。 */
+  healthState() {
+    const last = this.last ?? {};
+    return {
+      enabled: this.config.enabled,
+      lastCode: last.code ?? null,
+      lastStage: last.stage ?? null,
+      lastError: last.error ?? null,
+      lastAt: last.at ?? 0,
+      route: last.route ?? null,
+    };
   }
 
   /** 可选服务：不存在 / 未提供时返回 undefined（不抛错、不阻塞）。 */
@@ -197,54 +309,90 @@ export class ProfileService {
   }
 
   /**
-   * 解析调用路由：优先插件配置 provider/model，否则宿主默认模型。
+   * 解析调用路由：优先插件配置 provider/model，否则宿主默认模型；
+   * 调试用 provider/model 查询参数只覆盖对应字段（不写配置）。
    * 调用前用 listProviders / listModels 预检；空列表即未登录 / 无 key。
-   * @returns { provider, model }。
+   * @param overrides - 调试覆盖 { provider, model }（空串 = 不覆盖）。
+   * @param trace - 诊断快照：写入 route / precheck，失败时随异常带回。
+   * @returns { provider, model, origin }。
    */
-  async resolveRoute(llm, providers) {
-    const provider = this.config.provider;
-    const model = this.config.model;
-    if (provider !== "" && model !== "") {
-      if (!providers.includes(provider)) {
-        throw new ProfileError(PROFILE_CODES.missingCredential, "配置的 provider 未注册：" + provider);
+  async resolveRoute(llm, providers, overrides = {}, trace = null) {
+    const overrideProvider = typeof overrides?.provider === "string" ? overrides.provider : "";
+    const overrideModel = typeof overrides?.model === "string" ? overrides.model : "";
+    const overridden = overrideProvider !== "" || overrideModel !== "";
+    const record = trace ?? { route: null, precheck: null };
+    if (record !== null && typeof record === "object") record.stage = "route";
+    // 1) 插件配置（query 只覆盖对应字段；origin 单独标 query 便于排查）
+    const configProvider = overrideProvider !== "" ? overrideProvider : this.config.provider;
+    const configModel = overrideModel !== "" ? overrideModel : this.config.model;
+    let route;
+    if (configProvider !== "" && configModel !== "") {
+      route = { provider: configProvider, model: configModel, origin: overridden ? "query" : "config" };
+    } else {
+      // 2) 宿主默认模型
+      const selection = this.defaultSelection();
+      if (selection === undefined || typeof selection.provider !== "string" || typeof selection.model !== "string" || selection.provider === "" || selection.model === "") {
+        throw new ProfileError(PROFILE_CODES.signIn, "没有默认模型选择（未登录）", "route");
       }
-      const models = await llm.listModels(provider);
-      if (!Array.isArray(models) || models.length === 0) {
-        throw new ProfileError(PROFILE_CODES.signIn, "provider " + provider + " 没有可用模型（未登录或无 key）");
-      }
-      return { provider, model };
+      route = {
+        provider: overrideProvider !== "" ? overrideProvider : selection.provider,
+        model: overrideModel !== "" ? overrideModel : selection.model,
+        origin: overridden ? "query" : "agentDefaultModel",
+      };
     }
-
-    const selection = this.defaultSelection();
-    if (selection === undefined || typeof selection.provider !== "string" || typeof selection.model !== "string" || selection.provider === "" || selection.model === "") {
-      throw new ProfileError(PROFILE_CODES.signIn, "没有默认模型选择（未登录）");
+    record.route = route;
+    if (!providers.includes(route.provider)) {
+      throw new ProfileError(
+        PROFILE_CODES.missingCredential,
+        (configProvider !== "" && configModel !== "" ? "配置的 provider 未注册：" : "默认 provider 未注册：") + route.provider,
+        "route",
+      );
     }
-    if (!providers.includes(selection.provider)) {
-      throw new ProfileError(PROFILE_CODES.missingCredential, "默认 provider 未注册：" + selection.provider);
+    let models;
+    if (record !== null && typeof record === "object") record.stage = "precheck";
+    try {
+      models = await llm.listModels(route.provider);
+    } catch (error) {
+      throw tagStage(error, "precheck", record);
     }
-    const models = await llm.listModels(selection.provider);
-    if (!Array.isArray(models) || models.length === 0) {
-      throw new ProfileError(PROFILE_CODES.signIn, "provider " + selection.provider + " 没有可用模型（未登录或无 key）");
+    if (record !== null && typeof record === "object") record.stage = "route";
+    const ids = modelIds(models);
+    record.precheck = { providers, models: ids.slice(0, 10) };
+    if (ids.length === 0) {
+      throw new ProfileError(PROFILE_CODES.signIn, "provider " + route.provider + " 没有可用模型（未登录或无 key）", "precheck");
     }
-    return { provider: selection.provider, model: selection.model };
+    return route;
   }
 
-  /** 状态预检（probe）：不调用模型，只回答 enabled / 是否可生成。 */
-  async status() {
+  /**
+   * 状态预检（probe）：不调用模型，只回答 enabled / 是否可生成。
+   * 调试 provider/model 参数同样生效，用来确认"换一个网关是否能通"。
+   */
+  async status(overrides = {}) {
+    const parsed = normalizeOverrides(overrides);
     if (!this.config.enabled) return { enabled: false, code: PROFILE_CODES.disabled };
+    const trace = { route: null, precheck: { providers: [], models: [] } };
     const llm = this.service();
     if (llm === undefined) {
-      return { enabled: true, available: false, signedIn: false, code: PROFILE_CODES.unavailable, provider: null, model: null };
+      return { enabled: true, available: false, signedIn: false, code: PROFILE_CODES.unavailable, provider: null, model: null, route: null, precheck: trace.precheck };
     }
     try {
       const providers = await this.providerIds(llm);
+      trace.precheck.providers = providers;
       if (providers.length === 0) {
-        return { enabled: true, available: false, signedIn: false, code: PROFILE_CODES.signIn, provider: null, model: null };
+        return { enabled: true, available: false, signedIn: false, code: PROFILE_CODES.signIn, provider: null, model: null, route: null, precheck: trace.precheck };
       }
-      const route = await this.resolveRoute(llm, providers);
-      return { enabled: true, available: true, signedIn: true, code: null, provider: route.provider, model: route.model };
+      const route = await this.resolveRoute(llm, providers, parsed, trace);
+      return {
+        enabled: true, available: true, signedIn: true, code: null,
+        provider: route.provider, model: route.model, route: trace.route, precheck: trace.precheck,
+      };
     } catch (error) {
-      return { enabled: true, available: false, signedIn: false, code: profileCodeOf(error), provider: null, model: null };
+      return {
+        enabled: true, available: false, signedIn: false, code: profileCodeOf(error),
+        provider: null, model: null, route: trace.route, precheck: trace.precheck,
+        stage: typeof error?.stage === "string" ? error.stage : null,
+      };
     }
   }
 
@@ -292,24 +440,37 @@ export class ProfileService {
    * @param options.lang - zh | en。
    * @param options.force - 跳过缓存重新生成。
    * @param options.probe - 只返回 enabled / 登录状态，不生成、不读快照。
+   * @param options.provider / options.model - 调试覆盖（仅 enabled 生效；不写配置、不需要重启）。
    * @returns 200 JSON 体（任何失败都不抛）。
    */
-  async handle({ query, lang = "zh", force = false, probe = false } = {}) {
+  async handle({ query, lang = "zh", force = false, probe = false, provider = "", model = "" } = {}) {
     if (!this.config.enabled) return { enabled: false, code: PROFILE_CODES.disabled };
-    if (probe) return this.status();
+    const overrides = normalizeOverrides({ provider, model });
+    const debugRoute = overrides.provider !== "" || overrides.model !== "";
+    if (probe) return this.status(overrides);
 
     const snapshot = await this.index.snapshot(query);
     const payload = buildProfilePayload(snapshot);
     const fingerprint = profileFingerprint(payload);
 
-    if (!force) {
+    // 调试覆盖不读也不写缓存：避免一次试跑污染正常路径的指纹缓存。
+    if (!force && !debugRoute) {
       const cached = await this.readCache(lang, fingerprint);
-      if (cached !== null) return { enabled: true, ...cached, cached: true };
+      if (cached !== null) {
+        this.recordLast({
+          code: cached.code,
+          stage: cached.diagnostic?.error?.stage ?? (cached.code === null || cached.code === undefined ? "finish" : null),
+          error: cached.diagnostic?.error?.message ?? null,
+          route: cached.route ?? null,
+          precheck: cached.precheck ?? null,
+        });
+        return { enabled: true, ...cached, cached: true };
+      }
     }
 
-    const key = lang + ":" + fingerprint;
+    const key = lang + ":" + fingerprint + (debugRoute ? ":" + overrides.provider + ":" + overrides.model : "");
     if (!force && this.inflight.has(key)) return this.inflight.get(key);
-    const run = this.generate({ payload, fingerprint, lang });
+    const run = this.generate({ payload, fingerprint, lang, overrides, cache: !debugRoute });
     if (!force) this.inflight.set(key, run);
     try {
       return await run;
@@ -318,40 +479,72 @@ export class ProfileService {
     }
   }
 
-  /** 生成一次：模型失败一律回落到本地规则（source=local + code）。 */
-  async generate({ payload, fingerprint, lang }) {
-    const generatedAt = Date.now();
+  /** 生成一次：模型失败一律回落到本地规则（source=local + code + diagnostic）。 */
+  async generate({ payload, fingerprint, lang, overrides = {}, cache = true }) {
     let result;
     try {
-      const generated = await this.callModel(payload, lang);
-      result = { source: "llm", code: null, traits: generated.traits, advice: generated.advice, usage: generated.usage, model: generated.model };
+      const generated = await this.callModel(payload, lang, overrides);
+      result = {
+        source: "llm", code: null, traits: generated.traits, advice: generated.advice,
+        usage: generated.usage, model: generated.model,
+        route: generated.route, precheck: generated.precheck, diagnostic: null,
+      };
+      this.recordLast({ code: null, stage: "finish", error: null, route: generated.route, precheck: generated.precheck });
     } catch (error) {
       const code = profileCodeOf(error);
+      const stage = typeof error?.stage === "string" && PROFILE_STAGES.includes(error.stage) ? error.stage : "route";
+      const route = error?.route ?? null;
+      const precheck = error?.precheck ?? { providers: [], models: [] };
+      const diagnostic = buildProfileDiagnostic(error, stage);
       if (this.ctx?.logger?.warn !== undefined) {
-        this.ctx.logger.warn("[workload-report] AI 画像降级为本地规则：" + code + " — " + String(error?.message ?? error));
+        this.ctx.logger.warn(
+          "[workload-report] AI 画像降级为本地规则：" + code + "（" + stage + "）— " + diagnostic.error.message,
+        );
       }
-      result = { source: "local", code, ...localProfile(payload, lang), usage: { input: 0, output: 0, total: 0 }, model: null };
+      result = {
+        source: "local", code, ...localProfile(payload, lang), usage: { input: 0, output: 0, total: 0 }, model: null,
+        route, precheck, diagnostic,
+      };
+      this.recordLast({ code, stage, error: diagnostic.error.message, route, precheck });
     }
     const profile = { ...result, generatedAt: Date.now(), fingerprint, cached: false };
-    await this.writeCache(lang, fingerprint, profile);
+    if (cache) await this.writeCache(lang, fingerprint, profile);
     return { enabled: true, ...profile };
   }
 
-  /** 真正调用 llm：prepareCall → stream，累积 text-delta / usage / finish。 */
-  async callModel(payload, lang) {
+  /** 真正调用 llm：precheck → route → prepareCall → stream → finish → parse。 */
+  async callModel(payload, lang, overrides = {}) {
     // 超时覆盖整个调用链：预检（listProviders / listModels）→ prepareCall → stream。
     const signal = AbortSignal.timeout(this.config.timeoutMs);
+    /** 诊断快照：失败时随异常带回；stage 用于超时这类没有具体异常点的失败。 */
+    const trace = { route: null, precheck: { providers: [], models: [] }, stage: "route" };
     const work = (async () => {
+      trace.stage = "route";
       const llm = this.service();
-      if (llm === undefined) throw new ProfileError(PROFILE_CODES.unavailable, "当前 DSH 没有 llm 服务");
-      const providers = await this.providerIds(llm);
-      if (providers.length === 0) throw new ProfileError(PROFILE_CODES.signIn, "没有已登录的模型 provider");
-      const route = await this.resolveRoute(llm, providers);
+      if (llm === undefined) throw new ProfileError(PROFILE_CODES.unavailable, "当前 DSH 没有 llm 服务", "route");
+      trace.stage = "precheck";
+      let providers = [];
+      try {
+        providers = await this.providerIds(llm);
+      } catch (error) {
+        throw tagStage(error, "precheck", trace);
+      }
+      trace.precheck.providers = providers;
+      if (providers.length === 0) throw new ProfileError(PROFILE_CODES.signIn, "没有已登录的模型 provider", "precheck");
+      trace.stage = "route";
+      const route = await this.resolveRoute(llm, providers, normalizeOverrides(overrides), trace);
+      trace.route = route;
+      trace.stage = "prepareCall";
       this.calls += 1;
-      const call = await llm.prepareCall(
-        { provider: route.provider, model: route.model, temperature: 0.4, maxTokens: this.config.maxTokens },
-        signal,
-      );
+      let call;
+      try {
+        call = await llm.prepareCall(
+          { provider: route.provider, model: route.model, temperature: 0.4, maxTokens: this.config.maxTokens },
+          signal,
+        );
+      } catch (error) {
+        throw tagStage(error, "prepareCall", trace);
+      }
       const options = {
         ...call.config,
         system: systemPrompt(lang),
@@ -361,23 +554,40 @@ export class ProfileService {
       let text = "";
       let usage = { input: 0, output: 0, total: 0 };
       let finish = null;
-      for await (const chunk of call.stream(options)) {
-        if (chunk?.type === "text-delta") text += String(chunk.text ?? "");
-        else if (chunk?.type === "usage") usage = normalizeUsage(chunk.usage);
-        else if (chunk?.type === "finish") finish = chunk.reason;
+      trace.stage = "stream";
+      try {
+        for await (const chunk of call.stream(options)) {
+          if (chunk?.type === "text-delta") text += String(chunk.text ?? "");
+          else if (chunk?.type === "usage") usage = normalizeUsage(chunk.usage);
+          else if (chunk?.type === "finish") finish = chunk.reason;
+        }
+      } catch (error) {
+        throw tagStage(error, "stream", trace);
       }
+      trace.stage = "finish";
       if (finish === null || finish?.kind !== "stop") {
         const failureCode = finish?.failure?.code;
         if (failureCode === PROFILE_CODES.signIn || failureCode === PROFILE_CODES.missingCredential) {
-          throw new ProfileError(failureCode, "模型调用未完成：" + finish.kind);
+          throw new ProfileError(failureCode, "模型调用未完成：" + String(finish?.kind ?? "unknown"), "finish");
         }
-        throw new ProfileError(PROFILE_CODES.notStopped, "模型未正常结束：" + String(finish?.kind ?? "unknown"));
+        throw new ProfileError(PROFILE_CODES.notStopped, "模型未正常结束：" + String(finish?.kind ?? "unknown"), "finish");
       }
-      if (text.trim() === "") throw new ProfileError(PROFILE_CODES.empty, "模型输出为空");
-      const parsed = parseProfileText(text);
-      return { ...parsed, usage, model: { provider: route.provider, model: route.model } };
+      if (text.trim() === "") throw new ProfileError(PROFILE_CODES.empty, "模型输出为空", "finish");
+      trace.stage = "parse";
+      let parsed;
+      try {
+        parsed = parseProfileText(text);
+      } catch (error) {
+        throw tagStage(error, "parse", trace);
+      }
+      trace.stage = "finish";
+      return { ...parsed, usage, model: { provider: route.provider, model: route.model }, route, precheck: trace.precheck };
     })();
 
-    return withAbort(work, signal, this.config.timeoutMs);
+    try {
+      return await withAbort(work, signal, this.config.timeoutMs);
+    } catch (error) {
+      throw tagStage(error, trace.stage, trace);
+    }
   }
 }
