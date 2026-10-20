@@ -123,23 +123,38 @@ export function rowFromSession(header, values = {}, asOfSeq = null) {
   };
 }
 
-/** 时区化的小时（0–23）。 */
-export function hourOf(ms, timeZone) {
-  return Number(
-    new Intl.DateTimeFormat("en-GB", { timeZone, hour: "2-digit", hour12: false, hourCycle: "h23" }).format(new Date(ms)),
-  );
+/**
+ * Intl.DateTimeFormat 构造很贵（每次约 0.1–1ms）：聚合几百个会话时，
+ * dateKey / hourOf / 时区偏移会被调用上万次，**必须按时区缓存 formatter**。
+ * 缓存只按 timeZone 分键，format 的入参仍是具体时刻，语义不变。
+ */
+const HOUR_FORMATTERS = new Map();
+const DATE_FORMATTERS = new Map();
+const ZONE_FORMATTERS = new Map();
+const ZONE_OFFSETS = new Map();
+
+function hourFormatter(timeZone) {
+  let formatter = HOUR_FORMATTERS.get(timeZone);
+  if (formatter === undefined) {
+    formatter = new Intl.DateTimeFormat("en-GB", { timeZone, hour: "2-digit", hour12: false, hourCycle: "h23" });
+    HOUR_FORMATTERS.set(timeZone, formatter);
+  }
+  return formatter;
 }
 
-/**
- * 请求时区相对 UTC 的偏移（分钟）。用 Intl 的本地日历字段与 UTC 对比得出，
- * 支持半小时/45 分钟偏移（如 Asia/Kolkata=+330、Asia/Kathmandu=+345）。
- * @param timeZone - IANA 时区名。
- * @param referenceMs - 参考时刻（带夏令时的时区，偏移随日期变化）。
- * @returns 偏移分钟；时区非法时返回 0。
- */
-export function zoneOffsetMinutes(timeZone, referenceMs = Date.now()) {
-  try {
-    const formatter = new Intl.DateTimeFormat("en-US", {
+function dateFormatter(timeZone) {
+  let formatter = DATE_FORMATTERS.get(timeZone);
+  if (formatter === undefined) {
+    formatter = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" });
+    DATE_FORMATTERS.set(timeZone, formatter);
+  }
+  return formatter;
+}
+
+function zoneFormatter(timeZone) {
+  let formatter = ZONE_FORMATTERS.get(timeZone);
+  if (formatter === undefined) {
+    formatter = new Intl.DateTimeFormat("en-US", {
       timeZone,
       hour12: false,
       hourCycle: "h23",
@@ -150,6 +165,30 @@ export function zoneOffsetMinutes(timeZone, referenceMs = Date.now()) {
       minute: "2-digit",
       second: "2-digit",
     });
+    ZONE_FORMATTERS.set(timeZone, formatter);
+  }
+  return formatter;
+}
+
+/** 时区化的小时（0–23）。 */
+export function hourOf(ms, timeZone) {
+  return Number(hourFormatter(timeZone).format(new Date(ms)));
+}
+
+/**
+ * 请求时区相对 UTC 的偏移（分钟）。用 Intl 的本地日历字段与 UTC 对比得出，
+ * 支持半小时/45 分钟偏移（如 Asia/Kolkata=+330、Asia/Kathmandu=+345）。
+ * @param timeZone - IANA 时区名。
+ * @param referenceMs - 参考时刻（带夏令时的时区，偏移随日期变化）。
+ * @returns 偏移分钟；时区非法时返回 0。
+ */
+export function zoneOffsetMinutes(timeZone, referenceMs = Date.now()) {
+  // 偏移按「时区 + 小时」缓存：夏令时切换只在整点边界发生，按小时分桶不会串。
+  const cacheKey = `${timeZone}|${Math.floor(referenceMs / 3600000)}`;
+  const memo = ZONE_OFFSETS.get(cacheKey);
+  if (memo !== undefined) return memo;
+  try {
+    const formatter = zoneFormatter(timeZone);
     const parts = {};
     for (const part of formatter.formatToParts(new Date(referenceMs))) parts[part.type] = part.value;
     const asUTC = Date.UTC(
@@ -160,7 +199,10 @@ export function zoneOffsetMinutes(timeZone, referenceMs = Date.now()) {
       Number(parts.minute),
       Number(parts.second),
     );
-    return Number.isFinite(asUTC) ? Math.round((asUTC - referenceMs) / 60000) : 0;
+    const offset = Number.isFinite(asUTC) ? Math.round((asUTC - referenceMs) / 60000) : 0;
+    if (ZONE_OFFSETS.size > 512) ZONE_OFFSETS.clear();
+    ZONE_OFFSETS.set(cacheKey, offset);
+    return offset;
   } catch {
     return 0;
   }
@@ -309,12 +351,7 @@ function distributeEventTokens(buckets, row, timeZone, referenceMs) {
  * @returns YYYY-MM-DD。
  */
 export function dateKey(ms, timeZone) {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date(ms));
+  return dateFormatter(timeZone).format(new Date(ms));
 }
 
 /** YYYY-MM-DD 校验。 */

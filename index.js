@@ -75,16 +75,31 @@ const DEFAULTS = {
   modelAliases: {},
   /** 费用估算：{ currency, asOf, overrides, links }；缺省用官方公开价（不联网）。 */
   pricing: {},
-  /** 聚合快照的内存缓存时长：面板反复打开时直接复用，避免重复聚合与序列化。 */
-  snapshotCacheMs: 5000,
+  /**
+   * 聚合快照的内存缓存时长：面板反复打开时直接复用，避免重复聚合与序列化。
+   * 15s：打开面板通常远快于一次完整聚合；活会话事件 / 索引刷新 / 折叠完成都会**立即失效**，
+   * 所以拉长 TTL 不会让界面看到过期事件（见 invalidateSnapshot）。
+   */
+  snapshotCacheMs: 15000,
   /** 「最活跃模型」口径：requests（= step 数）| tokens | activeMs（= llmMs）。 */
   activeModelMetric: "requests",
   /** 同一会话两次模型折叠的最小间隔（续聊后重新折叠）。 */
   modelRefoldMs: 15 * 60 * 1000,
   /** 已折过的会话，事件水位领先多少才值得重折（活会话的 asOfSeq 每来一个事件 +1，必须给阈值）。 */
   modelRefoldDelta: 50,
-  /** 折叠失败的会话隔多久再试一次（失败不算 pending，只影响重试节奏）。 */
-  modelRetryMs: 15 * 60 * 1000,
+  /** 折叠失败的会话隔多久再试一次（失败不算 pending，只影响重试节奏；低频、不打扰 UI）。 */
+  modelRetryMs: 30 * 60 * 1000,
+  /**
+   * 后台折叠定时器（**打开面板永远不触发**）：
+   *   · warmup —— 首次索引就绪后的一次性预热（有从未折过的会话才会读日志）；
+   *   · interval —— 例行维护，重折活会话 / 冷却会话 / 失败重试；
+   *   · idleCheck —— 更短的节拍只处理「已转冷或空闲超过 modelFoldIdleMs」的活会话。
+   */
+  modelFoldWarmupMs: 2000,
+  modelFoldIntervalMs: 12 * 60 * 1000,
+  modelIdleCheckMs: 60 * 1000,
+  /** 活会话距上一次事件超过这个时长，才允许按「空闲」重折（避免每次打开都排队）。 */
+  modelFoldIdleMs: 10 * 60 * 1000,
   /**
    * 余额显示：**默认关闭**。
    * 关闭时宿主一次服务调用都不发（零外发请求），界面完全不渲染余额 chip；
@@ -375,8 +390,18 @@ class WorkloadIndex {
     /** 模型维度回填状态（渐进：首屏先出总量，模型区随后补齐）。 */
     this.modelFold = {
       running: false, done: 0, total: 0, folded: 0, skipped: 0, failed: 0,
-      pending: 0, refold: 0, lastAt: 0, lastError: null, lastErrorAt: null,
+      pending: 0, refold: 0, firstFold: false, lastAt: 0, lastMs: 0,
+      lastError: null, lastErrorAt: null,
     };
+    /**
+     * 性能指标（/health 与 /snapshot.diagnostics 同源）：
+     *   · snapshotStats —— 快照请求 / 缓存命中 / 最近与最慢一次构建耗时；
+     *   · foldStats     —— 折叠轮次 / 单轮耗时 / 本轮读取的会话数。
+     */
+    this.snapshotStats = { requests: 0, hits: 0, misses: 0, lastMs: 0, maxMs: 0, lastAt: 0 };
+    this.foldStats = { rounds: 0, lastMs: 0, lastAt: 0, lastSessionsRead: 0, lastTargets: 0, scheduled: 0, skipped: 0, readyAt: 0, warmupAt: 0 };
+    /** 活会话最近一次产事件的时刻（id → ms）；活会话重折的空闲判据。 */
+    this.liveSeen = new Map();
     /** 余额（默认关闭；可选依赖 deepseekAccount，见 BalanceTracker）。 */
     this.balance = new BalanceTracker(ctx, config.balance ?? {});
     this.resolvedPricing = undefined;
@@ -591,11 +616,29 @@ class WorkloadIndex {
     diagnostics.buildMs = Date.now() - started;
     this.diagnostics = diagnostics;
     this.refreshModelDiagnostics();
-    this.snapshotCache = undefined; // 索引刷新后缓存作废
+    this.invalidateSnapshot("index"); // 索引刷新后缓存作废
     if (coldPerformed > 0) await this.saveToDisk();
-    // 投影数据已可用 → 立刻放行首屏；模型维度在后台渐进补齐
-    this.scheduleModelFold();
+    // **不在这里触发折叠**：sync 可能由「打开面板」经 ensureIndex 发起，
+    // 在 sync 末尾读事件日志就等于打开面板触发读日志。模型维度只由后台定时器 /
+    // 会话转冷（下一拍 idleCheck）驱动，见 apply() 里的 maintenanceTimers。
     return this;
+  }
+
+  /** 快照缓存作废（活会话事件 / 索引刷新 / 折叠完成都要调用，保证 15s TTL 不返回旧值）。 */
+  invalidateSnapshot(reason = "") {
+    this.snapshotCache = undefined;
+    this.snapshotInvalidatedAt = Date.now();
+    this.snapshotInvalidatedBy = reason;
+  }
+
+  /** 记录一次快照请求（命中 / 未命中 / 构建耗时），随 /health 与 /snapshot.diagnostics 暴露。 */
+  recordSnapshot(hit, ms) {
+    this.snapshotStats.requests += 1;
+    if (hit) this.snapshotStats.hits += 1;
+    else this.snapshotStats.misses += 1;
+    this.snapshotStats.lastMs = ms;
+    this.snapshotStats.lastAt = Date.now();
+    if (ms > this.snapshotStats.maxMs) this.snapshotStats.maxMs = ms;
   }
 
   /** 生效价目（内置官方公开价 + 用户覆盖；纯本地，不联网）。 */
@@ -627,8 +670,14 @@ class WorkloadIndex {
       }
       const foldedSeq = typeof row.modelFoldSeq === "number" ? row.modelFoldSeq : -1;
       const asOf = typeof row.asOfSeq === "number" ? row.asOfSeq : 0;
+      if (asOf <= foldedSeq) continue;
+      const live = this.liveSession(id);
+      // 活会话：只有「事件增量 > 阈值」或「距上次事件已超过 modelFoldIdleMs」才进队列。
+      // 否则每次打开面板（或每个定时器节拍）都会把正在用的会话排进去。
+      const idle = now - (this.liveSeen.get(id) ?? 0) >= this.config.modelFoldIdleMs;
       if (asOf - foldedSeq > this.config.modelRefoldDelta) queue.refold.push({ id, row });
-      else if (asOf > foldedSeq && this.liveSession(id) === undefined) queue.refold.push({ id, row });
+      else if (live === undefined) queue.refold.push({ id, row }); // 会话已转冷：收尾补齐
+      else if (idle) queue.refold.push({ id, row });
     }
     return queue;
   }
@@ -659,13 +708,24 @@ class WorkloadIndex {
     return newest;
   }
 
-  /** 模型维度诊断（/health、/snapshot 与 sync 共用同一份口径）。 */
+  /**
+   * 模型维度诊断（/health、/snapshot 与 sync 共用同一份口径）。
+   *
+   * phase 三态是**界面状态行的唯一判据**（客户端 hour-status.js 按它渲染）：
+   *   · first-fold —— 本轮折叠包含「从未折过」的会话 → 「正在计算中……」；
+   *   · background —— 只重折 / 重试已有数据的会话 → 「后台更新中」（灰点小字，不打扰）；
+   *   · idle       —— 没有折叠在跑 → 只显示「Token 未计入 N 个会话」（N>0 时）。
+   * failedRows 永远不参与 phase：读日志失败只计入未计入提示，绝不让状态显示为计算中。
+   */
   modelFoldDiagnostics() {
     const queue = this.modelFoldQueue();
     const failedRows = this.modelFoldFailedRows();
     const rowError = this.modelFold.lastError === null ? this.lastRowFoldError() : null;
+    const running = this.modelFold.running === true;
+    const phase = !running ? "idle" : this.modelFold.firstFold === true ? "first-fold" : "background";
     return {
       ...this.modelFold,
+      phase,
       pending: queue.pending.length,
       refold: queue.refold.length,
       failedRows,
@@ -689,21 +749,29 @@ class WorkloadIndex {
    * 后台折叠模型维度：官方 `readSession()` 读整份事件日志 → src/models.js 折叠。
    * 结果写回**当前**行（折叠期间行可能被投影重建，写回抓到的旧行等于白折），并在结束时落盘。
    */
-  async runModelFold() {
+  async runModelFold({ targets: planned = null } = {}) {
     if (this.config.modelUsage === "off" || this.modelFold.running) return;
     const queue = this.modelFoldQueue();
-    const targets = [...queue.pending, ...queue.refold, ...queue.failed];
+    const targets = planned ?? [...queue.pending, ...queue.refold, ...queue.failed];
     if (targets.length === 0) return;
+    const roundStarted = Date.now();
+    let sessionsRead = 0;
+    // first-fold 只认「本轮确实包含从未折过的会话」——界面「正在计算中……」的唯一来源。
+    const firstFold = targets.some(({ row }) => row.models === undefined && (typeof row.modelFoldError !== "string" || row.modelFoldError === ""));
+    this.foldStats.lastTargets = targets.length;
+    this.foldStats.lastSessionsRead = 0;
     this.modelFold = {
       running: true, done: 0, total: targets.length, folded: 0, skipped: 0, failed: 0,
-      pending: queue.pending.length, refold: queue.refold.length,
-      lastAt: Date.now(), lastError: null, lastErrorAt: null,
+      pending: queue.pending.length, refold: queue.refold.length, firstFold,
+      lastAt: Date.now(), lastMs: 0, lastError: null, lastErrorAt: null,
     };
     try {
       await mapLimit(targets, Math.max(1, this.config.modelFoldConcurrency), async ({ id, row }) => {
         // 水位在开读前取：折叠期间行换代也不至于把"没读到的新事件"当成已折
         const asOf = typeof row.asOfSeq === "number" ? row.asOfSeq : 0;
         try {
+          sessionsRead += 1;
+          this.foldStats.lastSessionsRead = sessionsRead; // /health 实时可见
           const snapshot = await this.ctx.sessionQuery.readSession(id);
           const events = Array.isArray(snapshot?.events) ? snapshot.events : [];
           const target = this.rows.get(id) ?? row; // 行可能已被 patchLive/sync 换代 → 写回当前行
@@ -777,25 +845,50 @@ class WorkloadIndex {
       });
     } finally {
       this.modelFold.running = false;
+      this.modelFold.lastMs = Date.now() - roundStarted;
+      this.foldStats.rounds += 1;
+      this.foldStats.lastMs = this.modelFold.lastMs;
+      this.foldStats.lastAt = Date.now();
+      this.foldStats.lastSessionsRead = sessionsRead;
+      this.foldStats.lastTargets = targets.length;
       this.refreshModelDiagnostics();
-      this.snapshotCache = undefined; // 模型数据变了，缓存作废
+      this.invalidateSnapshot("fold"); // 模型数据变了，缓存作废
       await this.saveToDisk();
     }
   }
 
   /**
-   * 需要时后台启动模型回填（不 await，绝不阻塞请求）。
-   * 节流只约束"重折 / 重试"：**从未折过的会话不受节流影响**，否则首屏后新出现的会话
-   * 要等满一个 modelRefoldMs 才会被折，界面就得挂 15 分钟的"回填中"。
+   * 后台启动模型折叠（不 await，绝不阻塞请求）。**只由 apply() 的定时器调用，snapshot 不调用。**
+   *
+   * @param options - force 忽略"重折节流"（仅预热使用）；idleOnly 只处理已冷却/空闲的
+   *                   refold 行（60s 节拍用，不碰从未折过的 pending，避免抢在预热前读日志）。
    */
-  scheduleModelFold({ force = false } = {}) {
-    if (this.config.modelUsage === "off" || this.modelFold.running) return;
-    const queue = this.modelFoldQueue();
-    if (queue.pending.length === 0) {
-      if (!force && this.modelFold.lastAt > 0 && Date.now() - this.modelFold.lastAt < this.config.modelRefoldMs) return;
-      if (queue.refold.length + queue.failed.length === 0) return;
+  scheduleModelFold({ force = false, idleOnly = false } = {}) {
+    if (this.config.modelUsage === "off" || this.modelFold.running) {
+      this.foldStats.skipped += 1;
+      return;
     }
-    void this.runModelFold();
+    const queue = this.modelFoldQueue();
+    let targets;
+    if (idleOnly) {
+      targets = queue.refold;
+      if (targets.length === 0) return;
+    } else {
+      targets = [...queue.pending, ...queue.refold, ...queue.failed];
+      if (targets.length === 0) return;
+      // 没有 pending（首次回填）时按 modelRefoldMs 节流重折 / 重试
+      if (
+        !force &&
+        queue.pending.length === 0 &&
+        this.modelFold.lastAt > 0 &&
+        Date.now() - this.modelFold.lastAt < this.config.modelRefoldMs
+      ) {
+        return;
+      }
+    }
+    this.foldStats.scheduled += 1;
+    this.ctx.logger.info(`[workload-report] 折叠入队：${targets.length} 个会话（pending ${queue.pending.length} / refold ${queue.refold.length} / failed ${queue.failed.length}，rows ${this.rows.size}）`);
+    void this.runModelFold({ targets });
   }
 
   /**
@@ -824,24 +917,30 @@ class WorkloadIndex {
       const key = String(session.id);
       carryModelFields(row, this.rows.get(key));
       this.rows.set(key, row);
-      this.rowSavedAt.set(String(session.id), Date.now());
-      // 行变了 → 快照缓存立即作废：否则 5s TTL 内仍会返回旧值，活会话事件"看起来没生效"
-      this.snapshotCache = undefined;
+      this.rowSavedAt.set(key, Date.now());
+      // 活会话事件是重折空闲判据：距这次事件超过 modelFoldIdleMs 才允许按空闲重折
+      this.liveSeen.set(key, Date.now());
+      // 行变了 → 快照缓存立即作废：否则 15s TTL 内仍会返回旧值，活会话事件"看起来没生效"
+      this.invalidateSnapshot("live");
     } catch (error) {
       this.diagnostics.lastError = reasonOf(error);
     }
   }
 
-  /** 生成聚合快照（不阻塞：索引进度随诊断字段一起返回）。 */
+  /**
+   * 生成聚合快照（不阻塞：索引进度随诊断字段一起返回）。
+   * **绝不触发模型折叠**：打开面板只读内存 / 投影检查点；读事件日志只由后台定时器驱动。
+   */
   async snapshot(query) {
+    const started = Date.now();
     this.ensureIndex({ force: query.refresh === true });
-    this.scheduleModelFold();
     // 余额：只在启用时真的查询；不 await（快照绝不因出网变慢），结果下次请求即生效
     void this.balance.ensure();
-    // 同参数短 TTL 复用：面板反复打开时省掉"聚合 + 大 JSON 序列化"
+    // 同参数 TTL 复用：面板反复打开时省掉"聚合 + 大 JSON 序列化"
     const cacheKey = JSON.stringify({ from: query.from, to: query.to, days: query.days, tz: query.timeZone, scope: query.scope, all: query.all === true });
     const cached = this.snapshotCache;
     if (cached !== undefined && cached.key === cacheKey && Date.now() - cached.at < this.config.snapshotCacheMs) {
+      this.recordSnapshot(true, Date.now() - started);
       return {
         ...cached.value,
         balance: this.balanceState(),
@@ -868,6 +967,7 @@ class WorkloadIndex {
       }),
     );
     this.snapshotCache = { key: cacheKey, at: Date.now(), value: result };
+    this.recordSnapshot(false, Date.now() - started);
     return {
       ...result,
       balance: this.balanceState(),
@@ -887,6 +987,8 @@ class WorkloadIndex {
   /** 诊断信息（含索引进度与模型回填进度）；顶层 modelPending/Stale/Failed 与 modelFold 同源刷新。 */
   diagnosticsFor() {
     this.refreshModelDiagnostics();
+    const snap = this.snapshotStats;
+    const fold = this.foldStats;
     return {
       ...this.diagnostics,
       // syncing 是"后台正在重扫"的诊断事实；indexing 才是给用户看的"首次补齐中"
@@ -895,6 +997,26 @@ class WorkloadIndex {
       indexing: this.syncing !== null && this.firstBuildDone !== true,
       modelUsage: this.config.modelUsage !== "off",
       modelFold: this.modelFoldDiagnostics(),
+      // —— 性能指标（打开耗时 / 缓存 / 折叠）——
+      snapshotMs: snap.lastMs,
+      snapshotCacheHits: snap.hits,
+      snapshotCacheMisses: snap.misses,
+      snapshotCacheHitRate: snap.requests > 0 ? snap.hits / snap.requests : 0,
+      snapshotCache: {
+        requests: snap.requests, hits: snap.hits, misses: snap.misses,
+        hitRate: snap.requests > 0 ? snap.hits / snap.requests : 0,
+        ttlMs: this.config.snapshotCacheMs, lastMs: snap.lastMs, maxMs: snap.maxMs, lastAt: snap.lastAt,
+        invalidatedBy: this.snapshotInvalidatedBy ?? null,
+      },
+      foldRoundMs: fold.lastMs,
+      foldRounds: fold.rounds,
+      foldSessionsRead: fold.lastSessionsRead,
+      foldTargets: fold.lastTargets,
+      foldScheduled: fold.scheduled,
+      foldSkipped: fold.skipped,
+      foldReadyAt: fold.readyAt ?? 0,
+      foldWarmupAt: fold.warmupAt ?? 0,
+      foldLastAt: fold.lastAt ?? 0,
     };
   }
 }
@@ -916,6 +1038,7 @@ export function apply(ctx, config = {}) {
   index.ensureIndex({ force: true });
   const ready = (async () => {
     while (index.syncing !== null) await index.syncing;
+    index.foldStats.readyAt = Date.now();
     const d = index.diagnostics;
     ctx.logger.info(
       `[workload-report] 索引就绪：${d.sessions} 个会话（检查点 ${d.cached} · 活会话 ${d.live} · 冷读 ${d.cold} · 复用 ${d.reused} · 读取失败 ${d.missing}），耗时 ${d.buildMs}ms`,
@@ -929,6 +1052,40 @@ export function apply(ctx, config = {}) {
     () => ctx.on("session/event", (session) => index.patchLive(session)),
     "workload-report: live session updates",
   );
+
+  /**
+   * 模型维度的**唯一触发源**（打开面板绝不触发）：
+   *   · 预热：索引就绪后一次性跑 pending（首次从未折过的会话）；
+   *   · 12 分钟例行维护：重折 / 失败重试（低频，不打扰 UI）；
+   *   · 60 秒空闲检查：只处理「已转冷 / 距上次事件超过 modelFoldIdleMs」的活会话。
+   * 定时器 unref：不阻止进程退出；ctx.effect 清理时一并取消。
+   */
+  ctx.effect(() => {
+    let warmup = null;
+    const intervalMs = Math.max(1000, Number(merged.modelFoldIntervalMs) || DEFAULTS.modelFoldIntervalMs);
+    const idleMs = Math.max(1000, Number(merged.modelIdleCheckMs) || DEFAULTS.modelIdleCheckMs);
+    const interval = setInterval(() => index.scheduleModelFold(), intervalMs);
+    const idle = setInterval(() => index.scheduleModelFold({ idleOnly: true }), idleMs);
+    interval.unref?.();
+    idle.unref?.();
+    ctx.logger.info(
+      `[workload-report] 模型折叠定时器：预热 ${merged.modelFoldWarmupMs}ms · 维护 ${intervalMs}ms · 空闲检查 ${idleMs}ms`,
+    );
+    ready.then(() => {
+      const warmupMs = Math.max(0, Number(merged.modelFoldWarmupMs) || 0);
+      warmup = setTimeout(() => {
+        index.foldStats.warmupAt = Date.now();
+        ctx.logger.info("[workload-report] 预热折叠开始（打开面板不会触发）");
+        index.scheduleModelFold({ force: true });
+      }, warmupMs);
+      warmup.unref?.();
+    });
+    return () => {
+      clearInterval(interval);
+      clearInterval(idle);
+      if (warmup !== null) clearTimeout(warmup);
+    };
+  }, "workload-report: background model fold timers");
 
   const handle = async (req, res) => {
     try {
@@ -977,7 +1134,7 @@ export function apply(ctx, config = {}) {
           res.end(JSON.stringify({ generatedAt: Date.now(), ...snapshot }, null, 2));
           return;
         }
-        sendJson(res, 200, { generatedAt: Date.now(), diagnostics: index.diagnostics, ...snapshot });
+        sendJson(res, 200, { generatedAt: Date.now(), ...snapshot });
         return;
       }
       if (route === "/report.html") {
@@ -1014,4 +1171,6 @@ export function apply(ctx, config = {}) {
       ? "[workload-report] 余额显示已启用：宿主将访问 platform.deepseek.com（可在配置里设 balance.enabled=false 关闭）"
       : "[workload-report] 余额显示默认关闭：不查询、不外发请求",
   );
+  // 返回索引实例：离线测试用来精确断言"打开 N 次 = 0 次读日志"与折叠定时器行为。
+  return index;
 }
