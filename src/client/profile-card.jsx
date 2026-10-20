@@ -4,11 +4,15 @@
  * 交互：挂载时先 probe（只问 enabled / 是否登录，不生成）；点「生成画像」才请求 /profile。
  * 失败一律由宿主降级为本地规则版，这里只展示 source / code，不弹错、不阻塞看板。
  * 结构复用 CardHead（标题 + 右侧 hint + 右上按钮），不另造卡片头。
+ *
+ * 展示结构（headline / dimensions / advice / risk）由 profile-view.js 归一化，
+ * AI 版与本地规则版同构，降级时观感一致。
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { formatInt } from "../format.js";
+import { profileSections } from "../profile-view.js";
 import { CardHead } from "./card-head.jsx";
 
 const API_PATH = "/workload-report/v1";
@@ -135,6 +139,7 @@ export function ProfileCard({ t, lang = "zh", days, scope, allTime = false, tz }
   const usage = profile?.usage;
   const generatedAt = profile?.generatedAt;
   const timestamp = timeText(generatedAt, lang);
+  const view = profile === null ? null : profileSections(profile);
 
   return (
     <div className="wl-card wl-profile-card" data-kind="ai-profile" data-source={source ?? undefined} aria-busy={generating}>
@@ -156,7 +161,7 @@ export function ProfileCard({ t, lang = "zh", days, scope, allTime = false, tz }
 
       {profile === null && !generating ? <p className="wl-hint">{t("profile.intro")}</p> : null}
 
-      {profile !== null ? (
+      {view !== null ? (
         <>
           <div className="wl-profile-meta">
             <span className="wl-profile-source" data-source={source}>
@@ -164,13 +169,46 @@ export function ProfileCard({ t, lang = "zh", days, scope, allTime = false, tz }
             </span>
             {codeKey === null ? null : <span className="wl-status" data-tone="error">{t(codeKey)}</span>}
           </div>
-          <ul className="wl-profile-traits">
-            {profile.traits.map((trait, index) => <li key={`${index}-${trait}`}>{trait}</li>)}
-          </ul>
-          <p className="wl-profile-advice">
-            <strong>{t("profile.advice")}</strong>
-            {profile.advice}
-          </p>
+
+          {view.headline === "" ? null : (
+            <p className="wl-profile-headline" data-kind="profile-headline">{view.headline}</p>
+          )}
+
+          {view.dimensions.length === 0 ? null : (
+            <ul className="wl-profile-dims" data-kind="profile-dimensions">
+              {view.dimensions.map((item, index) => (
+                <li className="wl-profile-dim" data-key={item.key} key={`${index}-${item.key}-${item.title}`}>
+                  <div className="wl-profile-dim-head">
+                    <span className="wl-profile-dim-title">{item.title}</span>
+                    <span className="wl-profile-dim-insight">{item.insight}</span>
+                  </div>
+                  {item.evidence === "" ? null : (
+                    <p className="wl-profile-dim-evidence" data-kind="profile-evidence">{item.evidence}</p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {view.risk === null ? null : (
+            <p className="wl-profile-risk" data-kind="profile-risk">
+              <strong>{t("profile.risk")}</strong>
+              {view.risk}
+            </p>
+          )}
+
+          {view.advice.length === 0 ? null : (
+            <div className="wl-profile-advice-list" data-kind="profile-advice">
+              <strong className="wl-profile-advice-label">{t("profile.advice")}</strong>
+              {view.advice.map((item, index) => (
+                <div className="wl-profile-advice-item" key={`${index}-${item.text}`}>
+                  <span className="wl-profile-advice-text">{item.text}</span>
+                  {item.why === "" ? null : <span className="wl-profile-advice-why">{item.why}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+
           <p className="wl-hint wl-hint-spaced" data-kind="profile-usage">
             {source === "llm" && usage !== undefined
               ? t("profile.usage", {

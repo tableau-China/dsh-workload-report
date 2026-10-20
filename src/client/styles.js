@@ -186,9 +186,39 @@ export const STYLES = `
   background: color-mix(in srgb, var(--dsw-static-deepseek-500, #4d6bfe) 14%, var(--dsw-alias-bg-layer-1, #ffffff));
   color: var(--dsw-static-deepseek-600, #3b57e0);
 }
-.wl-profile-traits { margin: 0; padding-left: 18px; display: grid; gap: 5px; font-size: 12px; line-height: 1.6; color: var(--dsw-alias-label-primary, #1a1d21); }
-.wl-profile-advice { margin: 10px 0 0; font-size: 12px; line-height: 1.6; color: var(--dsw-alias-label-secondary, #4b5563); }
-.wl-profile-advice strong { margin-right: 6px; color: var(--dsw-alias-label-primary, #1a1d21); font-weight: 600; }
+/* 画像正文：顶部大字 → 维度（标题 + 含数字结论 + 灰色证据）→ 风险条 → 建议（带 why）。 */
+.wl-profile-headline {
+  margin: 2px 0 10px; font-size: 18px; font-weight: 650; line-height: 1.35;
+  letter-spacing: -0.01em; color: var(--dsw-alias-label-primary, #1a1d21);
+}
+.wl-profile-dims { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.wl-profile-dim {
+  padding-left: 10px; border-left: 2px solid var(--dsw-static-deepseek-300, #a9b8ff);
+}
+.wl-profile-dim-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.wl-profile-dim-title {
+  flex: 0 0 auto; font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+  color: var(--dsw-static-deepseek-600, #3b57e0);
+}
+.wl-profile-dim-insight { font-size: 12.5px; line-height: 1.55; color: var(--dsw-alias-label-primary, #1a1d21); }
+.wl-profile-dim-evidence {
+  margin: 2px 0 0; font-size: 11px; line-height: 1.5;
+  color: var(--dsw-alias-label-secondary, #4b5563);
+}
+.wl-profile-risk {
+  margin: 10px 0 0; padding: 7px 10px; border-left: 3px solid #f59e0b; border-radius: 4px;
+  background: color-mix(in srgb, #f59e0b 10%, transparent);
+  font-size: 11.5px; line-height: 1.55; color: var(--dsw-alias-label-primary, #1a1d21);
+}
+.wl-profile-risk strong { margin-right: 6px; color: #b45309; font-weight: 600; }
+.wl-profile-advice-list { margin-top: 12px; display: grid; gap: 6px; }
+.wl-profile-advice-label { font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-primary, #1a1d21); }
+.wl-profile-advice-item {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  font-size: 12px; line-height: 1.55; color: var(--dsw-alias-label-primary, #1a1d21);
+}
+.wl-profile-advice-text::before { content: "·"; margin-right: 6px; color: var(--dsw-static-deepseek-500, #4d6bfe); }
+.wl-profile-advice-why { font-size: 11px; color: var(--dsw-alias-label-secondary, #4b5563); }
 .wl-profile-card .wl-status[data-kind="profile-signin"] { margin: 0 0 8px; white-space: normal; }
 .wl-profile-card .wl-state { padding: 14px 0; text-align: left; }
 /* 顶部工具栏余额 chip：紧凑、只用宿主主题 token；未启用时组件根本不渲染（无外壳） */
