@@ -1172,12 +1172,17 @@ export function apply(ctx, config = {}) {
         } catch (error) {
           // 连续计快照都失败时也要降级，不把异常抛给 UI。
           const payload = buildProfilePayload({});
+          const local = localProfile(payload, lang);
           body = {
             enabled: true,
             source: "local",
             code: profileCodeOf(error),
-            ...localProfile(payload, lang),
+            headline: local.headline,
+            dimensions: local.dimensions,
+            advice: local.advice,
+            risk: local.risk,
             usage: { input: 0, output: 0, total: 0 },
+            costHint: { inputTokens: 0, outputTokens: 0 },
             model: null,
             generatedAt: Date.now(),
             fingerprint: profileFingerprint(payload),

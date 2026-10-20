@@ -9,8 +9,11 @@ import { barPercent } from "../src/client/bar-width.js";
 import { renderReport } from "../src/report-html.js";
 import { balanceChip } from "../src/client/balance.js";
 import {
-  PROFILE_LINE_MAX, PROFILE_PAYLOAD_KEYS, assertProfilePayload, buildProfilePayload, localProfile, parseProfileText, profileFingerprint,
+  PROFILE_DIMENSION_KEYS, PROFILE_EVIDENCE_MAX, PROFILE_HEADLINE_MAX, PROFILE_INSIGHT_MAX, PROFILE_LINE_MAX,
+  PROFILE_PAYLOAD_KEYS, PROFILE_TITLE_MAX, assertProfilePayload, buildProfilePayload, localProfile, parseProfileText, profileFingerprint,
 } from "../src/ai-profile.js";
+import { profileSections } from "../src/profile-view.js";
+import { AI_PROFILE_DEFAULTS, systemPrompt } from "../src/profile-service.js";
 import { hourTokensNote } from "../src/client/hour-status.js";
 import { translate } from "../src/client/locales.js";
 import {
@@ -1189,8 +1192,9 @@ console.log("\n—— AI 用户画像（payload 白名单 / 指纹 / 本地规�
   eq(
     JSON.stringify(Object.keys(profilePayload).sort()),
     JSON.stringify([...PROFILE_PAYLOAD_KEYS].sort()),
-    "payload 顶层键集合严格等于白名单",
+    `payload 顶层键集合严格等于白名单（${PROFILE_PAYLOAD_KEYS.length} 个）`,
   );
+  ok(PROFILE_PAYLOAD_KEYS.length >= 50, "白名单已扩充到 50+ 个聚合字段", String(PROFILE_PAYLOAD_KEYS.length));
   eq(profilePayload.activeHours24.unit, "tokens", "activeHours24 注明 Token 口径");
   eq(profilePayload.activeHours24.values.length, 24, "activeHours24 有 24 个小时值");
   ok(profilePayload.byWorkspace.length <= 5 && profilePayload.byWorkspace.length > 0, "byWorkspace 最多 5 项且有数据");
@@ -1203,12 +1207,80 @@ console.log("\n—— AI 用户画像（payload 白名单 / 指纹 / 本地规�
     profilePayload.byModel.every((item) => JSON.stringify(Object.keys(item).sort()) === JSON.stringify(["name", "share"])),
     "byModel 子项只有 name + share",
   );
+
+  // —— 新增结构：会话 / Token / 时段 / 工作区 / 等待 / 趋势 / 模型 ——
+  eq(profilePayload.sessions, modelSnap.totals.sessions, "payload.sessions = 会话总数（含空会话）");
+  eq(profilePayload.conversations, modelSnap.totals.conversations, "payload.conversations = 有步骤的会话数");
+  eq(profilePayload.tokensInput + profilePayload.tokensOutput + profilePayload.tokensCacheRead + profilePayload.tokensCacheWrite, profilePayload.tokensTotal, "Token 四分量之和 = tokensTotal");
+  ok(Math.abs(profilePayload.inputShare + profilePayload.outputShare + profilePayload.cacheReadShare + profilePayload.cacheWriteShare - 1) < 0.001, "Token 四项占比之和 ≈ 1");
+  eq(profilePayload.avgOutputTokensPerTurn, Math.round(modelSnap.totals.tokens.output / modelSnap.totals.turns), "平均每轮输出 token 由输出 / 轮次派生");
+  eq(profilePayload.avgSessionActiveMs, Math.round(modelSnap.totals.netActiveMs / modelSnap.totals.conversations), "平均会话活跃时长由净活跃 / 对话数派生");
+  ok(Math.abs(profilePayload.avgTurnsPerConversation - modelSnap.totals.turns / modelSnap.totals.conversations) < 0.11, "平均每会话轮次派生正确");
+  ok(Math.abs(profilePayload.avgStepsPerTurn - modelSnap.totals.steps / modelSnap.totals.turns) < 0.11, "平均每轮步骤派生正确");
+  ok(
+    Math.abs(profilePayload.durationUnder15mShare + profilePayload.duration15to60mShare + profilePayload.duration1to3hShare + profilePayload.durationOver3hShare - 1) < 0.001,
+    "会话时长四桶占比之和 ≈ 1",
+  );
+  eq(profilePayload.durationSampleSessions, modelSnap.totals.conversations, "时长分桶样本量 = 有步骤的会话数（夹具 ≤300）");
+  ok(Math.abs(profilePayload.bandNightActiveShare + profilePayload.bandMorningActiveShare + profilePayload.bandForenoonActiveShare + profilePayload.bandAfternoonActiveShare + profilePayload.bandEveningActiveShare - 1) < 0.001, "5 个时段活跃占比之和 ≈ 1");
+  eq(profilePayload.bandForenoonActiveShare, 1, "夹具会话都发生在 10 点 → 上午占比 100%");
+  eq(profilePayload.bandNightTokenShare + profilePayload.bandMorningTokenShare + profilePayload.bandForenoonTokenShare + profilePayload.bandAfternoonTokenShare + profilePayload.bandEveningTokenShare, 0, "无事件时间戳时 5 个时段 Token 占比全为 0（不用 0 冒充有数据）");
+  eq(profilePayload.workspaceCount, modelSnap.totals.workspaces, "workspaceCount 来自 totals.workspaces");
+  eq(profilePayload.topWorkspaceShare, profilePayload.byWorkspace[0].share, "topWorkspaceShare = 第一工作区活跃占比");
+  eq(profilePayload.workspaceSwitchCount, 1, "工作区切换次数近似：proj-b → proj-a 共 1 次");
+  eq(profilePayload.modelCount, modelSnap.byModel.length, "modelCount 统计全部模型（不受 Top5 截断）");
+  eq(profilePayload.topModelShare, profilePayload.byModel[0].share, "topModelShare = 第一模型 Token 占比");
+  eq(profilePayload.multiModel, true, "multiModel = 模型数 > 1");
+  eq(profilePayload.waitShare, 0, "waitShare = 等待 / (净活跃 + 等待)");
+  eq(profilePayload.trendDays, 7, "trendDays 固定为 7");
+  eq(profilePayload.trendActiveDeltaPct, null, "前 7 天无数据 → 环比 null（数据不足）");
+  eq(profilePayload.trendTokensDeltaPct, null, "前 7 天无 Token → 环比 null（数据不足）");
+  for (const key of PROFILE_PAYLOAD_KEYS) {
+    const value = profilePayload[key];
+    if (typeof value !== "number") continue;
+    ok(Number.isFinite(value) && value >= 0, "payload." + key + " 是非负有限数");
+  }
+
+  // —— 趋势：14 天窗口能算出近 7 天 vs 前 7 天 ——
+  const dayKeyOf = (offset) => new Date(Date.parse("2026-09-27T00:00:00Z") + offset * 86400000).toISOString().slice(0, 10);
+  const trendSnapshot = {
+    range: { from: "2026-09-27", to: "2026-10-10", days: 14, timeZone: "UTC" },
+    totals: { netActiveMs: 0, waitMs: 0, sessions: 0, conversations: 0, turns: 0, steps: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, workspaces: 0 },
+    byHour: [],
+    byDay: Array.from({ length: 14 }, (_, index) => ({
+      date: dayKeyOf(index),
+      activeMs: index < 7 ? 1000 : 2000,
+      tokensTotal: index < 7 ? 100 : 200,
+    })),
+    byWorkspace: [],
+    byModel: [],
+    bySession: [],
+  };
+  const trendPayload = buildProfilePayload(trendSnapshot);
+  eq(trendPayload.trendActivePrevMs, 7000, "趋势：前 7 天活跃 7s");
+  eq(trendPayload.trendActiveLastMs, 14000, "趋势：近 7 天活跃 14s");
+  eq(trendPayload.trendActiveDeltaPct, 100, "趋势：活跃环比 +100%");
+  eq(trendPayload.trendTokensPrev, 700, "趋势：前 7 天 Token 700");
+  eq(trendPayload.trendTokensLast, 1400, "趋势：近 7 天 Token 1400");
+  eq(trendPayload.trendTokensDeltaPct, 100, "趋势：Token 环比 +100%");
+  const shortTrend = buildProfilePayload({ ...trendSnapshot, range: { ...trendSnapshot.range, days: 13 }, byDay: trendSnapshot.byDay.slice(0, 13) });
+  eq(shortTrend.trendActiveDeltaPct, null, "区间不足 14 天 → 趋势仍为 null");
+
+  // —— 隐私：键 / 字符串 / 嵌套都不得夹带标题、路径、会话 id ——
+  const serializedPayload = JSON.stringify(profilePayload);
+  ok(!Object.keys(profilePayload).includes("title") && !Object.keys(profilePayload).includes("cwd") && !Object.keys(profilePayload).includes("sessionId"), "payload 不含 title / cwd / sessionId 顶层键");
+  ok(!/"(title|cwd|path|sessionId|prompt|content|message|text)"/i.test(serializedPayload), "payload 序列化后不含私有键名");
   ok(!JSON.stringify(profilePayload).includes(modelSnap.byWorkspace[0].key), "payload 不含工作区完整路径（只留显示名）");
+  ok(!serializedPayload.includes("/Users/"), "payload 字符串不含 /Users/ 路径");
+  for (const key of ["byWorkspace", "byModel"]) {
+    ok(profilePayload[key].every((item) => !item.name.includes("/") && !item.name.includes("\\")), "payload." + key + " 名称不含路径分隔符");
+  }
   const privatePayload = buildProfilePayload(snapshot);
   ok(!JSON.stringify(privatePayload).includes("会话 A"), "payload 不含会话标题");
   ok(!JSON.stringify(privatePayload).includes("/Users/me/proj-a"), "payload 不含 cwd 原文");
   ok(profilePayload.weekendShare >= 0 && profilePayload.weekendShare <= 1, "weekendShare 是 0–1 占比");
   ok(profilePayload.nightShare >= 0 && profilePayload.nightShare <= 1, "nightShare 是 0–1 占比");
+  ok(profilePayload.waitShare >= 0 && profilePayload.waitShare <= 1, "waitShare 是 0–1 占比");
 
   let rejected = false;
   try {
@@ -1217,6 +1289,20 @@ console.log("\n—— AI 用户画像（payload 白名单 / 指纹 / 本地规�
     rejected = true;
   }
   ok(rejected, "白名单断言拒绝额外键（防止后续改动夹带标题 / 路径）");
+  let nestedRejected = false;
+  try {
+    assertProfilePayload({ ...profilePayload, byWorkspace: [{ name: "proj-a", share: 1, cwd: "/Users/me/proj-a" }] });
+  } catch {
+    nestedRejected = true;
+  }
+  ok(nestedRejected, "白名单断言拒绝 byWorkspace 子项夹带 cwd");
+  let pathRejected = false;
+  try {
+    assertProfilePayload({ ...profilePayload, byWorkspace: [{ name: "/Users/me/proj-a", share: 1 }] });
+  } catch {
+    pathRejected = true;
+  }
+  ok(pathRejected, "白名单断言拒绝字符串值里的路径");
 
   const fingerprintA = profileFingerprint(profilePayload);
   const fingerprintB = profileFingerprint(buildProfilePayload(modelSnap));
@@ -1224,47 +1310,160 @@ console.log("\n—— AI 用户画像（payload 白名单 / 指纹 / 本地规�
   eq(fingerprintA.length, 16, "指纹取 sha256 前 16 位");
   const changedPayload = buildProfilePayload({ ...modelSnap, totals: { ...modelSnap.totals, turns: modelSnap.totals.turns + 1 } });
   ok(profileFingerprint(changedPayload) !== fingerprintA, "统计变化后指纹随之变化");
+  ok(profileFingerprint(trendPayload) !== fingerprintA, "新增趋势字段参与指纹（不同统计不同指纹）");
 
+  // —— 本地规则版：与 AI 输出同构 ——
   const localZh = localProfile(profilePayload, "zh");
   const localEn = localProfile(profilePayload, "en");
-  ok(localZh.traits.length >= 3 && localZh.traits.length <= 5, "本地规则画像 3–5 条特征");
-  ok(localEn.traits.length >= 3 && localEn.traits.length <= 5, "英文本地规则画像 3–5 条特征");
-  ok(localZh.traits.every((line) => [...line].length <= PROFILE_LINE_MAX), "本地规则每条特征 ≤40 字符");
-  ok(localEn.traits.every((line) => [...line].length <= PROFILE_LINE_MAX), "英文本地规则每条特征 ≤40 字符");
-  ok(localZh.advice.length > 0 && [...localZh.advice].length <= PROFILE_LINE_MAX, "本地规则恰好 1 条建议且 ≤40 字符");
-  ok(localZh.traits.some((line) => line.includes("轮") || line.includes("步")), "本地规则覆盖任务偏好（轮次 / 步骤）");
-  ok(localZh.traits.some((line) => line.includes("主要使用") || line.includes("Token")), "本地规则覆盖技术栈倾向（模型 / Token）");
-  ok(localZh.traits.some((line) => line.includes("等待用户")), "本地规则覆盖协作模式（等待用户）");
+  ok(localZh.headline.length > 0 && [...localZh.headline].length <= PROFILE_HEADLINE_MAX, "本地规则 headline ≤30 字符");
+  ok(localEn.headline.length > 0 && [...localEn.headline].length <= PROFILE_HEADLINE_MAX, "英文本地规则 headline ≤30 字符");
+  ok(localZh.dimensions.length >= 4 && localZh.dimensions.length <= 6, "本地规则 4–6 个维度");
+  ok(localEn.dimensions.length >= 4 && localEn.dimensions.length <= 6, "英文本地规则 4–6 个维度");
+  ok(localZh.dimensions.every((item) => PROFILE_DIMENSION_KEYS.includes(item.key)), "本地规则维度 key 都在允许集合");
+  ok(localZh.dimensions.every((item) => [...item.title].length <= PROFILE_TITLE_MAX), "本地规则维度标题 ≤8 字符");
+  ok(localZh.dimensions.every((item) => [...item.insight].length <= PROFILE_INSIGHT_MAX && /[0-9]/.test(item.insight)), "本地规则每条结论 ≤60 字符且含数字");
+  ok(localZh.dimensions.every((item) => [...item.evidence].length <= PROFILE_EVIDENCE_MAX), "本地规则每条证据 ≤40 字符");
+  ok(localZh.advice.length >= 2 && localZh.advice.length <= 3, "本地规则 2–3 条建议");
+  ok(localZh.advice.every((item) => [...item.text].length <= PROFILE_LINE_MAX && [...item.why].length <= PROFILE_LINE_MAX), "本地规则建议 text / why 均 ≤40 字符");
+  ok(localZh.risk === null || [...localZh.risk].length <= PROFILE_LINE_MAX, "本地规则 risk 为 null 或 ≤40 字符");
+  ok(localZh.dimensions.some((item) => item.key === "collab" && /轮|等待/.test(item.insight)), "本地规则覆盖协作（轮次 / 等待）");
+  ok(localZh.dimensions.some((item) => item.key === "trend" && /7/.test(item.insight + item.evidence)), "本地规则覆盖趋势（7 天口径）");
+  const trendLocal = localProfile(trendPayload, "zh");
+  ok(trendLocal.dimensions.some((item) => item.key === "trend" && item.insight.includes("100")), "本地规则有基线时写出环比数字");
+  const nightPayload = { ...profilePayload, nightShare: 0.4, bandNightActiveShare: 0.4 };
+  const nightLocal = localProfile(nightPayload, "zh");
+  ok(typeof nightLocal.risk === "string" && nightLocal.risk.includes("夜间"), "本地规则夜间占比高时给出 risk");
+  ok(nightLocal.dimensions.some((item) => item.key === "rhythm" && item.insight.includes("40")), "本地规则夜间维度引用 40% 数字");
 
-  const parsed = parseProfileText("\u0060\u0060\u0060json\n" + JSON.stringify({ traits: ["节奏稳定", "聚焦交付", "模型集中"], advice: "保持当前节奏。" }) + "\n\u0060\u0060\u0060");
-  eq(parsed.traits.length, 3, "解析模型输出：接受代码围栏里的 3 条特征");
-  eq(parsed.advice, "保持当前节奏。", "解析模型输出：保留建议");
-  const clamped = parseProfileText(JSON.stringify({ traits: ["长".repeat(100), "b", "c"], advice: "建议".repeat(30) }));
-  ok([...clamped.traits[0]].length === PROFILE_LINE_MAX, "解析后单条特征压到 40 字符");
-  ok([...clamped.advice].length === PROFILE_LINE_MAX, "解析后建议压到 40 字符");
+  // —— 解析四路径 ——
+  const sampleProfile = {
+    headline: "夜间型深度工作者",
+    dimensions: [
+      { key: "rhythm", title: "节奏", insight: "夜间活跃 41%，高峰 23:00", evidence: "22–6 点 41%" },
+      { key: "focus", title: "专注", insight: "单会话均值 48 m", evidence: "会话 12 · 均值 48 m" },
+      { key: "stack", title: "工具栈", insight: "缓存命中 64%，输入占 12%", evidence: "缓存 64% · 输入 12%" },
+      { key: "collab", title: "协作", insight: "等待用户 9%，每会话 4.2 轮", evidence: "等待 9% · 4.2 轮" },
+      { key: "trend", title: "趋势", insight: "近 7 天活跃环比 +18%", evidence: "12 h → 14 h" },
+    ],
+    advice: [
+      { text: "固定系统提示与上下文", why: "缓存命中 64%" },
+      { text: "合并确认点", why: "等待用户 9%" },
+    ],
+    risk: "夜间投入偏高 41%",
+  };
+  const plainParsed = parseProfileText(JSON.stringify(sampleProfile));
+  eq(plainParsed.headline, sampleProfile.headline, "解析路径 1：干净 JSON 直接成功");
+  eq(plainParsed.dimensions.length, 5, "解析路径 1：保留 5 个维度");
+  eq(plainParsed.advice.length, 2, "解析路径 1：保留 2 条建议");
+  eq(plainParsed.risk, sampleProfile.risk, "解析路径 1：保留 risk");
+  const fencedParsed = parseProfileText("```json\n" + JSON.stringify(sampleProfile) + "\n```");
+  eq(fencedParsed.headline, sampleProfile.headline, "解析路径 2：代码围栏包裹可解析");
+  const proseParsed = parseProfileText("先解释一句。\n" + JSON.stringify(sampleProfile) + "\n以上。");
+  eq(proseParsed.headline, sampleProfile.headline, "解析路径 3：前后夹解释文字时宽松提取");
+  const tripleParsed = parseProfileText('"""' + JSON.stringify(sampleProfile) + '"""');
+  eq(tripleParsed.headline, sampleProfile.headline, "解析路径 2b：三引号包裹可解析");
   let parseRejected = null;
   try {
     parseProfileText("这不是 JSON");
   } catch (error) {
-    parseRejected = error.code;
+    parseRejected = error;
   }
-  eq(parseRejected, "AI_PARSE_FAILED", "解析失败带稳定 code（路由据此降级）");
-  let shortRejected = null;
-  try {
-    parseProfileText(JSON.stringify({ traits: ["只有一条"], advice: "x" }));
-  } catch (error) {
-    shortRejected = error.code;
-  }
-  eq(shortRejected, "AI_PARSE_FAILED", "少于 3 条特征视为解析失败（不猜）");
+  eq(parseRejected?.code, "AI_PARSE_FAILED", "解析路径 4：失败带稳定 code（路由据此降级）");
+  ok(String(parseRejected?.rawText ?? "").includes("这不是 JSON"), "解析失败保留原始文本前 300 字");
+  ok([...String(parseRejected?.rawText ?? "")].length <= 300, "原始文本截断到 300 字符");
+  const digitRejected = (() => {
+    try {
+      parseProfileText(JSON.stringify({ ...sampleProfile, dimensions: sampleProfile.dimensions.map((item) => ({ ...item, insight: "没有数字的结论" })) }));
+      return null;
+    } catch (error) {
+      return error.code;
+    }
+  })();
+  eq(digitRejected, "AI_PARSE_FAILED", "维度结论缺数字视为解析失败");
+  const shortRejected = (() => {
+    try {
+      parseProfileText(JSON.stringify({ ...sampleProfile, dimensions: sampleProfile.dimensions.slice(0, 3) }));
+      return null;
+    } catch (error) {
+      return error.code;
+    }
+  })();
+  eq(shortRejected, "AI_PARSE_FAILED", "少于 4 个维度视为解析失败（不猜）");
+  const adviceRejected = (() => {
+    try {
+      parseProfileText(JSON.stringify({ ...sampleProfile, advice: sampleProfile.advice.slice(0, 1) }));
+      return null;
+    } catch (error) {
+      return error.code;
+    }
+  })();
+  eq(adviceRejected, "AI_PARSE_FAILED", "少于 2 条建议视为解析失败（不猜）");
+  const clamped = parseProfileText(JSON.stringify({
+    ...sampleProfile,
+    headline: "长".repeat(100),
+    dimensions: sampleProfile.dimensions.map((item) => ({ ...item, title: "题".repeat(50), insight: "1".repeat(100), evidence: "证".repeat(100) })),
+    advice: sampleProfile.advice.map((item) => ({ text: "建".repeat(100), why: "因".repeat(100) })),
+    risk: "险".repeat(100),
+  }));
+  eq([...clamped.headline].length, PROFILE_HEADLINE_MAX, "解析后 headline 压到 30 字符");
+  eq([...clamped.dimensions[0].title].length, PROFILE_TITLE_MAX, "解析后维度标题压到 8 字符");
+  eq([...clamped.dimensions[0].insight].length, PROFILE_INSIGHT_MAX, "解析后结论压到 60 字符");
+  eq([...clamped.dimensions[0].evidence].length, PROFILE_EVIDENCE_MAX, "解析后证据压到 40 字符");
+  eq([...clamped.advice[0].text].length, PROFILE_LINE_MAX, "解析后建议压到 40 字符");
+  eq([...clamped.risk].length, PROFILE_LINE_MAX, "解析后 risk 压到 40 字符");
+  const keyAlias = parseProfileText(JSON.stringify({ ...sampleProfile, dimensions: sampleProfile.dimensions.map((item) => ({ ...item, key: item.key === "rhythm" ? "unknown" : item.key })) }));
+  eq(keyAlias.dimensions[0].key, "focus", "未知维度 key 回退到 focus（不丢整份画像）");
+  const nullRisk = parseProfileText(JSON.stringify({ ...sampleProfile, risk: null }));
+  eq(nullRisk.risk, null, "risk=null 合法");
+
+  // —— 前端渲染结构（同构归一化 + 源码结构） ——
+  const view = profileSections(sampleProfile);
+  eq(view.headline, sampleProfile.headline, "渲染结构：headline 直接透传");
+  eq(view.dimensions.length, 5, "渲染结构：dimensions 5 条");
+  eq(view.dimensions[0].key, "rhythm", "渲染结构：维度带 key（data-key 用）");
+  eq(view.dimensions[0].title, "节奏", "渲染结构：维度标题");
+  ok(view.dimensions.every((item) => item.insight.length > 0 && item.evidence.length > 0), "渲染结构：维度含结论 + 证据");
+  eq(view.advice.length, 2, "渲染结构：advice 2 条");
+  ok(view.advice.every((item) => item.text.length > 0 && item.why.length > 0), "渲染结构：建议含 why");
+  eq(view.risk, sampleProfile.risk, "渲染结构：risk 透传");
+  const emptyView = profileSections(null);
+  ok(emptyView.headline === "" && emptyView.dimensions.length === 0 && emptyView.advice.length === 0 && emptyView.risk === null, "渲染结构：空画像也安全");
+  const legacyView = profileSections({ traits: ["节奏稳定", "任务聚焦", "模型集中"], advice: "旧建议。" });
+  eq(legacyView.dimensions.length, 3, "渲染结构：旧 traits 兼容映射为 dimensions");
+  eq(legacyView.advice[0].text, "旧建议。", "渲染结构：旧字符串 advice 兼容为 advice[{text}]");
+  const clampedView = profileSections({
+    headline: "长".repeat(100),
+    dimensions: [{ key: "rhythm", title: "题".repeat(50), insight: "1".repeat(100), evidence: "证".repeat(100) }],
+    advice: [{ text: "建".repeat(100), why: "因".repeat(100) }],
+    risk: "险".repeat(100),
+  });
+  eq([...clampedView.headline].length, PROFILE_HEADLINE_MAX, "渲染结构：headline 同样压到 30 字符");
+  eq([...clampedView.dimensions[0].title].length, PROFILE_TITLE_MAX, "渲染结构：标题同样压到 8 字符");
+  eq([...clampedView.dimensions[0].insight].length, PROFILE_INSIGHT_MAX, "渲染结构：结论同样压到 60 字符");
+  eq([...clampedView.dimensions[0].evidence].length, PROFILE_EVIDENCE_MAX, "渲染结构：证据同样压到 40 字符");
+  eq([...clampedView.advice[0].text].length, PROFILE_LINE_MAX, "渲染结构：建议同样压到 40 字符");
+  eq([...clampedView.risk].length, PROFILE_LINE_MAX, "渲染结构：risk 同样压到 40 字符");
 
   const cardSource = await readFile(new URL("../src/client/profile-card.jsx", import.meta.url), "utf8");
   const clientIndexSource = await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8");
+  const stylesSource = await readFile(new URL("../src/client/styles.js", import.meta.url), "utf8");
+  const localesSource = await readFile(new URL("../src/client/locales.js", import.meta.url), "utf8");
   ok(cardSource.includes("<CardHead"), "画像卡复用 CardHead（标题 + 右侧 hint + 右上按钮）");
   ok(/status === "probing" \|\| status === "disabled"\) return null/.test(cardSource), "未启用 / probe 中整卡不渲染（不显示入口）");
   ok(cardSource.includes("disabled={generating}") && cardSource.includes("profile.generating"), "生成中按钮禁用并显示「生成中…」");
   ok(clientIndexSource.includes('import { ProfileCard }') && clientIndexSource.includes("<ProfileCard"), "ProfileCard 已接入按日期页");
+  ok(cardSource.includes("profileSections(profile)"), "卡片用 profileSections 做同构归一化");
+  ok(cardSource.includes('data-kind="profile-headline"'), "渲染结构：顶部大字 headline（data-kind）");
+  ok(cardSource.includes('data-kind="profile-dimensions"') && cardSource.includes("data-key={item.key}"), "渲染结构：维度列表带 key / title / insight");
+  ok(cardSource.includes('data-kind="profile-evidence"'), "渲染结构：灰色证据小字");
+  ok(cardSource.includes('data-kind="profile-advice"') && cardSource.includes("item.why"), "渲染结构：建议 + why 小字");
+  ok(cardSource.includes('data-kind="profile-risk"') && cardSource.includes('t("profile.risk")'), "渲染结构：有 risk 时显示浅色警示条");
+  ok(cardSource.includes('data-source=') && cardSource.includes('t("profile.source.llm")') && cardSource.includes('t("profile.source.local")'), "保留来源徽标（AI 生成 / 本地规则版）");
+  ok(cardSource.includes("profile.usage") && cardSource.includes("timeText"), "保留 usage 与生成时间");
+  ok(cardSource.includes("profile.regenerate"), "保留重新生成按钮");
+  ok(stylesSource.includes(".wl-profile-headline") && stylesSource.includes(".wl-profile-dim-evidence") && stylesSource.includes(".wl-profile-risk"), "样式覆盖 headline / 证据 / 风险条");
+  ok(localesSource.includes('"profile.risk": "风险提示："') && localesSource.includes('"profile.risk": "Risk: "'), "profile.risk 中英文案齐全");
 }
-
 console.log("\n—— 报告结构对齐（看板 → 报告）——");
 {
   // 回填中：状态行必须显示「正在计算中……」；数据用模型快照，时刻 / 日历 / KPI 都有内容。
@@ -1835,6 +2034,23 @@ function makeLlm({ providers = [{ id: "p" }], models = [{ id: "m" }], text = "",
   return { spy, service };
 }
 
+/** 宿主路由测试用的合法 AI 输出（4 维度 + 2 建议，所有 insight 含数字）。 */
+const AI_HOST_SAMPLE = {
+  headline: "白天节奏的稳定交付者",
+  dimensions: [
+    { key: "rhythm", title: "节奏", insight: "上午活跃 62%，高峰 10:00", evidence: "上午 62% · 高峰 10:00" },
+    { key: "focus", title: "专注", insight: "单会话 1.0 h，短会话占 0%", evidence: "会话 1 · 均值 1.0 h" },
+    { key: "stack", title: "工具栈", insight: "缓存命中 80%，输入占 20%", evidence: "缓存 80% · 输入 20%" },
+    { key: "collab", title: "协作", insight: "等待用户 0%，每会话 2 轮", evidence: "2 轮 · 4 步" },
+  ],
+  advice: [
+    { text: "固定系统提示与上下文", why: "缓存命中 80%" },
+    { text: "给高消耗会话设产出目标", why: "单会话 0.83 K" },
+  ],
+  risk: null,
+};
+const aiHostText = () => JSON.stringify(AI_HOST_SAMPLE);
+
 /** 起一个隔离宿主实例：可选 llm / 默认模型 / aiProfile 配置。 */
 function bootProfile({ aiProfile = {}, llm, defaultSelection } = {}) {
   const routeList = [];
@@ -1923,8 +2139,11 @@ async function cleanupProfile(host, body) {
   const res = await routeJson(host.routeList, "/workload-report/v1/profile?days=30&tz=UTC");
   eq(res.body.source, "local", "无 llm：降级 source=local");
   eq(res.body.code, "LLM_UNAVAILABLE", "无 llm：code=LLM_UNAVAILABLE");
-  ok(res.body.traits.length >= 3 && res.body.traits.length <= 5, "无 llm：仍有 3–5 条本地特征");
-  ok(typeof res.body.advice === "string" && res.body.advice.length > 0, "无 llm：仍有 1 条本地建议");
+  ok(typeof res.body.headline === "string" && res.body.headline.length > 0, "无 llm：仍有本地 headline");
+  ok(Array.isArray(res.body.dimensions) && res.body.dimensions.length >= 4 && res.body.dimensions.length <= 6, "无 llm：仍有 4–6 个本地维度");
+  ok(Array.isArray(res.body.advice) && res.body.advice.length >= 2 && res.body.advice.length <= 3, "无 llm：仍有 2–3 条本地建议");
+  ok(res.body.risk === null || typeof res.body.risk === "string", "无 llm：risk 为 null 或字符串");
+  ok(res.body.usage.input === 0 && res.body.costHint.inputTokens === 0, "无 llm：usage / costHint 均为 0");
   await cleanupProfile(host, res.body);
 }
 
@@ -1952,10 +2171,13 @@ async function cleanupProfile(host, body) {
   eq(res.body.source, "local", "解析失败：降级 source=local");
   eq(res.body.code, "AI_PARSE_FAILED", "解析失败：code=AI_PARSE_FAILED");
   eq(llm.spy.prepare, 1, "解析失败：确实调用过一次模型");
+  ok(String(res.body.diagnostic?.excerpt ?? "").includes("这不是 JSON"), "解析失败：diagnostic.excerpt 保留原始文本");
+  ok([...String(res.body.diagnostic?.excerpt ?? "")].length <= 300, "解析失败：diagnostic.excerpt ≤300 字符");
+  ok(Array.isArray(res.body.dimensions) && res.body.dimensions.length >= 4, "解析失败：降级后仍有完整本地结构");
   await cleanupProfile(host, res.body);
 }
 {
-  const llm = makeLlm({ text: JSON.stringify({ traits: ["a", "b", "c"], advice: "x" }), finishKind: "max-tokens" });
+  const llm = makeLlm({ text: aiHostText(), finishKind: "max-tokens" });
   const host = bootProfile({ llm: llm.service, aiProfile: { provider: "p", model: "m" } });
   await waitHealth(host.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "非 stop 实例索引完成");
   const res = await routeJson(host.routeList, "/workload-report/v1/profile?days=30&tz=UTC");
@@ -1982,8 +2204,7 @@ async function cleanupProfile(host, body) {
 
 // 6) 成功 + 指纹缓存：第二次不再调用模型，force=1 才重新生成
 {
-  const traits = ["节奏稳定", "任务聚焦", "模型集中", "协作确认少"];
-  const llm = makeLlm({ text: JSON.stringify({ traits, advice: "保持当前节奏。" }) });
+  const llm = makeLlm({ text: aiHostText() });
   const host = bootProfile({ llm: llm.service, aiProfile: { provider: "p", model: "m" } });
   await waitHealth(host.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "成功实例索引完成");
   const probe = await routeJson(host.routeList, "/workload-report/v1/profile?probe=1");
@@ -1996,10 +2217,33 @@ async function cleanupProfile(host, body) {
   eq(first.body.cached, false, "成功：首次 cached=false");
   eq(first.body.usage.input, 12, "成功：记录输入 tokens");
   eq(first.body.usage.output, 34, "成功：记录输出 tokens");
-  eq(first.body.traits.length, 4, "成功：返回 4 条特征");
-  eq(first.body.advice, "保持当前节奏。", "成功：返回建议");
+  eq(first.body.usage.total, 46, "成功：usage.total = input + output");
+  eq(first.body.costHint.inputTokens, 12, "成功：costHint.inputTokens 记录输入");
+  eq(first.body.costHint.outputTokens, 34, "成功：costHint.outputTokens 记录输出（不猜价格）");
+  eq(first.body.headline, AI_HOST_SAMPLE.headline, "成功：返回 headline");
+  eq(first.body.dimensions.length, 4, "成功：返回 4 个维度");
+  eq(first.body.dimensions[0].key, "rhythm", "成功：维度带 key");
+  ok(first.body.dimensions.every((item) => item.title && item.insight && item.evidence), "成功：维度含 title / insight / evidence");
+  eq(first.body.advice.length, 2, "成功：返回 2 条建议");
+  ok(first.body.advice.every((item) => item.text && item.why), "成功：建议含 text / why");
+  eq(first.body.risk, null, "成功：risk=null 透传");
   ok(first.body.generatedAt > 0, "成功：记录生成时间");
   eq(llm.spy.prepare, 1, "成功：模型调用 1 次");
+  eq(llm.spy.prepareConfig?.maxTokens, 1600, "成功：maxTokens 默认 1600");
+  eq(AI_PROFILE_DEFAULTS.maxTokens, 1600, "配置默认 maxTokens=1600");
+  eq(llm.spy.prepareConfig?.temperature, 0.35, "成功：temperature=0.35");
+  eq(llm.spy.prepareConfig?.reasoningEffort, undefined, "成功：仍然不指定 reasoningEffort");
+
+  const systemText = String(llm.spy.payload?.system ?? "");
+  ok(systemText.includes("引用数字"), "prompt 必含「引用数字」");
+  ok(systemText.includes("可用键"), "prompt 必含「可用键」");
+  for (const field of ["headline", "dimensions", "advice", "risk", "evidence", "insight", "why"]) {
+    ok(systemText.includes(field), "prompt 含 schema 字段：" + field);
+  }
+  ok(systemText.includes("trendActiveDeltaPct") && systemText.includes("durationUnder15mShare") && systemText.includes("bandAfternoonActiveShare"), "prompt 的可用键覆盖新增字段");
+  ok(systemText.includes("不要 Markdown") && systemText.includes("严格 JSON"), "prompt 要求严格 JSON、不要 Markdown");
+  eq(systemPrompt("zh"), systemText, "systemPrompt('zh') 与实际发送的 system 一致");
+  ok(systemPrompt("en").includes("senior productivity analyst") && systemPrompt("en").includes("MUST cite concrete numbers"), "英文 prompt 同样要求引用数字");
 
   const sentPayload = JSON.parse(llm.spy.payload.messages[0].content[0].text);
   eq(
@@ -2007,12 +2251,18 @@ async function cleanupProfile(host, body) {
     JSON.stringify([...PROFILE_PAYLOAD_KEYS].sort()),
     "实际发给模型的键集合严格等于白名单",
   );
+  ok("durationUnder15mShare" in sentPayload && "bandNightTokenShare" in sentPayload && "trendActiveDeltaPct" in sentPayload, "实际发送内容包含新增结构字段");
+  ok(sentPayload.trendActiveDeltaPct === null || typeof sentPayload.trendActiveDeltaPct === "number", "趋势环比是数字或 null（数据不足）");
   ok(!JSON.stringify(sentPayload).includes("机密会话标题"), "实际发送内容不含会话标题");
   ok(!JSON.stringify(sentPayload).includes("/tmp/secret-workspace"), "实际发送内容不含路径原文");
+  ok(!/"(title|cwd|sessionId|prompt|content|message)"/i.test(JSON.stringify(sentPayload)), "实际发送内容不含私有键");
 
   const second = await routeJson(host.routeList, "/workload-report/v1/profile?days=30&tz=UTC&lang=zh");
   eq(second.body.cached, true, "缓存命中：第二次 cached=true");
   eq(second.body.fingerprint, first.body.fingerprint, "缓存命中：同一统计指纹");
+  eq(second.body.headline, first.body.headline, "缓存命中：headline 与首次一致");
+  eq(second.body.dimensions.length, 4, "缓存命中：dimensions 与首次一致");
+  eq(second.body.costHint.inputTokens, 12, "缓存命中：costHint 随缓存返回");
   eq(llm.spy.prepare, 1, "缓存命中：第二次请求模型调用次数仍为 1");
 
   const forced = await routeJson(host.routeList, "/workload-report/v1/profile?days=30&tz=UTC&lang=zh&force=1");
@@ -2023,7 +2273,7 @@ async function cleanupProfile(host, body) {
 
 // 7) 未配置 provider/model：回落到宿主默认模型
 {
-  const llm = makeLlm({ text: JSON.stringify({ traits: ["a", "b", "c"], advice: "d" }) });
+  const llm = makeLlm({ text: aiHostText() });
   const host = bootProfile({ llm: llm.service, defaultSelection: { provider: "p", model: "m" } });
   await waitHealth(host.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "默认模型实例索引完成");
   const res = await routeJson(host.routeList, "/workload-report/v1/profile?days=30&tz=UTC");
@@ -2060,8 +2310,9 @@ async function cleanupProfile(host, body) {
   eq(res.body.route?.origin, "config", "诊断：route.origin=config");
   eq(JSON.stringify(res.body.precheck?.providers), JSON.stringify(["p"]), "诊断：precheck.providers 来自 listProviders");
   eq(JSON.stringify(res.body.precheck?.models), JSON.stringify(["m"]), "诊断：precheck.models 来自 listModels");
-  ok(Array.isArray(res.body.traits) && res.body.traits.length >= 3 && res.body.traits.length <= 5, "诊断：默认路径仍为 3–5 条本地特征");
-  ok(typeof res.body.advice === "string" && res.body.advice.length > 0, "诊断：默认路径仍有 1 条本地建议");
+  ok(typeof res.body.headline === "string" && res.body.headline.length > 0, "诊断：默认路径仍有本地 headline");
+  ok(Array.isArray(res.body.dimensions) && res.body.dimensions.length >= 4, "诊断：默认路径仍有 4–6 个本地维度");
+  ok(Array.isArray(res.body.advice) && res.body.advice.length >= 2, "诊断：默认路径仍有 2–3 条本地建议");
 
   const health = await routeJson(host.routeList, "/workload-report/v1/health");
   const aiProfile = health.body.diagnostics.aiProfile;
@@ -2104,7 +2355,7 @@ async function cleanupProfile(host, body) {
   const llm = makeLlm({
     providers: [{ id: "p" }, { id: "q" }],
     models: [{ id: "m" }, { id: "n" }],
-    text: JSON.stringify({ traits: ["a", "b", "c"], advice: "d" }),
+    text: aiHostText(),
   });
   const host = bootProfile({ llm: llm.service, aiProfile: { provider: "p", model: "m" } });
   await waitHealth(host.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "调试覆盖实例索引完成");

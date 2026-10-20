@@ -14,6 +14,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
 import {
+  PROFILE_PAYLOAD_KEYS,
   buildProfilePayload,
   localProfile,
   parseProfileText,
@@ -25,13 +26,13 @@ export const AI_PROFILE_DEFAULTS = Object.freeze({
   enabled: false,
   provider: "",
   model: "",
-  maxTokens: 900,
+  maxTokens: 1600,
   timeoutMs: 60000,
   cacheTtlMs: 86400000,
 });
 
-/** 缓存文件格式版本（改字段时 +1；不影响索引 INDEX_VERSION）。v2 起缓存带 route / precheck / diagnostic。 */
-const PROFILE_CACHE_VERSION = 2;
+/** 缓存文件格式版本（改字段时 +1；不影响索引 INDEX_VERSION）。v3 起为 headline/dimensions/advice/risk + costHint。 */
+const PROFILE_CACHE_VERSION = 3;
 
 /** 稳定错误码：前端按它显示原因，并一律降级为本地规则版。 */
 export const PROFILE_CODES = Object.freeze({
@@ -98,7 +99,7 @@ export function buildProfileDiagnostic(error, fallbackStage = "route") {
   const code = profileCodeOf(error);
   const rawStage = typeof error?.stage === "string" && PROFILE_STAGES.includes(error.stage) ? error.stage : fallbackStage;
   const stage = PROFILE_STAGES.includes(rawStage) ? rawStage : "route";
-  return {
+  const diagnostic = {
     source: "local",
     code,
     error: {
@@ -107,6 +108,9 @@ export function buildProfileDiagnostic(error, fallbackStage = "route") {
       stage,
     },
   };
+  // 解析失败时把模型原始输出前 300 字附在 diagnostic 上（只来自模型，不含会话数据）。
+  if (typeof error?.rawText === "string" && error.rawText !== "") diagnostic.excerpt = error.rawText;
+  return diagnostic;
 }
 
 /** 合并调试用 provider/model 覆盖（空串 = 不覆盖）。 */
@@ -160,6 +164,11 @@ function normalizeUsage(usage) {
   return { input, output, total: input + output };
 }
 
+/** costHint 只是本插件这次旁路调用的 token 数，不猜价格。 */
+function costHintOf(usage) {
+  return { inputTokens: Math.max(0, Math.round(Number(usage?.input) || 0)), outputTokens: Math.max(0, Math.round(Number(usage?.output) || 0)) };
+}
+
 /** 把任意异常收敛成稳定错误码。 */
 export function profileCodeOf(error) {
   const code = String(error?.code ?? "");
@@ -205,25 +214,41 @@ function withAbort(promise, signal, timeoutMs) {
   });
 }
 
-/** 系统提示：只根据聚合统计，输出严格 JSON（不指定 reasoningEffort）。 */
-function systemPrompt(lang) {
+/** 可用键及单位说明：prompt 里显式列出，模型才知道哪些数字能用。 */
+const PAYLOAD_KEY_HELP = PROFILE_PAYLOAD_KEYS.join(", ");
+
+/**
+ * 系统提示：只根据聚合统计，输出严格 JSON（不指定 reasoningEffort）。
+ * 硬性要求写死在 prompt 里：引用数字、可用键、schema、空泛建议禁止。
+ */
+export function systemPrompt(lang) {
   if (lang === "en") {
     return [
-      "You are a work-style profiler. Use only the supplied aggregate statistics.",
-      "Do not infer conversation content, titles, file paths, or any fact not provided; do not invent project details.",
-      'Output one JSON object: {"traits": ["..."], "advice": "..."}.',
-      "traits: 3-5 items covering work rhythm, task preference, tech-stack leaning, and collaboration.",
-      "advice: exactly 1 item. Each line must be at most 40 characters.",
-      "Write in English. Output nothing except the JSON.",
+      "You are a senior productivity analyst. Write a profile using ONLY the supplied aggregate numbers.",
+      "Hard rules:",
+      "1) Never invent projects, conversations, files, or experiences that are not in the payload.",
+      "2) Every dimension insight MUST cite concrete numbers, e.g. \"afternoon 34%\" or \"42 m per conversation\". Insights without a number are invalid.",
+      "3) No generic advice such as \"take more rest\" or \"stay focused\"; every advice item must cite its numeric basis in why.",
+      "4) Be differentiated: lead with the 1-2 most distinctive facts instead of listing everything.",
+      "Output exactly one strict JSON object; no Markdown, no code fence, no explanation.",
+      'Schema: {"headline":"one-sentence profile, <=30 chars","dimensions":[{"key":"rhythm|focus|stack|collab|trend","title":"<=8 chars","insight":"<=60 chars, MUST contain a number","evidence":"<=40 chars, list the cited numbers"}],"advice":[{"text":"<=40 chars","why":"<=40 chars, numeric basis"}],"risk":"<=40 chars or null"}',
+      "dimensions: 4-6 items, key chosen from rhythm / focus / stack / collab / trend; advice: 2-3 items; risk: only when the numbers show a real risk, otherwise null.",
+      "Available keys (payload): " + PAYLOAD_KEY_HELP + ".",
+      "Units: *Ms = milliseconds; *Tokens = token count; *Share / cacheHitRate = 0-1 ratio; *Count / sessions / conversations = counts; trend*DeltaPct = percent change (may be negative); null = not enough data.",
     ].join("\n");
   }
   return [
-    "你是用户工作方式的画像分析师，只能依据给定的聚合统计生成画像。",
-    "不得臆测对话内容、标题、文件路径或任何未给出的事实；不要编造具体项目细节。",
-    "输出必须是单个 JSON 对象：{\"traits\": [\"...\"], \"advice\": \"...\"}。",
-    "traits 3-5 条，覆盖工作节奏、任务偏好、技术栈倾向、协作模式；",
-    "advice 恰好 1 条。每条不超过 40 个字符。",
-    "用简体中文输出；不要输出 JSON 之外的任何文字。",
+    "你是资深生产力分析师，只依据给定的聚合数字写画像。",
+    "硬性规则：",
+    "1) 禁止编造项目、对话、文件或经历；只能使用 payload 里的数字。",
+    "2) 每条 insight 必须引用数字（如「午后 34%」「单会话 42 m」）；没有数字的结论视为不合格。",
+    "3) 禁止空泛建议（如「注意休息」「保持专注」）；每条建议都要在 why 里给出数字依据。",
+    "4) 要有差异化：先写最突出的 1–2 个事实，不要面面俱到。",
+    "只输出一个严格 JSON 对象；不要 Markdown、不要代码围栏、不要解释。",
+    'schema：{"headline":"一句话画像，≤30字","dimensions":[{"key":"rhythm|focus|stack|collab|trend","title":"≤8字","insight":"≤60字，必须含数字","evidence":"≤40字，列出引用的数字"}],"advice":[{"text":"≤40字","why":"≤40字，数字依据"}],"risk":"≤40字或 null"}',
+    "dimensions 4–6 条，key 从 rhythm(节奏) / focus(专注) / stack(工具栈) / collab(协作) / trend(趋势) 中选；advice 2–3 条；risk 只在数字显示确有风险时填写，否则 null。",
+    "可用键（payload）：" + PAYLOAD_KEY_HELP + "。",
+    "单位：*Ms = 毫秒；*Tokens = Token 数；*Share / cacheHitRate = 0–1 占比；*Count / sessions / conversations = 计数；trend*DeltaPct = 环比百分比（可为负）；null = 数据不足。",
   ].join("\n");
 }
 
@@ -485,9 +510,18 @@ export class ProfileService {
     try {
       const generated = await this.callModel(payload, lang, overrides);
       result = {
-        source: "llm", code: null, traits: generated.traits, advice: generated.advice,
-        usage: generated.usage, model: generated.model,
-        route: generated.route, precheck: generated.precheck, diagnostic: null,
+        source: "llm",
+        code: null,
+        headline: generated.headline,
+        dimensions: generated.dimensions,
+        advice: generated.advice,
+        risk: generated.risk,
+        usage: generated.usage,
+        costHint: costHintOf(generated.usage),
+        model: generated.model,
+        route: generated.route,
+        precheck: generated.precheck,
+        diagnostic: null,
       };
       this.recordLast({ code: null, stage: "finish", error: null, route: generated.route, precheck: generated.precheck });
     } catch (error) {
@@ -501,9 +535,20 @@ export class ProfileService {
           "[workload-report] AI 画像降级为本地规则：" + code + "（" + stage + "）— " + diagnostic.error.message,
         );
       }
+      const local = localProfile(payload, lang);
       result = {
-        source: "local", code, ...localProfile(payload, lang), usage: { input: 0, output: 0, total: 0 }, model: null,
-        route, precheck, diagnostic,
+        source: "local",
+        code,
+        headline: local.headline,
+        dimensions: local.dimensions,
+        advice: local.advice,
+        risk: local.risk,
+        usage: { input: 0, output: 0, total: 0 },
+        costHint: { inputTokens: 0, outputTokens: 0 },
+        model: null,
+        route,
+        precheck,
+        diagnostic,
       };
       this.recordLast({ code, stage, error: diagnostic.error.message, route, precheck });
     }
@@ -539,7 +584,7 @@ export class ProfileService {
       let call;
       try {
         call = await llm.prepareCall(
-          { provider: route.provider, model: route.model, temperature: 0.4, maxTokens: this.config.maxTokens },
+          { provider: route.provider, model: route.model, temperature: 0.35, maxTokens: this.config.maxTokens },
           signal,
         );
       } catch (error) {

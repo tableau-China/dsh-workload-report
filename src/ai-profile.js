@@ -5,41 +5,141 @@
  * 聚合统计，不含对话正文、标题、路径原文。函数内部对键集合做严格断言，
  * 任何新增字段都必须先改 PROFILE_PAYLOAD_KEYS（并同步文档与测试）。
  *
- * 模型失败时用 localProfile() 生成确定性的本地规则画像（不联网、不抛错）。
+ * 模型失败时用 localProfile() 生成确定性的本地规则画像（不联网、不抛错）；
+ * 两者使用同一结构：headline + dimensions + advice + risk。
  */
 
 import { createHash } from "node:crypto";
 
 import { formatHours, formatTokens } from "./format.js";
+import {
+  PROFILE_DIMENSION_KEYS,
+  PROFILE_EVIDENCE_MAX,
+  PROFILE_HEADLINE_MAX,
+  PROFILE_INSIGHT_MAX,
+  PROFILE_LINE_MAX,
+  PROFILE_TITLE_MAX,
+  clampProfileText,
+  hasDigit,
+  normalizeDimensionKey,
+} from "./profile-schema.js";
 
-/** 允许发给模型的顶层键（精确集合，多一个少一个都不行）。 */
+export {
+  PROFILE_DIMENSION_KEYS,
+  PROFILE_EVIDENCE_MAX,
+  PROFILE_HEADLINE_MAX,
+  PROFILE_INSIGHT_MAX,
+  PROFILE_LINE_MAX,
+  PROFILE_TITLE_MAX,
+  clampProfileText,
+};
+
+/**
+ * 允许发给模型的顶层键（精确集合，多一个少一个都不行）。
+ * 命名约定：*Ms = 毫秒；*Tokens = Token 数；*Share = 0–1 占比；
+ * *Count / sessions / conversations 等 = 计数；trend*DeltaPct = 百分比（可为负）；
+ * trend* 在区间不足 14 天或前 7 天无数据时为 null。
+ */
 export const PROFILE_PAYLOAD_KEYS = Object.freeze([
   "range",
   "activeMs",
   "netActiveMs",
   "waitMs",
+  "waitShare",
+  "sessions",
   "conversations",
   "turns",
   "steps",
   "tokensTotal",
+  "tokensInput",
+  "tokensOutput",
+  "tokensCacheRead",
+  "tokensCacheWrite",
+  "inputShare",
+  "outputShare",
+  "cacheReadShare",
+  "cacheWriteShare",
   "cacheHitRate",
+  "avgOutputTokensPerTurn",
+  "avgSessionActiveMs",
+  "avgTurnsPerConversation",
+  "avgStepsPerTurn",
+  "durationUnder15mShare",
+  "duration15to60mShare",
+  "duration1to3hShare",
+  "durationOver3hShare",
+  "durationSampleSessions",
   "activeHours24",
+  "bandNightActiveShare",
+  "bandMorningActiveShare",
+  "bandForenoonActiveShare",
+  "bandAfternoonActiveShare",
+  "bandEveningActiveShare",
+  "bandNightTokenShare",
+  "bandMorningTokenShare",
+  "bandForenoonTokenShare",
+  "bandAfternoonTokenShare",
+  "bandEveningTokenShare",
   "byWorkspace",
   "byModel",
+  "workspaceCount",
+  "topWorkspaceShare",
+  "workspaceSwitchCount",
+  "modelCount",
+  "topModelShare",
+  "multiModel",
   "weekendShare",
   "nightShare",
+  "trendDays",
+  "trendActivePrevMs",
+  "trendActiveLastMs",
+  "trendActiveDeltaPct",
+  "trendTokensPrev",
+  "trendTokensLast",
+  "trendTokensDeltaPct",
+]);
+
+/** 允许为负的键（环比可以为负）。 */
+const SIGNED_KEYS = new Set(["trendActiveDeltaPct", "trendTokensDeltaPct"]);
+
+/** 允许为 null 的键（数据不足时明确标记，不用 0 冒充）。 */
+const NULLABLE_KEYS = new Set([
+  "trendActivePrevMs",
+  "trendActiveLastMs",
+  "trendActiveDeltaPct",
+  "trendTokensPrev",
+  "trendTokensLast",
+  "trendTokensDeltaPct",
 ]);
 
 const MAX_SHARE_ITEMS = 5;
-const MAX_LINE_CHARS = 40;
+const MAX_STRING_CHARS = 120;
 const ROUND = 10000;
+const DAY_MS = 86400000;
+const TREND_DAYS = 7;
+const MINUTE_MS = 60000;
+const HOUR_MS = 3600000;
+
+/**
+ * 时间段（覆盖 0–24 点，无空洞）：深夜 0–6、清晨 6–9、上午 9–12、
+ * 下午 12–18（含 12–13 午间）、晚间 18–24。与 nightShare（22–6）口径不同。
+ */
+const BANDS = Object.freeze([
+  { key: "night", from: 0, to: 6 },
+  { key: "morning", from: 6, to: 9 },
+  { key: "forenoon", from: 9, to: 12 },
+  { key: "afternoon", from: 12, to: 18 },
+  { key: "evening", from: 18, to: 24 },
+]);
 
 const num = (value) => (Number.isFinite(Number(value)) ? Number(value) : 0);
 const share = (value) => Math.round(Math.max(0, Math.min(1, num(value))) * ROUND) / ROUND;
+const ratio = (part, total) => (num(total) > 0 ? share(num(part) / num(total)) : 0);
+const round1 = (value) => Math.round(num(value) * 10) / 10;
 
-/** 工作区只保留显示名最后一段，杜绝把完整路径带进 payload。 */
-function workspaceName(value) {
-  const text = String(value ?? "").trim();
+/** 名称只保留最后一段，杜绝把完整路径带进 payload（工作区与模型名共用）。 */
+function shortName(value) {
+  const text = String(value ?? "").trim().replace(/\s+/g, " ");
   if (text === "") return "";
   const parts = text.split(/[\\/]+/).filter(Boolean);
   return parts.length > 0 ? parts[parts.length - 1] : text;
@@ -61,11 +161,104 @@ function weekendShareOf(byDay) {
   return total > 0 ? weekend / total : 0;
 }
 
+/** 把 24 个小时值按 BANDS 求和并转成占比。 */
+function bandShares(values) {
+  const sums = Object.fromEntries(BANDS.map((band) => [band.key, 0]));
+  for (let hour = 0; hour < 24; hour += 1) {
+    const value = Math.max(0, num(values[hour]));
+    if (value === 0) continue;
+    const band = BANDS.find((item) => hour >= item.from && hour < item.to);
+    if (band !== undefined) sums[band.key] += value;
+  }
+  const total = BANDS.reduce((sum, band) => sum + sums[band.key], 0);
+  const out = {};
+  for (const band of BANDS) out[band.key] = ratio(sums[band.key], total);
+  return out;
+}
+
+/** 会话时长分桶（按有轮次 / 步骤的会话；只统计 bySession 样本）。 */
+function durationShares(rows) {
+  const counts = [0, 0, 0, 0];
+  for (const row of rows) {
+    const ms = Math.max(0, num(row?.activeMs));
+    if (ms < 15 * MINUTE_MS) counts[0] += 1;
+    else if (ms < HOUR_MS) counts[1] += 1;
+    else if (ms < 3 * HOUR_MS) counts[2] += 1;
+    else counts[3] += 1;
+  }
+  const total = rows.length;
+  return counts.map((count) => ratio(count, total));
+}
+
+/**
+ * 工作区切换次数（近似）：按创建时间排序样本会话，统计相邻两个真实工作区不同的次数。
+ * bySession 只保留前 300 行，因此这是"近似值"，不是全量精确计数。
+ */
+function workspaceSwitches(rows) {
+  const ordered = [...rows].sort((a, b) => num(a?.createdAt) - num(b?.createdAt));
+  let previous = "";
+  let switches = 0;
+  for (const row of ordered) {
+    const label = String(row?.workspaceLabel ?? "").trim();
+    if (label === "" || label === "(未知工作区)") continue;
+    if (previous !== "" && label !== previous) switches += 1;
+    previous = label;
+  }
+  return switches;
+}
+
+/** 近 7 天 vs 前 7 天：区间不足 14 天或前 7 天无数据时全部 null。 */
+function trendOf(byDay, range) {
+  const empty = {
+    trendDays: TREND_DAYS,
+    trendActivePrevMs: null,
+    trendActiveLastMs: null,
+    trendActiveDeltaPct: null,
+    trendTokensPrev: null,
+    trendTokensLast: null,
+    trendTokensDeltaPct: null,
+  };
+  if (Math.max(0, Math.round(num(range?.days))) < TREND_DAYS * 2) return empty;
+  const end = Date.parse(String(range?.to ?? "") + "T00:00:00Z");
+  if (!Number.isFinite(end)) return empty;
+  const key = (ms) => new Date(ms).toISOString().slice(0, 10);
+  const lastStart = key(end - (TREND_DAYS - 1) * DAY_MS);
+  const prevStart = key(end - (TREND_DAYS * 2 - 1) * DAY_MS);
+  const prevEnd = key(end - TREND_DAYS * DAY_MS);
+  let lastActive = 0;
+  let lastTokens = 0;
+  let prevActive = 0;
+  let prevTokens = 0;
+  let prevSeen = false;
+  for (const day of byDay) {
+    const date = String(day?.date ?? "");
+    if (date >= lastStart && date <= String(range?.to ?? "")) {
+      lastActive += Math.max(0, num(day?.activeMs));
+      lastTokens += Math.max(0, num(day?.tokensTotal));
+    } else if (date >= prevStart && date <= prevEnd) {
+      prevActive += Math.max(0, num(day?.activeMs));
+      prevTokens += Math.max(0, num(day?.tokensTotal));
+      prevSeen = true;
+    }
+  }
+  if (!prevSeen || (prevActive <= 0 && prevTokens <= 0)) return empty;
+  return {
+    trendDays: TREND_DAYS,
+    trendActivePrevMs: Math.round(prevActive),
+    trendActiveLastMs: Math.round(lastActive),
+    trendActiveDeltaPct: prevActive > 0 ? round1(((lastActive - prevActive) / prevActive) * 100) : null,
+    trendTokensPrev: Math.round(prevTokens),
+    trendTokensLast: Math.round(lastTokens),
+    trendTokensDeltaPct: prevTokens > 0 ? round1(((lastTokens - prevTokens) / prevTokens) * 100) : null,
+  };
+}
+
 /**
  * 从 present() 快照构造白名单 payload。
  *
  * activeHours24 是 Token 口径（每小时 tokensTotal），以保证「Token 或活跃」可核对；
- * nightShare（22:00–06:00）用活跃时长，weekendShare 用按日活跃时长。
+ * nightShare（22:00–06:00）与 5 个 band*Share 用活跃时长，weekendShare 用按日活跃时长。
+ * 会话时长分桶只来自 snapshot.bySession（最多 300 行）样本，durationSampleSessions 标注样本量。
  * @param snapshot - 看板/报告同源的 present(aggregate(...)) 结构。
  * @returns 严格白名单对象。
  */
@@ -73,53 +266,144 @@ export function buildProfilePayload(snapshot) {
   const totals = snapshot?.totals ?? {};
   const byHour = Array.isArray(snapshot?.byHour) ? snapshot.byHour : [];
   const byDay = Array.isArray(snapshot?.byDay) ? snapshot.byDay : [];
-  const netActiveMs = Math.max(0, num(totals.netActiveMs));
-  const hoursTokens = Array.from({ length: 24 }, (_, hour) => Math.max(0, Math.round(num(byHour[hour]?.tokensTotal))));
+  const range = snapshot?.range ?? {};
+  const waitMs = Math.max(0, Math.round(num(totals.waitMs)));
+  const netActiveMs = totals.netActiveMs !== undefined
+    ? Math.max(0, Math.round(num(totals.netActiveMs)))
+    : Math.max(0, Math.round(num(totals.activeMs)) - waitMs);
+  const hourTokens = Array.from({ length: 24 }, (_, hour) => Math.max(0, Math.round(num(byHour[hour]?.tokensTotal))));
   const hourActive = Array.from({ length: 24 }, (_, hour) => Math.max(0, num(byHour[hour]?.activeMs)));
   const hourActiveTotal = hourActive.reduce((sum, value) => sum + value, 0);
   const nightMs = hourActive.reduce((sum, value, hour) => (hour >= 22 || hour < 6 ? sum + value : sum), 0);
 
+  const tokenParts = {
+    input: Math.max(0, Math.round(num(totals?.tokens?.input))),
+    output: Math.max(0, Math.round(num(totals?.tokens?.output))),
+    cacheRead: Math.max(0, Math.round(num(totals?.tokens?.cacheRead))),
+    cacheWrite: Math.max(0, Math.round(num(totals?.tokens?.cacheWrite))),
+  };
+  const tokensTotal = tokenParts.input + tokenParts.output + tokenParts.cacheRead + tokenParts.cacheWrite;
+
+  const sessions = Math.max(0, Math.round(num(totals.sessions)));
+  const conversations = Math.max(0, Math.round(num(totals.conversations)));
+  const turns = Math.max(0, Math.round(num(totals.turns)));
+  const steps = Math.max(0, Math.round(num(totals.steps)));
+
   const workspaceItems = (Array.isArray(snapshot?.byWorkspace) ? snapshot.byWorkspace : [])
-    .map((item) => ({ name: workspaceName(item?.label), share: share(item?.activeShare) }))
+    .map((item) => ({ name: shortName(item?.label), share: share(item?.activeShare) }))
     .filter((item) => item.name !== "" && item.share > 0)
     .sort((a, b) => b.share - a.share)
     .slice(0, MAX_SHARE_ITEMS);
 
-  const modelItems = (Array.isArray(snapshot?.byModel) ? snapshot.byModel : [])
-    .map((item) => ({ name: String(item?.label ?? "").trim(), share: share(item?.share) }))
+  const modelAll = (Array.isArray(snapshot?.byModel) ? snapshot.byModel : [])
+    .map((item) => ({ name: shortName(item?.label), share: share(item?.share) }))
     .filter((item) => item.name !== "" && item.share > 0)
-    .sort((a, b) => b.share - a.share)
-    .slice(0, MAX_SHARE_ITEMS);
+    .sort((a, b) => b.share - a.share);
+  const modelItems = modelAll.slice(0, MAX_SHARE_ITEMS);
+
+  const sessionRows = (Array.isArray(snapshot?.bySession) ? snapshot.bySession : [])
+    .filter((row) => num(row?.steps) > 0 || num(row?.turns) > 0);
+  const [under15m, from15mTo60m, from1hTo3h, over3h] = durationShares(sessionRows);
+  const activeBands = bandShares(hourActive);
+  const tokenBands = bandShares(hourTokens);
+  const trend = trendOf(byDay, range);
+  const workspaceCount = Math.max(0, Math.round(num(totals.workspaces)));
 
   const payload = {
     range: {
-      from: String(snapshot?.range?.from ?? ""),
-      to: String(snapshot?.range?.to ?? ""),
-      days: Math.max(0, Math.round(num(snapshot?.range?.days))),
-      timeZone: String(snapshot?.range?.timeZone ?? ""),
+      from: String(range.from ?? ""),
+      to: String(range.to ?? ""),
+      days: Math.max(0, Math.round(num(range.days))),
+      timeZone: String(range.timeZone ?? ""),
     },
-    activeMs: Math.round(netActiveMs),
-    netActiveMs: Math.round(netActiveMs),
-    waitMs: Math.max(0, Math.round(num(totals.waitMs))),
-    conversations: Math.max(0, Math.round(num(totals.conversations))),
-    turns: Math.max(0, Math.round(num(totals.turns))),
-    steps: Math.max(0, Math.round(num(totals.steps))),
-    tokensTotal: Math.max(0, Math.round(num(totals.tokensTotal))),
+    activeMs: netActiveMs,
+    netActiveMs,
+    waitMs,
+    waitShare: ratio(waitMs, netActiveMs + waitMs),
+    sessions,
+    conversations,
+    turns,
+    steps,
+    tokensTotal,
+    tokensInput: tokenParts.input,
+    tokensOutput: tokenParts.output,
+    tokensCacheRead: tokenParts.cacheRead,
+    tokensCacheWrite: tokenParts.cacheWrite,
+    inputShare: ratio(tokenParts.input, tokensTotal),
+    outputShare: ratio(tokenParts.output, tokensTotal),
+    cacheReadShare: ratio(tokenParts.cacheRead, tokensTotal),
+    cacheWriteShare: ratio(tokenParts.cacheWrite, tokensTotal),
     cacheHitRate: share(snapshot?.derived?.cacheHitRate),
-    activeHours24: { unit: "tokens", values: hoursTokens },
+    avgOutputTokensPerTurn: turns > 0 ? Math.round(tokenParts.output / turns) : 0,
+    avgSessionActiveMs: conversations > 0 ? Math.round(netActiveMs / conversations) : 0,
+    avgTurnsPerConversation: conversations > 0 ? round1(turns / conversations) : 0,
+    avgStepsPerTurn: turns > 0 ? round1(steps / turns) : 0,
+    durationUnder15mShare: under15m,
+    duration15to60mShare: from15mTo60m,
+    duration1to3hShare: from1hTo3h,
+    durationOver3hShare: over3h,
+    durationSampleSessions: sessionRows.length,
+    activeHours24: { unit: "tokens", values: hourTokens },
+    bandNightActiveShare: activeBands.night,
+    bandMorningActiveShare: activeBands.morning,
+    bandForenoonActiveShare: activeBands.forenoon,
+    bandAfternoonActiveShare: activeBands.afternoon,
+    bandEveningActiveShare: activeBands.evening,
+    bandNightTokenShare: tokenBands.night,
+    bandMorningTokenShare: tokenBands.morning,
+    bandForenoonTokenShare: tokenBands.forenoon,
+    bandAfternoonTokenShare: tokenBands.afternoon,
+    bandEveningTokenShare: tokenBands.evening,
     byWorkspace: workspaceItems,
     byModel: modelItems,
+    workspaceCount,
+    topWorkspaceShare: workspaceItems[0]?.share ?? 0,
+    workspaceSwitchCount: workspaceSwitches(sessionRows),
+    modelCount: modelAll.length,
+    topModelShare: modelItems[0]?.share ?? 0,
+    multiModel: modelAll.length > 1,
     weekendShare: share(weekendShareOf(byDay)),
     nightShare: share(hourActiveTotal > 0 ? nightMs / hourActiveTotal : 0),
+    ...trend,
   };
 
   assertProfilePayload(payload);
   return payload;
 }
 
+/** 键名里出现这些词就视为可能夹带私有数据（title / cwd / path / sessionId …）。 */
+const FORBIDDEN_KEY = /(^|_)(title|cwd|path|sessionid|prompt|content|message|text|transcript|body|raw)($|_)/i;
+/** 这些后缀的键必须是 0–1 占比。 */
+const SHARE_KEY = /(Share|HitRate)$/;
+
+/** 递归检查字符串值：不允许换行 / 路径分隔符 / 日志文件名（timeZone 例外）。 */
+function assertNoPrivateStrings(value, path = "") {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertNoPrivateStrings(item, path + "[" + index + "]"));
+    return;
+  }
+  if (value !== null && typeof value === "object") {
+    for (const [key, item] of Object.entries(value)) {
+      if (FORBIDDEN_KEY.test(key)) throw new Error("画像 payload 含疑似私有键：" + path + "." + key);
+      assertNoPrivateStrings(item, path + "." + key);
+    }
+    return;
+  }
+  if (typeof value !== "string") return;
+  const leaf = path.split(".").pop() ?? "";
+  const chars = Array.from(value);
+  if (chars.length > MAX_STRING_CHARS) throw new Error("画像 payload 字符串过长：" + path);
+  if (/[\r\n\u0000]/.test(value)) throw new Error("画像 payload 字符串含换行：" + path);
+  if (leaf === "timeZone") return;
+  if (value.includes("/") || value.includes("\\") || value.startsWith("~")) {
+    throw new Error("画像 payload 字符串含路径片段：" + path);
+  }
+  if (/\.(jsonl?|log|txt)$/i.test(value)) throw new Error("画像 payload 字符串像文件路径：" + path);
+}
+
 /**
  * 白名单断言：顶层键集合必须严格等于 PROFILE_PAYLOAD_KEYS；
- * 子结构也只允许 name/share、unit/values，防止后续改动把路径或标题偷偷带出去。
+ * 子结构只允许 range / activeHours24 / name+share；并递归拒绝私有键与路径字符串。
  */
 export function assertProfilePayload(payload) {
   const expected = [...PROFILE_PAYLOAD_KEYS].sort();
@@ -147,6 +431,22 @@ export function assertProfilePayload(payload) {
       }
     }
   }
+  for (const key of PROFILE_PAYLOAD_KEYS) {
+    const value = payload[key];
+    if (value === null) {
+      if (!NULLABLE_KEYS.has(key)) throw new Error("画像 payload." + key + " 不允许为 null");
+      continue;
+    }
+    if (typeof value === "number") {
+      if (!Number.isFinite(value)) throw new Error("画像 payload." + key + " 必须是有限数");
+      if (value < 0 && !SIGNED_KEYS.has(key)) throw new Error("画像 payload." + key + " 必须是非负数");
+      if (SHARE_KEY.test(key) && value > 1) throw new Error("画像 payload." + key + " 必须是 0–1 占比");
+      continue;
+    }
+    if (key === "range" || key === "activeHours24" || key === "byWorkspace" || key === "byModel" || key === "multiModel") continue;
+    throw new Error("画像 payload." + key + " 类型不合法");
+  }
+  assertNoPrivateStrings(payload);
   return true;
 }
 
@@ -172,12 +472,9 @@ export function profileFingerprint(payload) {
   return createHash("sha256").update(stableStringify(payload), "utf8").digest("hex").slice(0, 16);
 }
 
-/** 单条文案压到 ≤40 个字符（超出用省略号，仍不超过 40）。 */
+/** 单条文案压到 ≤40 个字符（保留旧导出，内部走统一的 clampProfileText）。 */
 export function clampProfileLine(value) {
-  const text = String(value ?? "").replace(/\s+/g, " ").trim();
-  const chars = Array.from(text);
-  if (chars.length <= MAX_LINE_CHARS) return chars.join("");
-  return chars.slice(0, MAX_LINE_CHARS - 1).join("") + "…";
+  return clampProfileText(value, PROFILE_LINE_MAX);
 }
 
 /** 百分比文案：0.1234 → 12.3%。 */
@@ -186,130 +483,252 @@ function percent(value) {
   return text.replace(/\.0$/, "") + "%";
 }
 
+/** 构造一个维度（统一裁剪长度，避免模型漏填时结构不一致）。 */
+function dimension(key, title, insight, evidence) {
+  return {
+    key: normalizeDimensionKey(key),
+    title: clampProfileText(title, PROFILE_TITLE_MAX),
+    insight: clampProfileText(insight, PROFILE_INSIGHT_MAX),
+    evidence: clampProfileText(evidence, PROFILE_EVIDENCE_MAX),
+  };
+}
+
 /**
  * 本地规则画像：纯统计 + 固定规则，不联网、不依赖模型。
- * 覆盖工作节奏 / 任务偏好 / 技术栈倾向 / 协作模式（+ 工作区聚焦）四个维度。
+ * 与 AI 输出同构（headline + dimensions + advice + risk），降级时观感一致。
  * @param payload - buildProfilePayload() 的结果。
  * @param lang - zh | en。
- * @returns { traits: string[], advice: string }，每条 ≤40 字符。
  */
 export function localProfile(payload, lang = "zh") {
   const zh = lang !== "en";
   const totalActive = num(payload.netActiveMs) + num(payload.waitMs);
-  const waitShare = totalActive > 0 ? num(payload.waitMs) / totalActive : 0;
+  const waitShare = num(payload.waitShare) || (totalActive > 0 ? num(payload.waitMs) / totalActive : 0);
   const values = payload.activeHours24?.values ?? [];
   const hasHourTokens = values.some((value) => num(value) > 0);
   let peakHour = 0;
   for (let hour = 1; hour < 24; hour += 1) if (num(values[hour]) > num(values[peakHour])) peakHour = hour;
   const topWorkspace = payload.byWorkspace?.[0];
   const topModel = payload.byModel?.[0];
-  const turnsPer = num(payload.conversations) > 0 ? num(payload.turns) / num(payload.conversations) : 0;
-  const stepsPer = num(payload.conversations) > 0 ? num(payload.steps) / num(payload.conversations) : 0;
-  const tokensPer = num(payload.conversations) > 0 ? num(payload.tokensTotal) / num(payload.conversations) : 0;
-  const traits = [];
+  const turnsPer = num(payload.avgTurnsPerConversation);
+  const stepsPer = num(payload.avgStepsPerTurn);
+  const avgSession = formatHours(payload.avgSessionActiveMs);
+  const cache = num(payload.cacheHitRate);
+  const night = num(payload.nightShare);
+  const weekend = num(payload.weekendShare);
+  const peakBand = ["night", "morning", "forenoon", "afternoon", "evening"].reduce((best, key) => {
+    const shareValue = num(payload["band" + key.charAt(0).toUpperCase() + key.slice(1) + "ActiveShare"]);
+    return shareValue > best.share ? { key, share: shareValue } : best;
+  }, { key: "afternoon", share: -1 }).key;
+  const bandNamesZh = { night: "深夜", morning: "清晨", forenoon: "上午", afternoon: "下午", evening: "晚间" };
+  const dimensions = [];
 
-  if (num(payload.nightShare) >= 0.25) {
-    traits.push(zh
-      ? "夜间（22–6 点）活跃占 " + percent(payload.nightShare) + "，深度工作偏晚"
-      : "Night work (22–6) is " + percent(payload.nightShare) + "; deep work runs late");
-  } else if (num(payload.weekendShare) >= 0.2) {
-    traits.push(zh
-      ? "周末活跃占 " + percent(payload.weekendShare) + "，节奏较满"
-      : "Weekend activity is " + percent(payload.weekendShare) + "; the pace stays full");
+  // 1) 节奏：夜间 / 周末 / 时段占比三选一，附高峰小时。
+  if (night >= 0.25) {
+    dimensions.push(dimension("rhythm", zh ? "夜间节奏" : "Night rhythm",
+      zh ? "夜间活跃 " + percent(night) + "，高峰在 " + peakHour + ":00"
+        : percent(night) + " of activity is at night; peak at " + peakHour + ":00",
+      zh ? "深夜 22–6 点 · 高峰 " + peakHour + ":00"
+        : "22–6 share " + percent(night) + " · peak " + peakHour + ":00"));
   } else if (!hasHourTokens) {
-    traits.push(zh
-      ? "区间净活跃 " + formatHours(payload.netActiveMs) + "，小时 Token 待回填"
-      : formatHours(payload.netActiveMs) + " net active; hourly tokens pending");
+    dimensions.push(dimension("rhythm", zh ? "节奏" : "Rhythm",
+      zh ? "净活跃 " + formatHours(payload.netActiveMs) + "，小时 Token 待回填"
+        : formatHours(payload.netActiveMs) + " net active; hourly tokens pending",
+      zh ? "净活跃 " + formatHours(payload.netActiveMs) : "net " + formatHours(payload.netActiveMs)));
   } else {
-    traits.push(zh
-      ? "活跃高峰在 " + peakHour + ":00，以白天节奏为主"
-      : "Peak activity at " + peakHour + ":00; daytime rhythm dominates");
+    const bandKeys = ["night", "morning", "forenoon", "afternoon", "evening"];
+    const bandTotal = bandKeys.reduce((sum, key) => sum + num(payload["band" + key.charAt(0).toUpperCase() + key.slice(1) + "ActiveShare"]), 0);
+    const peakBandShare = num(payload["band" + peakBand.charAt(0).toUpperCase() + peakBand.slice(1) + "ActiveShare"]);
+    dimensions.push(dimension("rhythm", zh ? "节奏" : "Rhythm",
+      bandTotal > 0
+        ? (zh ? (bandNamesZh[peakBand] ?? "下午") + "最活跃（" + percent(peakBandShare) + "）" : peakBand + " is the busiest band (" + percent(peakBandShare) + ")")
+        : (zh ? "活跃高峰在 " + peakHour + ":00" : "Peak at " + peakHour + ":00"),
+      zh ? "高峰 " + peakHour + ":00 · 周末 " + percent(weekend)
+        : "peak " + peakHour + ":00 · weekend " + percent(weekend)));
   }
 
-  traits.push(zh
-    ? "每次对话约 " + turnsPer.toFixed(1) + " 轮 / " + stepsPer.toFixed(1) + " 步"
-    : "About " + turnsPer.toFixed(1) + " turns / " + stepsPer.toFixed(1) + " steps per conversation");
+  // 2) 专注：单会话时长 + 短会话占比。
+  dimensions.push(dimension("focus", zh ? "专注" : "Focus",
+    zh ? "单会话均值 " + avgSession + "，" + percent(num(payload.durationUnder15mShare)) + " 在 15 分钟内"
+      : avgSession + " per conversation; " + percent(num(payload.durationUnder15mShare)) + " under 15 min",
+    zh ? "会话 " + num(payload.conversations) + " · 样本 " + num(payload.durationSampleSessions)
+      : num(payload.conversations) + " conversations · sample " + num(payload.durationSampleSessions)));
 
+  // 3) 工具栈：模型集中度 + 缓存命中率。
   if (topModel) {
-    traits.push(zh
-      ? "主要使用 " + topModel.name + "（占 " + percent(topModel.share) + "）"
-      : "Mainly uses " + topModel.name + " (" + percent(topModel.share) + ")");
+    dimensions.push(dimension("stack", zh ? "工具栈" : "Stack",
+      zh ? topModel.name + " 占 " + percent(topModel.share) + "，缓存命中 " + percent(cache)
+        : topModel.name + " is " + percent(topModel.share) + "; cache hits " + percent(cache),
+      zh ? "模型 " + num(payload.modelCount) + " 个 · 输入 " + percent(num(payload.inputShare))
+        : num(payload.modelCount) + " models · input " + percent(num(payload.inputShare))));
   } else {
-    traits.push(zh
-      ? "区间 Token 合计 " + formatTokens(payload.tokensTotal)
-      : formatTokens(payload.tokensTotal) + " tokens in range");
+    dimensions.push(dimension("stack", zh ? "工具栈" : "Stack",
+      zh ? "区间 Token " + formatTokens(payload.tokensTotal) + "，缓存命中 " + percent(cache)
+        : formatTokens(payload.tokensTotal) + " tokens; cache hits " + percent(cache),
+      zh ? "输出 " + formatTokens(payload.tokensOutput) : "output " + formatTokens(payload.tokensOutput)));
   }
 
-  traits.push(zh
-    ? (waitShare >= 0.15 ? "等待用户占 " + percent(waitShare) + "，协作确认较多" : "等待用户占 " + percent(waitShare) + "，执行较连续")
-    : (waitShare >= 0.15 ? "Waiting for you is " + percent(waitShare) + "; frequent confirmations" : "Waiting is " + percent(waitShare) + "; execution stays continuous"));
+  // 4) 协作：等待占比 + 轮次 / 步骤。
+  dimensions.push(dimension("collab", zh ? "协作" : "Collab",
+    zh ? "等待用户 " + percent(waitShare) + "，每会话 " + turnsPer.toFixed(1) + " 轮"
+      : "Waiting " + percent(waitShare) + "; " + turnsPer.toFixed(1) + " turns per conversation",
+    zh ? "步 / 轮 " + stepsPer.toFixed(1) + " · 输出 / 轮 " + formatTokens(payload.avgOutputTokensPerTurn)
+      : stepsPer.toFixed(1) + " steps/turn · " + formatTokens(payload.avgOutputTokensPerTurn) + " output/turn"));
 
-  if (topWorkspace) {
-    traits.push(zh
-      ? "时间主要投入 " + topWorkspace.name + "（占 " + percent(topWorkspace.share) + "）"
-      : "Most time goes to " + topWorkspace.name + " (" + percent(topWorkspace.share) + ")");
+  // 5) 趋势：有前 7 天基线才写环比，否则明确「样本不足」。
+  if (payload.trendActiveDeltaPct !== null && payload.trendActiveDeltaPct !== undefined) {
+    const delta = num(payload.trendActiveDeltaPct);
+    dimensions.push(dimension("trend", zh ? "趋势" : "Trend",
+      zh ? "近 7 天活跃环比 " + (delta >= 0 ? "+" : "") + delta.toFixed(1) + "%"
+        : "Active last 7d " + (delta >= 0 ? "+" : "") + delta.toFixed(1) + "%",
+      zh ? "前 7 天 " + formatHours(payload.trendActivePrevMs) + " → 近 7 天 " + formatHours(payload.trendActiveLastMs)
+        : formatHours(payload.trendActivePrevMs) + " → " + formatHours(payload.trendActiveLastMs)));
   } else {
-    traits.push(zh
-      ? "区间净活跃 " + formatHours(payload.netActiveMs) + "，共 " + payload.conversations + " 次对话"
-      : formatHours(payload.netActiveMs) + " net active across " + payload.conversations + " conversations");
+    dimensions.push(dimension("trend", zh ? "趋势" : "Trend",
+      zh ? "区间 " + num(payload.range?.days) + " 天，近 7 天基线不足"
+        : num(payload.range?.days) + "-day range; 7d baseline is thin",
+      zh ? "近 7 天 vs 前 7 天：数据不足" : "last 7d vs prev 7d: not enough data"));
   }
 
-  let advice;
-  if (num(payload.nightShare) >= 0.25) {
-    advice = zh ? "夜间占比偏高，可把深度任务前移到白天。" : "Night work is high; move deep tasks to daytime.";
-  } else if (num(payload.cacheHitRate) < 0.3) {
-    advice = zh ? "缓存命中偏低，固定系统提示与上下文可提效。" : "Low cache hits; keep system prompts and context stable.";
-  } else if (num(payload.weekendShare) >= 0.2) {
-    advice = zh ? "周末仍较活跃，给恢复留出整块时间。" : "Weekends stay busy; reserve full blocks for recovery.";
-  } else if (tokensPer > 0) {
-    advice = zh
-      ? "单次对话约 " + formatTokens(tokensPer) + " Token，给高消耗会话设定产出目标。"
-      : "~" + formatTokens(tokensPer) + " tokens per conversation; set output goals for heavy ones.";
+  const advice = [];
+  if (night >= 0.25) {
+    advice.push({ text: zh ? "把深度任务前移到上午" : "Move deep work earlier", why: zh ? "夜间占 " + percent(night) + "，高峰 " + peakHour + ":00" : "Night " + percent(night) });
+  } else if (cache < 0.3) {
+    advice.push({ text: zh ? "固定系统提示与上下文" : "Stabilize prompts and context", why: zh ? "缓存命中仅 " + percent(cache) : "Cache hit only " + percent(cache) });
   } else {
-    advice = zh ? "保持当前节奏，先积累更多区间数据。" : "Keep the current rhythm and gather more range data.";
+    advice.push({ text: zh ? "复用当前高命中上下文" : "Reuse the high-hit context", why: zh ? "缓存命中 " + percent(cache) + "，单会话 " + avgSession : "Cache " + percent(cache) + ", " + avgSession + "/session" });
   }
+  if (waitShare >= 0.15) {
+    advice.push({ text: zh ? "合并确认点，减少等待" : "Batch confirmations", why: zh ? "等待用户占 " + percent(waitShare) : "Waiting is " + percent(waitShare) });
+  } else if (payload.trendActiveDeltaPct !== null && payload.trendActiveDeltaPct !== undefined && num(payload.trendActiveDeltaPct) < -10) {
+    advice.push({ text: zh ? "给近一周设一个交付目标" : "Set one delivery goal", why: zh ? "活跃环比 " + num(payload.trendActiveDeltaPct).toFixed(1) + "%" : "Active " + num(payload.trendActiveDeltaPct).toFixed(1) + "%" });
+  } else {
+    advice.push({ text: zh ? "按会话设定产出目标" : "Set output goals per session", why: zh ? "输出 / 轮 " + formatTokens(payload.avgOutputTokensPerTurn) : formatTokens(payload.avgOutputTokensPerTurn) + " output/turn" });
+  }
+  if (weekend >= 0.2) {
+    advice.push({ text: zh ? "给周末留出整块恢复时间" : "Reserve weekend recovery", why: zh ? "周末活跃占 " + percent(weekend) : "Weekend " + percent(weekend) });
+  }
+
+  let risk = null;
+  if (night >= 0.3) risk = zh ? "夜间投入偏高（" + percent(night) + "）" : "High night load (" + percent(night) + ")";
+  else if (waitShare >= 0.3) risk = zh ? "等待确认偏多（" + percent(waitShare) + "）" : "Frequent waiting (" + percent(waitShare) + ")";
+  else if (payload.trendActiveDeltaPct !== null && payload.trendActiveDeltaPct !== undefined && num(payload.trendActiveDeltaPct) <= -25) {
+    risk = zh ? "近一周活跃下滑 " + num(payload.trendActiveDeltaPct).toFixed(1) + "%" : "Activity down " + num(payload.trendActiveDeltaPct).toFixed(1) + "%";
+  }
+
+  const headline = night >= 0.25
+    ? (zh ? "夜间型深度工作者" : "Late-night deep worker")
+    : waitShare >= 0.25
+      ? (zh ? "高频确认型协作者" : "High-confirmation collaborator")
+      : (zh ? "白天节奏的稳定交付者" : "Steady daytime deliverer");
 
   return {
-    traits: traits.slice(0, 5).map(clampProfileLine),
-    advice: clampProfileLine(advice),
+    headline: clampProfileText(headline, PROFILE_HEADLINE_MAX),
+    dimensions: dimensions.slice(0, 6).map((item) => ({
+      ...item,
+      title: clampProfileText(item.title, PROFILE_TITLE_MAX),
+      insight: clampProfileText(item.insight, PROFILE_INSIGHT_MAX),
+      evidence: clampProfileText(item.evidence, PROFILE_EVIDENCE_MAX),
+    })),
+    advice: advice.slice(0, 3).map((item) => ({
+      text: clampProfileText(item.text, PROFILE_LINE_MAX),
+      why: clampProfileText(item.why, PROFILE_LINE_MAX),
+    })),
+    risk: risk === null ? null : clampProfileText(risk, PROFILE_LINE_MAX),
   };
 }
 
 /** 解析失败（带稳定 code，路由据此降级为本地规则）。 */
 class ProfileParseError extends Error {
-  constructor(message) {
+  constructor(message, rawText = "") {
     super(message);
     this.name = "ProfileParseError";
     this.code = "AI_PARSE_FAILED";
+    /** 原始输出前 300 字（只来自模型，不含任何会话数据），供 diagnostic 定位。 */
+    this.rawText = Array.from(String(rawText ?? "").replace(/[\u0000-\u001f]+/g, " ").replace(/\s+/g, " ").trim()).slice(0, 300).join("");
   }
+}
+
+/** 去掉 BOM、代码围栏与三引号包裹；保留内部原文。 */
+function unwrapProfileText(text) {
+  let raw = String(text ?? "").replace(/^\uFEFF/, "").trim();
+  const fence = raw.match(/^```[a-zA-Z0-9_-]*\s*([\s\S]*?)\s*```\s*$/);
+  if (fence !== null) raw = fence[1].trim();
+  const triple = raw.match(/^("""|''')\s*([\s\S]*?)\s*\1$/);
+  if (triple !== null) raw = triple[2].trim();
+  return raw;
+}
+
+/** 解析一段文本；失败返回 null（由调用方决定是否宽松提取）。 */
+function tryParseJson(text) {
+  try {
+    const value = JSON.parse(text);
+    return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 把模型输出归一化成严格结构；任何不符合 schema 的地方都视为解析失败（不猜）。 */
+function normalizeParsedProfile(parsed, raw) {
+  if (parsed === null || typeof parsed !== "object") throw new ProfileParseError("模型输出不是 JSON 对象", raw);
+  const headline = clampProfileText(parsed.headline, PROFILE_HEADLINE_MAX);
+  if (headline === "") throw new ProfileParseError("模型输出缺少 headline", raw);
+  const rawDimensions = Array.isArray(parsed.dimensions) ? parsed.dimensions : null;
+  if (rawDimensions === null) throw new ProfileParseError("模型输出缺少 dimensions", raw);
+  const dimensions = rawDimensions
+    .map((item) => {
+      if (item === null || typeof item !== "object") return null;
+      const title = clampProfileText(item.title, PROFILE_TITLE_MAX);
+      const insight = clampProfileText(item.insight, PROFILE_INSIGHT_MAX);
+      const evidence = clampProfileText(item.evidence, PROFILE_EVIDENCE_MAX);
+      if (title === "" || insight === "" || evidence === "") return null;
+      return {
+        key: normalizeDimensionKey(item.key),
+        title,
+        insight,
+        evidence,
+      };
+    })
+    .filter((item) => item !== null)
+    .slice(0, 6);
+  if (dimensions.length < 4) throw new ProfileParseError("模型输出有效维度少于 4 条", raw);
+  if (!dimensions.every((item) => hasDigit(item.insight))) {
+    throw new ProfileParseError("模型输出结论未引用数字", raw);
+  }
+  const rawAdvice = Array.isArray(parsed.advice) ? parsed.advice : null;
+  if (rawAdvice === null) throw new ProfileParseError("模型输出缺少 advice 数组", raw);
+  const advice = rawAdvice
+    .map((item) => {
+      if (item === null || typeof item !== "object") return null;
+      const text = clampProfileText(item.text, PROFILE_LINE_MAX);
+      const why = clampProfileText(item.why, PROFILE_LINE_MAX);
+      if (text === "" || why === "") return null;
+      return { text, why };
+    })
+    .filter((item) => item !== null)
+    .slice(0, 3);
+  if (advice.length < 2) throw new ProfileParseError("模型输出有效建议少于 2 条", raw);
+  const riskText = parsed.risk === null || parsed.risk === undefined ? "" : String(parsed.risk).trim();
+  const risk = riskText === "" ? null : clampProfileText(riskText, PROFILE_LINE_MAX);
+  return { headline, dimensions, advice, risk };
 }
 
 /**
- * 解析模型输出：只接受 { traits: string[3..5], advice: string }。
- * 允许 JSON 代码围栏，其他形状一律视为解析失败（降级，不猜）。
+ * 解析模型输出（四路径）：
+ *   1) 干净 JSON 直接 JSON.parse；
+ *   2) ```json 围栏 / """ 包裹先剥壳再解析；
+ *   3) 前后夹解释文字时，取第一个 { 到最后一个 } 宽松提取；
+ *   4) 仍失败 → 抛 AI_PARSE_FAILED，路由降级本地规则，rawText 前 300 字进 diagnostic。
  */
 export function parseProfileText(text) {
   const raw = String(text ?? "").trim();
-  const start = raw.indexOf("{");
-  const end = raw.lastIndexOf("}");
-  if (start < 0 || end <= start) throw new ProfileParseError("模型输出不含 JSON 对象");
-  let parsed;
-  try {
-    parsed = JSON.parse(raw.slice(start, end + 1));
-  } catch (error) {
-    throw new ProfileParseError("模型输出 JSON 解析失败：" + (error instanceof Error ? error.message : String(error)));
+  const unwrapped = unwrapProfileText(raw);
+  let parsed = tryParseJson(unwrapped);
+  if (parsed === null) {
+    const start = unwrapped.indexOf("{");
+    const end = unwrapped.lastIndexOf("}");
+    if (start >= 0 && end > start) parsed = tryParseJson(unwrapped.slice(start, end + 1));
   }
-  const rawTraits = Array.isArray(parsed?.traits) ? parsed.traits : Array.isArray(parsed?.features) ? parsed.features : null;
-  const traits = (rawTraits ?? [])
-    .map((item) => String(item ?? "").trim())
-    .filter((item) => item !== "")
-    .slice(0, 5)
-    .map(clampProfileLine);
-  const advice = String(parsed?.advice ?? parsed?.suggestion ?? "").trim();
-  if (traits.length < 3) throw new ProfileParseError("模型输出特征少于 3 条");
-  if (advice === "") throw new ProfileParseError("模型输出缺少建议");
-  return { traits, advice: clampProfileLine(advice) };
+  if (parsed === null) throw new ProfileParseError("模型输出不含可解析的 JSON 对象", raw);
+  return normalizeParsedProfile(parsed, raw);
 }
-
-/** 供测试与路由共用：单条文案上限。 */
-export const PROFILE_LINE_MAX = MAX_LINE_CHARS;
