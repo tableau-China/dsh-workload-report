@@ -1,5 +1,37 @@
 # CHANGELOG — dsh-workload-report
 
+## v1.0.0（2026-10-20）— 首个正式版：性能、AI 画像与样式统一
+
+首个 1.0 版本，汇总 0.6.6 之后的功能与质量工作（此前版本已在 npm 发布）。
+
+### 性能
+
+- **打开面板与模型折叠彻底解耦**：打开 5 次触发 0 次 `readSession`（旧版 159 次）；
+  隔离实例实测冷缓存首开 **448.9 → 25.3 ms**、热缓存再开 **2.86 → 1.12 ms**、回填中打开 **63.5 → 3.2 ms**，缓存命中率 83.3%。
+- 宿主快照缓存 TTL 5s → 15s；折叠改由索引就绪预热 + 12 分钟维护 + 60 秒空闲/转冷检查驱动；
+  活会话需空闲 ≥10 分钟或增量 >50 才重折；失败行 30 分钟低频重试且不参与状态判定。
+- `/health` 与 `/snapshot.diagnostics` 暴露 `snapshotMs` / `snapshotCache` / `foldRoundMs` / `foldSessionsRead`。
+
+### AI 用户画像（默认包含、手动触发）
+
+- 独立顶层页签，**在导航右侧**、蓝色底强调；「主要会话」页只保留会话表。
+- 首次打开显示提示面板（只发聚合统计 / 使用宿主默认模型 / 点击才计费），**不点击不调用模型**。
+- 汇总窗口下限 **30 天**（`aiProfile.minDays`）；结果含 headline + 4–6 维度（每条引用数字）+ 2–3 条建议 + 风险提示。
+- 白名单 **56 个聚合字段**，断言严格相等并递归拒绝 title/cwd/sessionId/path 等键；结果按统计指纹缓存，命中不重复调用。
+- 去掉 `maxTokens` 限制；`finish.kind=length` 时先做 JSON 括号修复再采用（标 `truncated`），修不好才降级本地规则画像。
+- 失败诊断：`stage`（route/precheck/prepareCall/stream/finish/parse）、`route`、`precheck.providers`、`diagnostic.error`（脱敏 ≤300 字）。
+
+### 报告与样式
+
+- 报告「每日用量趋势」日历与柱状图**左右并排**；移除时刻分析的「轮次」子图；
+  「按工作区分布」删除逐行重复的「我的付出 / Token 消耗」标签。
+- 统一组件：`ChipGroup` / `CardHead` / `MetricBarCell` / `hour-status`；唯一样式 class 102 → 94，新增 `docs/ui-conventions.md` 与 `docs/report-parity.md`（含"看板改动必须同步报告"铁律与结构断言）。
+
+### 升级注意
+
+- `INDEX_VERSION` = 7：升级后首次启动会重建索引并重折事件（界面显示进度），之后不再重折全部。
+- 读取不出事件的老格式会话（v0 日志）会在界面标注「Token 未计入 N 个会话」。
+
 ## 未发布（2026-10-20）— 画像卡右列 + 首开提示 + 30 天窗口
 
 ### 问题
