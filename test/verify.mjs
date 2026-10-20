@@ -18,7 +18,7 @@ import {
   AI_PROFILE_DEFAULTS, TRUNCATION_FINISH_KINDS, normalizeAiProfile, profileWindowDays, profileWindowQuery, systemPrompt,
 } from "../src/profile-service.js";
 import { hourTokensNote } from "../src/client/hour-status.js";
-import { SESSION_LAYOUT, SESSION_PAGE_SECTIONS, sessionLayoutGeometry } from "../src/client/session-layout.js";
+import { SESSION_PAGE_SECTIONS } from "../src/client/session-layout.js";
 import { profileCardPhase, profileRouteInfo, profileSummaryDays } from "../src/client/profile-state.js";
 import { translate } from "../src/client/locales.js";
 import {

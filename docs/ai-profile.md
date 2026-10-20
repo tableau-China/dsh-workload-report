@@ -262,8 +262,7 @@ curl -s 'http://127.0.0.1:3080/workload-report/v1/health'
 - 截断抢救：缺右括号的 JSON 修复成功 → `source=llm` + `truncated=true` + `diagnostic.repaired=true`；
   修不好 → `AI_NOT_STOPPED` + `diagnostic.finish.kind / textLength / excerpt`；
 - 前端渲染结构（headline / dimensions / evidence / advice / risk / 来源徽标 / usage / 重生成 / 截断小字）与样式；
-- 布局：画像卡与主要会话表为同一 grid 行的兄弟（会话左 2fr / 画像右 1fr，画像左边界 > 会话右边界）；
-  `<=1080px` 回落为上下堆叠；标题「AI 用户画像」；特别底色只用宿主 token；
+- 布局：画像渲染在**导航最右侧的独立顶层页签**（`data-align="end"`，蓝色底强调），「主要会话」页只保留会话表；
 - 两态：首开提示面板（三行文案 + provider/model 占位 + 主按钮）与结果态互斥；首开 `llm.prepareCall` = 0，
   点击后 = 1；生成后提示面板消失、卡片标注「基于近 N 天汇总」；
 - 窗口：默认 `days=7` 时 `payload.range.days >= 30`；`minDays` 可配置覆盖；

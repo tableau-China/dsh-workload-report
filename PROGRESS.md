@@ -825,3 +825,30 @@ E2E（`test/e2e-ui.mjs`，真实实例）全过；离线断言 184 → **215**�
 - **AI 画像**：默认包含、手动触发、30 天窗口、56 字段白名单 + 指纹缓存 + 截断抢救 + 失败诊断；独立页签在导航右侧（蓝底）。
 - **报告**：日历/柱状左右并排、去轮次子图、去逐行重复标签；report-parity 结构断言 20+ 条。
 - **版本策略**：由 0.7.1 升为 **1.0.0**（用户决定），此后语义化版本承载新功能。
+
+## 2026-10-20 v1.0.0 文档对齐（README / docs / 死代码清理）
+
+### 问题
+
+`a64ea3e`（release: v1.0.0）只改了 CHANGELOG / PROGRESS / package.json，两个 README 仍停在 0.7.0，
+且描述的是**已被取代的 UI**：
+
+- 版本号与 `package.json` 的 1.0.0 不一致（违反版本号交叉核对铁律）；
+- 画像被描述成「会话表右侧卡片、两列 2fr/1fr、1080px 堆叠」——实际已是**导航最右侧独立页签**；
+- 开发表写 996 项断言，实际 993；
+- 1.0.0 的招牌特性（打开面板 0 次 readSession / 性能数字）README 未提。
+
+### 变更
+
+- README 中英：版本号 1.0.0；画像改独立页签表述；新增「打开即快」条目；断言数 996 → 993。
+- `docs/ai-profile.md` / `docs/report-parity.md`：失效的两列描述改为独立页签。
+- CHANGELOG：开头新增**版本对照表**（标注 0.7.x 未单独发版、已并入 1.0.0）；新增本次修订条目。
+- **死代码清理**：删除 `.wl-session-layout` 全部 CSS 与 `SESSION_LAYOUT` / `sessionLayoutGeometry()`
+  （两列布局的残留，JSX 早已不用、verify 还在断言其不存在）；`session-layout.js` 只留 `SESSION_PAGE_SECTIONS`。
+  产物 `lib/client.js` 105.5 → 104.1 KB。
+
+### 验证
+
+- `node build.mjs && node test/verify.mjs` 连跑：**993 项断言，exit 0**（清理前后各一次）。
+- 交叉核对：`package.json` / README ×2 / CHANGELOG 对照表版本号一致。
+- 残留扫描：README / docs 中已无 `两列` / `2fr` / `1080px` / `0.7.0` / `996` 失效描述。
