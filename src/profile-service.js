@@ -2,7 +2,8 @@
  * AI 用户画像的宿主编排：可选 llm 服务、白名单 payload、磁盘缓存、超时与降级。
  *
  * 铁律：
- *   · 默认关闭（enabled=false）：不探测 llm、不生成、零服务调用；
+ *   · 默认包含（enabled=true）但只手动触发：打开面板 / probe 绝不调用模型；
+ *   · 显式 enabled=false 时才算关闭（不探测 llm、不生成、零服务调用）；
  *   · llm 用 ctx.get("llm") 可选获取（不写进 inject，缺失时插件照常加载）；
  *   · 只发送 buildProfilePayload() 的白名单聚合统计，绝不发对话正文 / 标题 / 路径；
  *   · 任何失败（服务缺失 / 未登录 / 超时 / 非 stop / 解析失败）都降级为本地规则，
@@ -33,11 +34,14 @@ import {
  * 真被截断时走 repairProfileJson() 补齐括号抢救；配置里即使写了 maxTokens 也忽略。
  */
 export const AI_PROFILE_DEFAULTS = Object.freeze({
-  enabled: false,
+  /** 默认包含该功能；只有点击「生成画像」才调用模型。显式 false 才隐藏入口。 */
+  enabled: true,
   provider: "",
   model: "",
   timeoutMs: 60000,
   cacheTtlMs: 86400000,
+  /** 汇总窗口下限（天）：看板选 7 天时，画像仍按至少 30 天统计。 */
+  minDays: 30,
 });
 
 /** 缓存文件格式版本（改字段时 +1；不影响索引 INDEX_VERSION）。v4 起带 truncated / diagnostic。 */
@@ -175,6 +179,23 @@ function tagStage(value, stage, trace) {
   return error;
 }
 
+/**
+ * 汇总窗口下限：配置的 minDays（默认 30），非法值回落默认值。
+ * 用户在看板选 7 天时，画像仍按 30 天统计；配置 minDays: 45 则用 45。
+ */
+export function profileWindowDays(days, minDays = AI_PROFILE_DEFAULTS.minDays) {
+  const floor = Number(minDays);
+  const minimum = Number.isFinite(floor) && floor > 0 ? Math.round(floor) : AI_PROFILE_DEFAULTS.minDays;
+  const requested = Number.parseInt(String(days ?? ""), 10);
+  return Math.max(Number.isFinite(requested) && requested > 0 ? requested : minimum, minimum);
+}
+
+/** /profile 的聚合查询：天数抬到 minDays；all / from / to 仍由 handle 校正。 */
+export function profileWindowQuery(query = {}, minDays = AI_PROFILE_DEFAULTS.minDays) {
+  const raw = query !== null && typeof query === "object" ? query : {};
+  return { ...raw, days: profileWindowDays(raw.days, minDays) };
+}
+
 /** 配置归一化：数值兜底、字符串裁剪；未知字段忽略。 */
 export function normalizeAiProfile(config = {}) {
   const raw = config !== null && typeof config === "object" ? config : {};
@@ -185,11 +206,13 @@ export function normalizeAiProfile(config = {}) {
   const ttl = Number(raw.cacheTtlMs);
   // raw.maxTokens 被刻意忽略：输出上限会导致 JSON 截断，见 AI_PROFILE_DEFAULTS 的说明。
   return {
-    enabled: raw.enabled === true,
+    // 只有显式 false 才关闭；缺省（无配置）默认包含该功能。
+    enabled: raw.enabled !== false,
     provider: typeof raw.provider === "string" ? raw.provider.trim() : "",
     model: typeof raw.model === "string" ? raw.model.trim() : "",
     timeoutMs: Math.max(1, Math.round(positive(raw.timeoutMs, AI_PROFILE_DEFAULTS.timeoutMs))),
     cacheTtlMs: Number.isFinite(ttl) && ttl >= 0 ? Math.round(ttl) : AI_PROFILE_DEFAULTS.cacheTtlMs,
+    minDays: Math.max(1, Math.min(3650, Math.round(positive(raw.minDays, AI_PROFILE_DEFAULTS.minDays)))),
   };
 }
 
@@ -426,33 +449,38 @@ export class ProfileService {
   }
 
   /**
-   * 状态预检（probe）：不调用模型，只回答 enabled / 是否可生成。
+   * 状态预检（probe）：不调用模型，只回答 enabled / 是否可生成 / 提示面板需要的模型与窗口。
    * 调试 provider/model 参数同样生效，用来确认"换一个网关是否能通"。
+   * @param overrides - 调试覆盖 { provider, model }。
+   * @param window - { days, all }；只用于计算提示面板的「基于近 N 天汇总」。
    */
-  async status(overrides = {}) {
+  async status(overrides = {}, window = {}) {
     const parsed = normalizeOverrides(overrides);
     if (!this.config.enabled) return { enabled: false, code: PROFILE_CODES.disabled };
+    // 「全部」区间在生成前无法轻量得知真实跨度：提示面板只承诺"至少 minDays 天"；
+    // 生成后结果使用 payload.range.days 的真实 summaryDays。
+    const summaryDays = window?.all === true ? this.config.minDays : profileWindowDays(window?.days, this.config.minDays);
     const trace = { route: null, precheck: { providers: [], models: [] } };
     const llm = this.service();
     if (llm === undefined) {
-      return { enabled: true, available: false, signedIn: false, code: PROFILE_CODES.unavailable, provider: null, model: null, route: null, precheck: trace.precheck };
+      return { enabled: true, available: false, signedIn: false, code: PROFILE_CODES.unavailable, provider: null, model: null, route: null, precheck: trace.precheck, summaryDays };
     }
     try {
       const providers = await this.providerIds(llm);
       trace.precheck.providers = providers;
       if (providers.length === 0) {
-        return { enabled: true, available: false, signedIn: false, code: PROFILE_CODES.signIn, provider: null, model: null, route: null, precheck: trace.precheck };
+        return { enabled: true, available: false, signedIn: false, code: PROFILE_CODES.signIn, provider: null, model: null, route: null, precheck: trace.precheck, summaryDays };
       }
       const route = await this.resolveRoute(llm, providers, parsed, trace);
       return {
         enabled: true, available: true, signedIn: true, code: null,
-        provider: route.provider, model: route.model, route: trace.route, precheck: trace.precheck,
+        provider: route.provider, model: route.model, route: trace.route, precheck: trace.precheck, summaryDays,
       };
     } catch (error) {
       return {
         enabled: true, available: false, signedIn: false, code: profileCodeOf(error),
         provider: null, model: null, route: trace.route, precheck: trace.precheck,
-        stage: typeof error?.stage === "string" ? error.stage : null,
+        stage: typeof error?.stage === "string" ? error.stage : null, summaryDays,
       };
     }
   }
@@ -508,11 +536,24 @@ export class ProfileService {
     if (!this.config.enabled) return { enabled: false, code: PROFILE_CODES.disabled };
     const overrides = normalizeOverrides({ provider, model });
     const debugRoute = overrides.provider !== "" || overrides.model !== "";
-    if (probe) return this.status(overrides);
+    if (probe) return this.status(overrides, query ?? {});
 
-    const snapshot = await this.index.snapshot(query);
+    // 汇总窗口至少 minDays（默认 30）：看板选 7 天时，画像仍用 30 天聚合数据。
+    // all / from / to 可能把窗口压回 7 天，所以快照回来后再校正一次（见下）。
+    const windowQuery = profileWindowQuery(query, this.config.minDays);
+    let snapshot = await this.index.snapshot(windowQuery);
+    if (!(Number(snapshot?.range?.days) >= this.config.minDays)) {
+      snapshot = await this.index.snapshot({
+        ...windowQuery,
+        from: undefined,
+        to: undefined,
+        all: false,
+        days: this.config.minDays,
+      });
+    }
     const payload = buildProfilePayload(snapshot);
     const fingerprint = profileFingerprint(payload);
+    const summaryDays = Math.max(0, Math.round(Number(payload?.range?.days) || 0));
 
     // 调试覆盖不读也不写缓存：避免一次试跑污染正常路径的指纹缓存。
     if (!force && !debugRoute) {
@@ -525,13 +566,13 @@ export class ProfileService {
           route: cached.route ?? null,
           precheck: cached.precheck ?? null,
         });
-        return { enabled: true, ...cached, cached: true };
+        return { enabled: true, ...cached, summaryDays, cached: true };
       }
     }
 
     const key = lang + ":" + fingerprint + (debugRoute ? ":" + overrides.provider + ":" + overrides.model : "");
     if (!force && this.inflight.has(key)) return this.inflight.get(key);
-    const run = this.generate({ payload, fingerprint, lang, overrides, cache: !debugRoute });
+    const run = this.generate({ payload, fingerprint, lang, overrides, cache: !debugRoute, summaryDays });
     if (!force) this.inflight.set(key, run);
     try {
       return await run;
@@ -541,7 +582,7 @@ export class ProfileService {
   }
 
   /** 生成一次：模型失败一律回落到本地规则（source=local + code + diagnostic）。 */
-  async generate({ payload, fingerprint, lang, overrides = {}, cache = true }) {
+  async generate({ payload, fingerprint, lang, overrides = {}, cache = true, summaryDays = 0 }) {
     let result;
     try {
       const generated = await this.callModel(payload, lang, overrides);
@@ -591,7 +632,7 @@ export class ProfileService {
       };
       this.recordLast({ code, stage, error: diagnostic.error.message, route, precheck });
     }
-    const profile = { ...result, generatedAt: Date.now(), fingerprint, cached: false };
+    const profile = { ...result, summaryDays, generatedAt: Date.now(), fingerprint, cached: false };
     if (cache) await this.writeCache(lang, fingerprint, profile);
     return { enabled: true, ...profile };
   }

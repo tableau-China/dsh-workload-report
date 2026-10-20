@@ -110,10 +110,11 @@ const DEFAULTS = {
    */
   balance: { enabled: false, refreshMs: 300000 },
   /**
-   * AI 用户画像：**默认关闭**。
-   * 关闭时 /profile 直接返回 enabled:false，一次 llm 服务调用都不发，界面不渲染入口；
-   * 开启后只把 src/ai-profile.js 白名单里的聚合统计发给模型（不含对话正文 / 标题 / 路径），
-   * 结果按统计指纹缓存到索引同目录。详见 docs/ai-profile.md。
+   * AI 用户画像：**默认包含，但只手动触发**。
+   * 打开面板 / probe 绝不调用模型；只有点击「生成画像」才把 src/ai-profile.js 白名单里的
+   * 聚合统计（至少 30 天）发给模型，不含对话正文 / 标题 / 路径；结果按统计指纹缓存到索引同目录。
+   * 显式 enabled:false 时 /profile 直接返回 enabled:false，界面不渲染入口。
+   * 详见 docs/ai-profile.md。
    */
   aiProfile: { ...AI_PROFILE_DEFAULTS },
 };
@@ -1155,8 +1156,8 @@ export function apply(ctx, config = {}) {
         return;
       }
       if (route === "/profile") {
-        // AI 用户画像（默认关闭）：只读、旁路调用，不阻塞 /snapshot 与报告。
-        // probe=1 只回答 enabled / 登录状态；force=1 跳过缓存重新生成。
+        // AI 用户画像（默认包含、手动触发）：只读、旁路调用，不阻塞 /snapshot 与报告。
+        // probe=1 只回答 enabled / 登录状态 / 模型；force=1 跳过缓存重新生成。
         const lang = params.get("lang") === "en" ? "en" : "zh";
         let body;
         try {
@@ -1184,6 +1185,7 @@ export function apply(ctx, config = {}) {
             usage: { input: 0, output: 0, total: 0 },
             costHint: { inputTokens: 0, outputTokens: 0 },
             model: null,
+            summaryDays: Number(index.profile?.config?.minDays) || 30,
             generatedAt: Date.now(),
             fingerprint: profileFingerprint(payload),
             cached: false,
@@ -1232,8 +1234,8 @@ export function apply(ctx, config = {}) {
   );
   ctx.logger.info(
     merged.aiProfile.enabled === true
-      ? "[workload-report] AI 用户画像已启用：仅发送聚合统计，按需触发（可在配置里设 aiProfile.enabled=false 关闭）"
-      : "[workload-report] AI 用户画像默认关闭：不调用 llm、不生成、界面不显示入口",
+      ? "[workload-report] AI 用户画像已包含：打开面板不调用模型，点击「生成画像」才发送聚合统计（可在配置里设 aiProfile.enabled=false 关闭）"
+      : "[workload-report] AI 用户画像已关闭：不调用 llm、不生成、界面不显示入口",
   );
   // 返回索引实例：离线测试用来精确断言"打开 N 次 = 0 次读日志"与折叠定时器行为。
   return index;

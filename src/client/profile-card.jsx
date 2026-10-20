@@ -1,12 +1,12 @@
 /**
- * AI 用户画像卡片（默认关闭时整卡不渲染）。
+ * AI 用户画像卡片（默认包含，但只手动触发）。
  *
- * 交互：挂载时先 probe（只问 enabled / 是否登录，不生成）；点「生成画像」才请求 /profile。
- * 失败一律由宿主降级为本地规则版，这里只展示 source / code，不弹错、不阻塞看板。
+ * 交互：
+ *   · 挂载时只 probe（enabled / 是否登录 / provider+model），**绝不调用模型**；
+ *   · 首开显示提示面板：只发聚合统计 → 用哪个模型 → 点击才产生费用；
+ *   · 点「生成画像」才请求 /profile，生成后隐藏提示面板、显示结果，并提供「重新生成」；
+ *   · 显式 aiProfile.enabled:false 时 probe 返回 enabled:false，整卡不渲染。
  * 结构复用 CardHead（标题 + 右侧 hint + 右上按钮），不另造卡片头。
- *
- * 展示结构（headline / dimensions / advice / risk）由 profile-view.js 归一化，
- * AI 版与本地规则版同构，降级时观感一致。
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -14,6 +14,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { formatInt } from "../format.js";
 import { profileSections } from "../profile-view.js";
 import { CardHead } from "./card-head.jsx";
+import { profileCardPhase, profileRouteInfo, profileSummaryDays } from "./profile-state.js";
 
 const API_PATH = "/workload-report/v1";
 
@@ -44,7 +45,7 @@ function timeText(ms, lang) {
 /**
  * @param props.t - 翻译函数。
  * @param props.lang - zh | en（决定文案与缓存语言）。
- * @param props.days - 当前区间天数。
+ * @param props.days - 当前区间天数（画像请求会抬到至少 minDays）。
  * @param props.scope - all | main | subagent。
  * @param props.allTime - 是否「全部」区间。
  * @param props.tz - 当前时区。
@@ -53,11 +54,12 @@ export function ProfileCard({ t, lang = "zh", days, scope, allTime = false, tz }
   // probing：只探状态；disabled：配置关闭，整卡不渲染；ready：可生成或已生成。
   const [status, setStatus] = useState("probing");
   const [profile, setProfile] = useState(null);
+  const [probe, setProbe] = useState(null);
   const [signedOut, setSignedOut] = useState(false);
   const [failed, setFailed] = useState(false);
   const requestId = useRef(0);
 
-  const queryOf = useCallback((probe) => {
+  const queryOf = useCallback((isProbe) => {
     const params = new URLSearchParams({
       days: String(days),
       scope: String(scope ?? "all"),
@@ -65,7 +67,7 @@ export function ProfileCard({ t, lang = "zh", days, scope, allTime = false, tz }
       lang,
     });
     if (allTime) params.set("all", "1");
-    if (probe) params.set("probe", "1");
+    if (isProbe) params.set("probe", "1");
     return params;
   }, [days, scope, tz, lang, allTime]);
 
@@ -74,6 +76,7 @@ export function ProfileCard({ t, lang = "zh", days, scope, allTime = false, tz }
     const id = requestId.current + 1;
     requestId.current = id;
     setProfile(null);
+    setProbe(null);
     setFailed(false);
     setSignedOut(false);
     setStatus("probing");
@@ -89,6 +92,12 @@ export function ProfileCard({ t, lang = "zh", days, scope, allTime = false, tz }
           setStatus("disabled");
           return;
         }
+        // probe 只回答 enabled / 登录 / 模型，不生成；提示面板据此显示 provider/model。
+        setProbe({
+          provider: body.provider ?? null,
+          model: body.model ?? null,
+          summaryDays: body.summaryDays,
+        });
         setSignedOut(body.signedIn === false);
         setStatus("ready");
       })
@@ -122,6 +131,13 @@ export function ProfileCard({ t, lang = "zh", days, scope, allTime = false, tz }
         return;
       }
       setProfile(body);
+      const route = body.route ?? body.model ?? null;
+      setProbe((previous) => ({
+        ...(previous ?? {}),
+        provider: route?.provider ?? previous?.provider ?? null,
+        model: route?.model ?? previous?.model ?? null,
+        summaryDays: body.summaryDays ?? previous?.summaryDays,
+      }));
       setSignedOut(body.code === "ACCOUNT_SIGN_IN_REQUIRED" || body.code === "MISSING_CREDENTIAL");
       setStatus("ready");
     } catch {
@@ -131,7 +147,8 @@ export function ProfileCard({ t, lang = "zh", days, scope, allTime = false, tz }
     }
   }, [status, queryOf, profile]);
 
-  if (status === "probing" || status === "disabled") return null;
+  const phase = profileCardPhase(status, profile);
+  if (phase === "hidden") return null;
 
   const generating = status === "generating";
   const source = profile?.source;
@@ -139,36 +156,71 @@ export function ProfileCard({ t, lang = "zh", days, scope, allTime = false, tz }
   const usage = profile?.usage;
   const generatedAt = profile?.generatedAt;
   const timestamp = timeText(generatedAt, lang);
-  const view = profile === null ? null : profileSections(profile);
+  const view = phase === "result" ? profileSections(profile) : null;
+  const summaryDays = profileSummaryDays(profile, probe, Math.max(30, Number(days) || 0));
+  const route = profileRouteInfo(probe);
 
   return (
-    <div className="wl-card wl-profile-card" data-kind="ai-profile" data-section="profile" data-source={source ?? undefined} aria-busy={generating}>
+    <div className="wl-card wl-profile-card" data-kind="ai-profile" data-section="profile" data-phase={phase} data-source={source ?? undefined} aria-busy={generating}>
       <CardHead title={t("profile.title")} hint={t("profile.hint")}>
-        <button
-          type="button"
-          className="wl-btn"
-          data-kind="primary"
-          disabled={generating}
-          onClick={generate}
-        >
-          {profile === null ? t("profile.generate") : t("profile.regenerate")}
-        </button>
+        {phase === "result" ? (
+          <button
+            type="button"
+            className="wl-btn"
+            data-kind="primary"
+            data-action="profile-regenerate"
+            disabled={generating}
+            onClick={generate}
+          >
+            {generating ? t("profile.generating") : t("profile.regenerate")}
+          </button>
+        ) : null}
       </CardHead>
 
-      {signedOut ? <p className="wl-status" data-kind="profile-signin">{t("profile.signIn")}</p> : null}
-      {generating ? <p className="wl-state" data-kind="profile-generating">{t("profile.generating")}</p> : null}
+      {phase === "notice" || phase === "generating" ? (
+        <div className="wl-profile-notice" data-kind="profile-notice">
+          <p className="wl-profile-notice-line" data-kind="profile-notice-data">
+            {allTime
+              ? t("profile.notice.dataAll", { days: formatInt(summaryDays) })
+              : t("profile.notice.data", { days: formatInt(summaryDays) })}
+          </p>
+          <p className="wl-profile-notice-line" data-kind="profile-notice-model">
+            {route.known
+              ? t("profile.notice.model", { provider: route.provider, model: route.model })
+              : t("profile.notice.modelDefault")}
+          </p>
+          <p className="wl-profile-notice-line" data-kind="profile-notice-cost">{t("profile.notice.cost")}</p>
+          <div className="wl-profile-notice-actions">
+            <button
+              type="button"
+              className="wl-btn"
+              data-kind="primary"
+              data-action="profile-generate"
+              disabled={generating}
+              onClick={generate}
+            >
+              {generating ? t("profile.generating") : t("profile.generate")}
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       {failed ? <p className="wl-status" data-tone="error">{t("profile.requestFailed")}</p> : null}
 
-      {profile === null && !generating ? <p className="wl-hint">{t("profile.intro")}</p> : null}
-
-      {view !== null ? (
+      {phase === "result" ? (
         <>
+          <p className="wl-hint wl-profile-window" data-kind="profile-window">
+            {t("profile.window", { days: formatInt(summaryDays) })}
+          </p>
           <div className="wl-profile-meta">
             <span className="wl-profile-source" data-source={source}>
               {source === "llm" ? t("profile.source.llm") : t("profile.source.local")}
             </span>
             {codeKey === null ? null : <span className="wl-status" data-tone="error">{t(codeKey)}</span>}
           </div>
+
+          {signedOut ? <p className="wl-status" data-kind="profile-signin">{t("profile.signIn")}</p> : null}
+          {generating ? <p className="wl-state" data-kind="profile-generating">{t("profile.generating")}</p> : null}
 
           {view.headline === "" ? null : (
             <p className="wl-profile-headline" data-kind="profile-headline">{view.headline}</p>
