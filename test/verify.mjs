@@ -819,6 +819,7 @@ console.log("\n—— 时刻卡片（默认 Tokens / chips / 顶部密度点）�
   const stylesSource = await readFile(new URL("../src/client/styles.js", import.meta.url), "utf8");
   const reportSource = await readFile(new URL("../src/report-html.js", import.meta.url), "utf8");
   const hostSource = await readFile(new URL("../index.js", import.meta.url), "utf8");
+  const localesSource = await readFile(new URL("../src/client/locales.js", import.meta.url), "utf8");
   ok(/useState\("tokens"\)/.test(clientSource), "默认 measure = Tokens");
   ok(clientSource.includes('data-measure="tokens"') && clientSource.includes('data-measure="turns"'), "两个 measure chips 都在 DOM（Tokens / 轮次）");
   ok(/onClick=\{\(\) => setHourMeasure\("tokens"\)\}/.test(clientSource) && /onClick=\{\(\) => setHourMeasure\("turns"\)\}/.test(clientSource), "chips 点击切换 measure 状态");
@@ -841,6 +842,16 @@ console.log("\n—— 时刻卡片（默认 Tokens / chips / 顶部密度点）�
   eq(idleNote?.text, "Token 未计入 4 个会话", "空闲且 N>0 文案（N 来自 diagnostics）");
   eq(hourTokensNote({ modelFold: { running: false }, hourTokensSource: { missing: 0 } }, tZh, String), null, "空闲且 N=0：整条不渲染（返回 null）");
   ok(statusSource.includes("diagnostics?.modelFold") && statusSource.includes("hourTokensSource?.missing"), "状态判据来自 diagnostics，不写死");
+  // —— 三态：first-fold / background / idle ——
+  const firstFoldNote = hourTokensNote({ modelFold: { phase: "first-fold", running: true, pending: 3 }, hourTokensSource: { missing: 0 } }, tZh, String);
+  eq(firstFoldNote?.state, "first-fold", "三态：首次从未折过 → first-fold");
+  eq(firstFoldNote?.text, "正在计算中……", "三态：first-fold 文案");
+  const backgroundNote = hourTokensNote({ modelFold: { phase: "background", running: true, pending: 0, failedRows: 2 }, hourTokensSource: { missing: 5 } }, tZh, String);
+  eq(backgroundNote?.state, "background", "三态：后台增量刷新 → background（即使有失败行）");
+  eq(backgroundNote?.text, "后台更新中", "三态：background 文案不打扰");
+  eq(hourTokensNote({ modelFold: { phase: "idle", failedRows: 4 }, hourTokensSource: { missing: 0 } }, tZh, String), null, "失败行不阻塞状态：idle + failedRows>0 + N=0 → 不显示计算中");
+  eq(hourTokensNote({ modelFold: { phase: "idle" }, hourTokensSource: { missing: 2 } }, tZh, String)?.state, "idle", "三态：空闲且有未计入 → idle");
+  ok(/data-state="background"\]::before/.test(stylesSource) && /hour\.background/.test(localesSource), "background 用灰点小字样式（不抢「正在计算中」）");
   ok(/\.wl-hour-legend \{[^}]*justify-content: space-between/s.test(stylesSource), "图例行 space-between（左侧图例、右侧状态）");
   ok(/\.wl-hour-legend \.wl-status \{[^}]*margin-left: auto/s.test(stylesSource), "状态提示靠右对齐");
   ok(reportSource.includes("hourDotRadius") && reportSource.includes("人类消息密度") && reportSource.includes("Token 产出"), "报告时刻图同步 Tokens 口径与密度点");
@@ -1353,6 +1364,104 @@ ok(
   String(restartSnap.diagnostics.modelFold.lastError),
 );
 await rm(LIFECYCLE_INDEX, { force: true }).catch(() => {});
+
+// ---------------------------------------------------------------- 打开零折叠 / 三态 / 缓存 / 指标
+console.log("\n—— 打开零折叠 / 三态 / 缓存 / 指标 ——");
+const PHASE_INDEX = `/tmp/wl-verify-phase-${process.pid}.json`;
+await rm(PHASE_INDEX, { force: true }).catch(() => {});
+{
+  const phaseRoutes = [];
+  const phaseState = { reads: 0, gate: Promise.resolve(), release: () => {}, listener: null };
+  const phaseRecords = ["N1", "N2"].map((id) => ({
+    header: { id, createdAt: base, cwd: "/tmp/phase", isSeeded: false, version: 4 }, live: false, persisted: true,
+  }));
+  const phaseValues = (id) => ({
+    sessionStats: { turns: 1, steps: 1, llmMs: 1000, toolMs: 0 },
+    tokenUsage: { uncappedInputTokens: 0, uncachedInputTokens: 10, outputTokens: 5, cacheReadTokens: 100, cacheWriteTokens: 0 },
+    title: id,
+  });
+  const phaseSnapshots = Object.fromEntries(phaseRecords.map((record) => [record.header.id, { asOfSeq: 10, values: phaseValues(record.header.id) }]));
+  const phaseCtx = {
+    logger: { info() {}, warn() {} },
+    effect(fn) { fn(); return () => {}; },
+    on(name, listener) { phaseState.listener = listener; return () => {}; },
+    sessions: { get: () => undefined },
+    sessionProjections: { snapshot: () => undefined },
+    sessionQuery: {
+      listSessions: async () => phaseRecords,
+      observeSession: async (id) => ({ header: phaseRecords.find((r) => r.header.id === id).header, projections: { asOfSeq: 10, values: phaseValues(id) }, dispose() {} }),
+      readSession: async () => {
+        phaseState.reads += 1;
+        await phaseState.gate;
+        return { session: {}, inheritedEventCount: 0, events: [lifecycleEvent("deepseek-flash")] };
+      },
+    },
+    sessionProjectionCache: { cachedSnapshot: (header) => phaseSnapshots[String(header.id)] },
+    webServer: { register(spec) { phaseRoutes.push(spec); return () => {}; } },
+  };
+  const phaseIndex = apply(phaseCtx, { indexPath: PHASE_INDEX, modelFoldWarmupMs: 60000, refreshMs: 60000 });
+  const phaseReady = await waitHealth(phaseRoutes, (body) => body.indexing === false && body.diagnostics?.lastSyncAt > 0, "三态实例索引就绪");
+  eq(phaseReady.diagnostics.sessions, 2, "三态实例索引 2 个会话");
+  eq(phaseState.reads, 0, "索引就绪不读事件日志（不再由 sync 末尾触发折叠）");
+  eq(phaseReady.diagnostics.modelFold.phase, "idle", "打开前 phase = idle（等定时器，不抢跑）");
+
+  // 打开 5 次：只允许命中/构建聚合快照，绝不允许读事件日志
+  for (let i = 0; i < 5; i += 1) await callOn(phaseRoutes, "/workload-report/v1/snapshot?days=30&tz=UTC");
+  eq(phaseState.reads, 0, "打开 5 次面板：0 次 readSession（读日志）");
+  const openDiag = (await waitHealth(phaseRoutes, (body) => body.diagnostics?.snapshotCache?.requests >= 5, "快照缓存统计")).diagnostics;
+  eq(openDiag.snapshotCache.hits, 4, "打开 5 次：4 次命中缓存（首开未命中）");
+  eq(openDiag.snapshotCache.misses, 1, "打开 5 次：1 次聚合构建（仅首开）");
+  eq(openDiag.snapshotCache.hitRate, 0.8, "缓存命中率 4/5 = 80%");
+  eq(openDiag.snapshotCache.ttlMs, 15000, "快照缓存 TTL = 15s（5s → 15s）");
+  ok(typeof openDiag.snapshotMs === "number" && openDiag.snapshotMs >= 0, "/health 暴露快照构建耗时（snapshotMs）");
+  eq(typeof openDiag.foldRoundMs, "number", "/health 暴露折叠单轮耗时（foldRoundMs）");
+  eq(openDiag.foldSessionsRead, 0, "/health 暴露折叠读取会话数（foldSessionsRead，打开后仍为 0）");
+  const openSnap = JSON.parse((await callOn(phaseRoutes, "/workload-report/v1/snapshot?days=30&tz=UTC")).body);
+  const openHealth = (await waitHealth(phaseRoutes, () => true, "缓存指标")).diagnostics;
+  eq(openSnap.diagnostics.snapshotCache.hitRate, openHealth.snapshotCache.hitRate, "/snapshot.diagnostics 与 /health 同源暴露缓存指标");
+
+  // first-fold：后台定时器（这里手动触发一次）开始读日志 → phase = first-fold
+  phaseState.gate = new Promise((resolve) => { phaseState.release = resolve; });
+  phaseIndex.scheduleModelFold({ force: true });
+  const folding = await waitHealth(phaseRoutes, (body) => body.diagnostics.modelFold.running === true && body.diagnostics.modelFold.phase !== "idle", "首次折叠开始");
+  eq(folding.diagnostics.modelFold.phase, "first-fold", "首次从未折过 → phase = first-fold（显示「正在计算中……」）");
+  ok(folding.diagnostics.foldSessionsRead >= 1, "折叠进行中 foldSessionsRead 随读取增长");
+  phaseState.release();
+  phaseState.gate = Promise.resolve();
+  const folded = await waitHealth(phaseRoutes, (body) => body.diagnostics.modelFold.running === false && body.diagnostics.modelFold.pending === 0, "首次折叠完成");
+  eq(folded.diagnostics.modelFold.phase, "idle", "首次折叠完成 → phase = idle");
+
+  // 折叠完成必须让快照缓存失效：下一次请求重新聚合
+  const beforeInvalidate = folded.diagnostics.snapshotCache.misses;
+  await callOn(phaseRoutes, "/workload-report/v1/snapshot?days=30&tz=UTC");
+  const afterInvalidate = (await waitHealth(phaseRoutes, (body) => body.diagnostics?.snapshotCache?.misses >= beforeInvalidate + 1, "折叠后缓存失效")).diagnostics;
+  eq(afterInvalidate.snapshotCache.misses, beforeInvalidate + 1, "折叠完成 → 快照缓存立即失效（不等 15s TTL）");
+  await callOn(phaseRoutes, "/workload-report/v1/snapshot?days=30&tz=UTC");
+  eq((await waitHealth(phaseRoutes, (body) => body.diagnostics?.snapshotCache?.hits >= 1, "失效后重新命中")).diagnostics.snapshotCache.misses, beforeInvalidate + 1, "失效后下一次重新命中（只多一次构建）");
+
+  // background：已折过的会话重折 → phase = background（不打扰）
+  phaseIndex.rows.get("N1").asOfSeq += 1;
+  phaseState.gate = new Promise((resolve) => { phaseState.release = resolve; });
+  phaseIndex.scheduleModelFold({ force: true });
+  const background = await waitHealth(phaseRoutes, (body) => body.diagnostics.modelFold.running === true && body.diagnostics.modelFold.phase !== "idle", "后台重折开始");
+  eq(background.diagnostics.modelFold.phase, "background", "已折过 → 重折 phase = background（只灰点「后台更新中」）");
+  phaseState.release();
+  phaseState.gate = Promise.resolve();
+  await waitHealth(phaseRoutes, (body) => body.diagnostics.modelFold.running === false, "后台重折完成");
+  const afterRound = (await waitHealth(phaseRoutes, (body) => body.diagnostics.foldRounds >= 2, "折叠轮次")).diagnostics;
+  ok(afterRound.foldRoundMs >= 0 && afterRound.foldRounds >= 2, "折叠轮次与单轮耗时写入 /health", `rounds=${afterRound.foldRounds} ms=${afterRound.foldRoundMs}`);
+
+  // 失败重试低频：20 分钟内不进队列，过了 30 分钟窗口才重试
+  const failedRow = phaseIndex.rows.get("N2");
+  delete failedRow.models;
+  failedRow.modelFoldError = "unsupported descriptor version 2";
+  failedRow.modelFoldErrorAt = Date.now() - 20 * 60 * 1000;
+  eq(phaseIndex.modelFoldQueue().failed.length, 0, "失败行 20min 内不重试（modelRetryMs = 30min）");
+  failedRow.modelFoldErrorAt = Date.now() - 31 * 60 * 1000;
+  eq(phaseIndex.modelFoldQueue().failed.length, 1, "失败行超过 30min 才进入低频重试队列");
+  eq(phaseIndex.modelFoldDiagnostics().phase, "idle", "失败行不改变 phase（绝不让状态显示为计算中）");
+  await rm(PHASE_INDEX, { force: true }).catch(() => {});
+}
 
 // ---------------------------------------------------------------- 等待用户剔除的宿主配置（0.6.5）
 console.log("\n—— 等待用户剔除的宿主配置（excludeWait）——");
