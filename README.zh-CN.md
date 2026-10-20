@@ -39,8 +39,8 @@ dsh plugin --profile web add link:$PWD
 
 - **只用官方接口。** 会话身份来自 `sessionQuery.listSessions()`；统计来自官方投影（`sessionProjections`、`sessionProjectionCache`），必要时用官方 `sessionQuery.observeSession()` 冷读兜底；模型与小时 Token 维度使用官方 `sessionQuery.readSession()` 事件日志。
 - **不解析存储格式。** 插件从不打开 `*.jsonl.zstd`，不解析 zstd / JSONL，也不读 Harness 内部的投影缓存文件。格式会随版本演进，官方接口才是稳定契约。
-- **默认零外发网络请求。** 统计数据全部留在本机；插件只注册只读 HTTP 路由，唯一写入的是自己的本地索引 `<DSH_HOME>/workload-report/index-v7.json`（删掉会自动重建）。
-- **唯一需显式开启的例外**是可选余额 chip（`balance.enabled: true`，默认关闭），由**宿主**调用官方 `deepseekAccount` 服务，见「隐私」。
+- **默认零外发网络请求。** 统计数据全部留在本机；插件只注册只读 HTTP 路由，只写自己的本地索引 `<DSH_HOME>/workload-report/index-v7.json`；开启 AI 画像后另在同目录写一份画像缓存（两者删掉都会自动重建）。
+- **两个需显式开启的例外**：可选余额 chip（`balance.enabled: true`，默认关闭，由**宿主**调用官方 `deepseekAccount` 服务），以及可选 **AI 用户画像**（`aiProfile.enabled: true`，默认关闭，只把聚合统计发给已配置的模型）。见「隐私」。
 - **不编数字。** 读不出的早期会话会被排除并在界面写明数量；没有官方价的模型费用显示 **—**，不猜。
 
 ## 功能清单（0.6.6）
@@ -54,6 +54,7 @@ dsh plugin --profile web add link:$PWD
 - **主要会话与按日期明细**：主要数值列都有比例条（会话：轮次 / 步骤 / 活跃 / 输出；日期明细：对话 / 轮次 / 活跃 / Token）；主要会话表头可排序；日期明细覆盖最近 31 天。
 - **导出自包含 HTML 报告**：单文件、内联 CSS + 内联 SVG，**无脚本、无外部资源**；支持浅 / 深色、自定义标题与备注、`anonymize=1` 匿名化工作区与会话标题。报告与看板同口径：8 张 KPI、日历 + 柱状、小时密度点 + 轮次小图、表格比例条，外链仅官方计费页。
 - **主题与语言自适应**：颜色全部使用宿主主题 token（`--dsw-*`），自动跟随浅 / 深色；中英文文案逐键对齐。
+- **AI 用户画像（可选，默认关闭）**：按日期页的一张卡片，只凭**聚合统计**生成 3–5 条特征 + 1 条建议，绝不发送对话、标题或路径；同一统计指纹直接复用磁盘缓存；任何失败都降级为本地规则版。详见 [AI 用户画像](#ai-用户画像)。
 
 ## 界面截图
 
@@ -134,9 +135,36 @@ dsh plugin --profile web add link:$PWD
     balance:                       # 可选余额 chip —— 默认关闭
       enabled: false               # true 时宿主会访问 platform.deepseek.com（见「隐私」）
       refreshMs: 300000            # 余额缓存时长（毫秒）
+    aiProfile:                     # 可选 AI 用户画像 —— 默认关闭
+      enabled: false               # true 时按需调用模型，只发聚合统计
+      provider: ""                 # 空 = 使用宿主 agentDefaultModel
+      model: ""                    # 与 provider 成对配置
+      maxTokens: 900
+      timeoutMs: 60000             # AbortSignal.timeout(timeoutMs)
+      cacheTtlMs: 86400000         # 指纹缓存时长（毫秒）；0 = 不落盘
 ```
 
 默认价目内置、离线可用；如合同价不同，可用 `pricing.overrides` / `pricing.asOf` / `pricing.links` 覆盖，详见 [docs/models.md](./docs/models.md)。
+
+## AI 用户画像
+
+**默认关闭、按需点击生成。** 开启后，按日期页会多一张「用户画像」卡片：
+
+- **触发**：打开面板只做 `probe`（不调用模型）；点「生成画像 / 重新生成」才真正请求，生成中按钮禁用。
+- **发送什么**：严格白名单的聚合统计——区间、净活跃、等待、对话、轮次、步骤、总 Token、缓存命中率、
+  24 小时 Token 桶、工作区前 5（名称 + 占比）、模型前 5（名称 + 占比）、周末占比、夜间（22:00–06:00）占比。
+  **绝不发送**对话正文、会话标题、cwd / 路径、会话 id 或事件日志；宿主会断言 payload 键集合严格等于白名单。
+- **缓存**：白名单稳定 JSON 的 SHA-256 前 16 位；结果与索引同目录原子落盘（`.tmp` → `rename`）。
+  指纹相同直接返回缓存，不再调用模型；`force=1` 重新生成。
+- **失败降级**：llm 缺失、未登录 / 无模型、超时、非 `stop` 结束、空输出、JSON 解析失败——
+  一律返回**本地规则版**（纯统计 3–5 条特征 + 1 条建议，不联网）。响应始终带 `source: "llm" | "local"`
+  与稳定 `code`，不向 UI 抛错。
+- **不计入本插件 Token 报表**：这是一次旁路辅助调用，不写入任何会话事件，因此不进本插件的 Token / 费用统计；
+  卡片单独显示这次调用的输入 / 输出 Token 与生成时间。
+- **不写入 HTML 报告**：静态导出有意不展示画像（见 `docs/report-parity.md`）——给客户或打印的文件里，
+  不应夹带 AI 对个人的判断。
+
+完整说明：[docs/ai-profile.md](./docs/ai-profile.md)。
 
 ## 只读接口
 
@@ -145,6 +173,7 @@ dsh plugin --profile web add link:$PWD
 | `GET {apiPath}/snapshot?days=30&tz=Asia/Shanghai&scope=all` | 聚合快照 JSON（totals / byDay / byWorkspace / byHour / bySession / calendar / byModel / modelDaily / diagnostics） |
 | `GET {apiPath}/export.json?...` | 同上，带 `content-disposition` 下载 |
 | `GET {apiPath}/report.html?days=90&theme=dark&anonymize=1&title=...` | 自包含 HTML 报告 |
+| `GET {apiPath}/profile?days=30&tz=...&lang=zh&probe=1` | AI 用户画像：`probe=1` 只查 enabled / 登录状态；否则按需生成；`force=1` 跳过指纹缓存 |
 | `GET {apiPath}/health` | 索引诊断（会话数、检查点命中、冷读、读取失败、耗时） |
 | `GET {apiPath}/balance` | 顶部工具栏 chip 用的余额状态；不触发索引 |
 
@@ -165,14 +194,17 @@ dsh plugin --profile web add link:$PWD
 | [docs/models.md](./docs/models.md) | 模型归属、归并、缓存命中率、峰谷价与费用估算 |
 | [docs/ui-conventions.md](./docs/ui-conventions.md) | 共享 UI 组件、卡片头、图例 / 状态、tooltip 约定 |
 | [docs/report-parity.md](./docs/report-parity.md) | 看板 → 报告对齐清单、有意差异、结构断言 |
+| [docs/ai-profile.md](./docs/ai-profile.md) | AI 用户画像：白名单 payload、缓存指纹、降级 code、隐私 |
 | [CHANGELOG.md](./CHANGELOG.md) | 版本变更与测试记录 |
 | [PROGRESS.md](./PROGRESS.md) | 决策、量测、环境坑与发布记录 |
 
 ## 隐私
 
-统计数据全部留在本机；插件只注册**只读** HTTP 路由，**默认不联网**、不采集任何用户内容。唯一写入的是自己的索引缓存，不改动任何 Harness 数据。导出的 HTML 报告默认包含会话标题，可用 `anonymize=1` 隐藏。
+统计数据全部留在本机；插件只注册**只读** HTTP 路由，**默认不联网**、不采集任何用户内容。只写自己的索引缓存（以及可选的画像缓存），不改动任何 Harness 数据。导出的 HTML 报告默认包含会话标题，可用 `anonymize=1` 隐藏。
 
-**可选余额 chip —— 默认关闭。** 只有显式设置 `balance.enabled: true` 后，宿主才会调用官方 `deepseekAccount` 服务：`getBalance()` 会让**宿主**请求 `https://platform.deepseek.com/api/v0/users/get_user_summary`（账户余额接口）。这是本插件唯一可能触发的出网请求，默认关闭、按 `balance.refreshMs` 缓存；充值 / 用量链接来自服务的本地 `getState()`，不需要网络。查询失败或超时只在 chip 上显示「—」+ 充值链接，不弹错误。余额只渲染在你本机的工具栏 chip 里，**绝不写入**导出的 HTML 报告。
+**可选余额 chip —— 默认关闭。** 只有显式设置 `balance.enabled: true` 后，宿主才会调用官方 `deepseekAccount` 服务：`getBalance()` 会让**宿主**请求 `https://platform.deepseek.com/api/v0/users/get_user_summary`（账户余额接口）。默认关闭、按 `balance.refreshMs` 缓存；充值 / 用量链接来自服务的本地 `getState()`，不需要网络。查询失败或超时只在 chip 上显示「—」+ 充值链接，不弹错误。余额只渲染在你本机的工具栏 chip 里，**绝不写入**导出的 HTML 报告。
+
+**可选 AI 用户画像 —— 默认关闭。** 只有显式设置 `aiProfile.enabled: true` 并点击「生成画像」后，插件才会调用 `llm` 服务（以及你配置的模型）并发送 [AI 用户画像](#ai-用户画像) 中列出的聚合白名单；不发送对话正文、标题、路径、会话 id 或事件日志。结果缓存在插件自己的目录；静态 HTML 报告不包含画像。llm 缺失、未登录、超时或解析失败时，卡片降级为本地规则版并显示原因，不弹错误框。
 
 ## 开发
 

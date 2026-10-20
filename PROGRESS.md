@@ -2,6 +2,34 @@
 
 日期用 `YYYY-MM-DD`；只记录影响后续决策的事实。
 
+## 2026-10-20 AI 用户画像（可选 / 默认关闭）
+
+### 目标
+
+给当前用户生成一张「特征画像」卡片：按需点击、只发聚合统计、默认关闭、失败降级、结果缓存。
+
+### 实现
+
+- 纯函数层 `src/ai-profile.js`：白名单 payload（14 键）、稳定 JSON + SHA-256 前 16 位指纹、
+  本地规则画像（中英各一套，3–5 条 + 1 条建议，≤40 字符）、严格 JSON 解析。
+- 编排层 `src/profile-service.js`：`ctx.get("llm")` 可选获取（**不写进 inject**）；
+  路由优先 `aiProfile.provider/model`，否则 `agentDefaultModel.currentSelection()`；
+  调用前 `listProviders / listModels` 预检；`prepareCall → stream` 累积 text-delta / usage / finish；
+  `AbortSignal.timeout` + 普通 timer 双保险；失败一律 local + code。
+- 路由 `GET /profile`：`probe=1` 只查状态；`force=1` 跳过缓存；默认关闭直接返回 `enabled:false`，
+  零 `ctx.get` / 零模型调用。该路由不持有快照 / 报告锁。
+- 缓存：与索引同目录 `<索引基名>-ai-<lang>-<指纹>.json`，`.tmp` → `rename`；TTL `cacheTtlMs`。
+- 前端 `ProfileCard`：复用 `CardHead`，probe 隐藏入口；生成中禁用；来源徽标「AI 生成 / 本地规则版」；
+  未登录只给文案不跳转；usage + 生成时间小字。
+- 文档：`docs/ai-profile.md`、README 中英、`docs/report-parity.md`（报告有意不展示）、
+  `docs/ui-conventions.md`（卡片必须复用 CardHead）。
+
+### 验证
+
+- `node build.mjs && node test/verify.mjs` 连跑 2 次：**680 项断言，exit 0**（595 → 680）。
+- 真实已登录 llm 环境**未实测**：本次为隔离工作区，只有 mock llm；成功路径已用 mock 覆盖
+  （usage 12/34、缓存命中第二次调用次数仍为 1、force=1 变为 2）。
+
 ## 2026-10-20 看板打开性能：打开零折叠 + 折叠三态 + 耗时指标
 
 ### 问题

@@ -39,8 +39,8 @@ Uninstall: `dsh plugin --profile web remove dsh-workload-report`.
 
 - **Official interfaces only.** Session identity comes from `sessionQuery.listSessions()`; statistics come from the official projections (`sessionProjections`, `sessionProjectionCache`) and, when needed, the official `sessionQuery.observeSession()` cold read. Model and hourly-token dimensions use the official `sessionQuery.readSession()` event log.
 - **No storage-format parsing.** The plugin never opens `*.jsonl.zstd`, never parses zstd/JSONL, and never reads the harness's internal projection-cache files. Formats can change between releases; the official seams are the contract.
-- **Zero outbound requests by default.** All statistics stay on your machine. The plugin exposes read-only HTTP routes only, and writes exactly one file: its own local index at `<DSH_HOME>/workload-report/index-v7.json` (safe to delete; it rebuilds).
-- **The single opt-in exception** is the optional balance chip (`balance.enabled: true`, off by default), where the **host** calls the official `deepseekAccount` service. See [Privacy](#privacy).
+- **Zero outbound requests by default.** All statistics stay on your machine. The plugin exposes read-only HTTP routes only, and writes only its own local index at `<DSH_HOME>/workload-report/index-v7.json` plus, when the AI profile is enabled, its profile cache in the same directory (both safe to delete; they rebuild).
+- **Two opt-in exceptions** are the optional balance chip (`balance.enabled: true`, off by default), where the **host** calls the official `deepseekAccount` service, and the optional **AI user profile** (`aiProfile.enabled: true`, off by default), which calls the configured model provider with aggregate statistics only. See [Privacy](#privacy).
 - **No invented numbers.** Unreadable legacy sessions are excluded and counted in the UI; models without an official price show **—** instead of a made-up cost.
 
 ## Features (0.6.6)
@@ -54,6 +54,7 @@ Uninstall: `dsh plugin --profile web remove dsh-workload-report`.
 - **Top sessions and daily detail**: ratio bars in the main numeric columns (sessions: turns / steps / active / output; daily detail: conversations / turns / active / tokens) and sortable headers on the sessions table; the daily detail table covers the last 31 days.
 - **Export a self-contained HTML report**: one file with inline CSS and inline SVG, **no scripts and no external assets**; light/dark themes, custom title/note, optional `anonymize=1` to hide workspace names and session titles. The report mirrors the dashboard: 8 KPIs, calendar + bars, hourly density dots + turns mini-chart, ratio bars, and the same definitions. Only official pricing pages are linked.
 - **Theme and locale aware**: all colours use host theme tokens (`--dsw-*`), so the dashboard follows the harness light/dark theme; all UI strings are aligned between Chinese and English.
+- **AI user profile (optional, off by default)**: a card on the by-date tab that generates a 3–5 trait profile + 1 suggestion from **aggregate statistics only** — never conversations, titles, or paths. The same statistics fingerprint reuses the disk cache; any failure falls back to deterministic local rules. See [AI user profile](#ai-user-profile).
 
 ## Screenshots
 
@@ -134,9 +135,29 @@ Override any of these in the profile's `cordis.patch.yml` (all optional):
     balance:                       # optional balance chip — OFF by default
       enabled: false               # true = host calls platform.deepseek.com (see Privacy)
       refreshMs: 300000            # balance cache TTL (ms)
+    aiProfile:                     # optional AI user profile — OFF by default
+      enabled: false               # true = on-demand model call with aggregate stats only
+      provider: ""                 # empty = host agentDefaultModel selection
+      model: ""                    # use together with provider
+      maxTokens: 900
+      timeoutMs: 60000             # AbortSignal.timeout(timeoutMs)
+      cacheTtlMs: 86400000         # fingerprint cache TTL (ms); 0 = no disk cache
 ```
 
 The default model prices are built in and offline; `pricing.overrides`, `pricing.asOf` and `pricing.links` let you replace them if your contract differs. See [docs/models.md](./docs/models.md).
+
+## AI user profile
+
+**Off by default and generated on demand.** Enable it only if you want a short “how you work” card next to your stats:
+
+- **Trigger**: opening the panel only runs a `probe` (no model call). The model is called when you click **Generate profile / Regenerate**; the button is disabled while generating.
+- **What is sent**: a strict whitelist of aggregate statistics — range, net active time, wait time, conversations, turns, steps, total tokens, cache-hit rate, 24 hourly token buckets, top 5 workspaces by name + share, top 5 models by name + share, weekend share, and night share (22:00–06:00). **Never** conversation content, session titles, cwd, paths, session ids, or event logs. The host asserts the payload key set is exactly the whitelist.
+- **Cache**: SHA-256 (first 16 hex chars) of the stable JSON of that whitelist. The result is cached on disk next to the index (atomic `tmp` → `rename`); an identical fingerprint returns the cache without another model call. `force=1` regenerates.
+- **Failure = local rules**: missing `llm` service, not signed in / no models, timeout, non-`stop` finish, empty output, or unparsable JSON all fall back to a deterministic **local rules** profile (3–5 traits + 1 suggestion, no network). The response always carries `source: "llm" | "local"` and a stable `code`; nothing is thrown to the UI.
+- **Not counted in this report**: the profile call is an auxiliary call outside any session, so it is **not** included in this plugin's token / cost report. The card shows that call's input/output tokens and generation time separately.
+- **Not in the HTML report**: the static export intentionally omits the profile (see `docs/report-parity.md`); an AI judgment about a person does not belong in a file sent to a client or printed.
+
+Full details: [docs/ai-profile.md](./docs/ai-profile.md).
 
 ## Read-only API
 
@@ -145,6 +166,7 @@ The default model prices are built in and offline; `pricing.overrides`, `pricing
 | `GET {apiPath}/snapshot?days=30&tz=Asia/Shanghai&scope=all` | Aggregated snapshot JSON (totals / byDay / byWorkspace / byHour / bySession / calendar / byModel / modelDaily / diagnostics) |
 | `GET {apiPath}/export.json?...` | Same payload with a `content-disposition` header |
 | `GET {apiPath}/report.html?days=90&theme=dark&anonymize=1&title=...` | Self-contained HTML report |
+| `GET {apiPath}/profile?days=30&tz=...&lang=zh&probe=1` | AI user profile: `probe=1` only reports enabled/signed-in; otherwise generates on demand; `force=1` bypasses the fingerprint cache |
 | `GET {apiPath}/health` | Index diagnostics (sessions, checkpoint hits, cold reads, read failures, duration) |
 | `GET {apiPath}/balance` | Cached balance state for the toolbar chip; never touches the index |
 
@@ -165,14 +187,17 @@ Parameters: `from`/`to` (YYYY-MM-DD, take precedence over `days`), `days`, `all=
 | [docs/models.md](./docs/models.md) | Model attribution, grouping, cache-hit rate, peak/off-peak pricing and cost estimation |
 | [docs/ui-conventions.md](./docs/ui-conventions.md) | Shared UI components, card heads, legend/status rules, tooltip rules |
 | [docs/report-parity.md](./docs/report-parity.md) | Dashboard → report parity checklist, intentional differences, structural assertions |
+| [docs/ai-profile.md](./docs/ai-profile.md) | AI user profile: whitelist payload, cache fingerprint, fallback codes, privacy |
 | [CHANGELOG.md](./CHANGELOG.md) | Version history and testing notes |
 | [PROGRESS.md](./PROGRESS.md) | Decisions, measurements, environment gotchas and release notes |
 
 ## Privacy
 
-All statistics stay on your machine. The plugin registers **read-only** HTTP routes only: by default no outbound requests, no telemetry, no user content collected. It writes only its own index cache; nothing else in your harness data is touched. The exported report may contain session titles unless you pass `anonymize=1`.
+All statistics stay on your machine. The plugin registers **read-only** HTTP routes only: by default no outbound requests, no telemetry, no user content collected. It writes only its own index cache plus the optional AI-profile cache; nothing else in your harness data is touched. The exported report may contain session titles unless you pass `anonymize=1`.
 
-**Optional balance chip — off by default.** Only when you set `balance.enabled: true` does the host call the official `deepseekAccount` service: `getBalance()` makes the **host** request `https://platform.deepseek.com/api/v0/users/get_user_summary` (the account balance endpoint). That is the only outbound request this plugin can trigger, it is opt-in, and it is cached for `balance.refreshMs`. The top-up/usage links come from the service's local `getState()` and need no network. A failed or timed-out query shows an em dash with a top-up link — never an error dialog. The balance is rendered only in your own toolbar chip and is **never written into the exported HTML report**.
+**Optional balance chip — off by default.** Only when you set `balance.enabled: true` does the host call the official `deepseekAccount` service: `getBalance()` makes the **host** request `https://platform.deepseek.com/api/v0/users/get_user_summary` (the account balance endpoint). It is opt-in and cached for `balance.refreshMs`. The top-up/usage links come from the service's local `getState()` and need no network. A failed or timed-out query shows an em dash with a top-up link — never an error dialog. The balance is rendered only in your own toolbar chip and is **never written into the exported HTML report**.
+
+**Optional AI user profile — off by default.** Only when you set `aiProfile.enabled: true` and click **Generate profile** does the plugin call the `llm` service (and your configured model provider) with the aggregate whitelist described in [AI user profile](#ai-user-profile). No conversation text, titles, paths, session ids, or event logs are sent. The response is cached on disk in the plugin's own directory; the static HTML report never contains it. If the service is missing, you are not signed in, the call times out, or parsing fails, the card falls back to local rules and shows the reason — no error dialog.
 
 ## Development
 
