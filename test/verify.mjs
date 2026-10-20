@@ -8,6 +8,9 @@ import { escapeHtml, formatHours, formatInt, formatMoney, formatTokens } from ".
 import { barPercent } from "../src/client/bar-width.js";
 import { renderReport } from "../src/report-html.js";
 import { balanceChip } from "../src/client/balance.js";
+import {
+  PROFILE_LINE_MAX, PROFILE_PAYLOAD_KEYS, assertProfilePayload, buildProfilePayload, localProfile, parseProfileText, profileFingerprint,
+} from "../src/ai-profile.js";
 import { hourTokensNote } from "../src/client/hour-status.js";
 import { translate } from "../src/client/locales.js";
 import {
@@ -749,7 +752,7 @@ console.log("\n—— 文案（i18n）一致性 ——");
   const localesSource = await readFile(new URL("../src/client/locales.js", import.meta.url), "utf8");
   // 文案引用可能出现在任意客户端模块（chips / card-head / hour-status / balance…）；
   // 全部一起扫描，死键检查才完整（否则新组件里的 key 会被误判为死键）。
-  const clientModules = ["index.jsx", "balance.js", "chips.jsx", "card-head.jsx", "hour-status.js", "bar-cell.jsx"];
+  const clientModules = ["index.jsx", "balance.js", "chips.jsx", "card-head.jsx", "hour-status.js", "bar-cell.jsx", "profile-card.jsx"];
   const clientSource = (await Promise.all(
     clientModules.map((name) => readFile(new URL(`../src/client/${name}`, import.meta.url), "utf8")),
   )).join("\n");
@@ -1180,6 +1183,88 @@ ok(reportWithModels.includes(">周末<") && reportWithModels.includes("#f59e0b")
   ok(!/<script|src=|<link /i.test(reportWithModels), "报告仍然无脚本 / 无外链资源（自包含）");
 }
 
+console.log("\n—— AI 用户画像（payload 白名单 / 指纹 / 本地规则）——");
+{
+  const profilePayload = buildProfilePayload(modelSnap);
+  eq(
+    JSON.stringify(Object.keys(profilePayload).sort()),
+    JSON.stringify([...PROFILE_PAYLOAD_KEYS].sort()),
+    "payload 顶层键集合严格等于白名单",
+  );
+  eq(profilePayload.activeHours24.unit, "tokens", "activeHours24 注明 Token 口径");
+  eq(profilePayload.activeHours24.values.length, 24, "activeHours24 有 24 个小时值");
+  ok(profilePayload.byWorkspace.length <= 5 && profilePayload.byWorkspace.length > 0, "byWorkspace 最多 5 项且有数据");
+  ok(profilePayload.byModel.length <= 5 && profilePayload.byModel.length > 0, "byModel 最多 5 项且有数据");
+  ok(
+    profilePayload.byWorkspace.every((item) => JSON.stringify(Object.keys(item).sort()) === JSON.stringify(["name", "share"])),
+    "byWorkspace 子项只有 name + share",
+  );
+  ok(
+    profilePayload.byModel.every((item) => JSON.stringify(Object.keys(item).sort()) === JSON.stringify(["name", "share"])),
+    "byModel 子项只有 name + share",
+  );
+  ok(!JSON.stringify(profilePayload).includes(modelSnap.byWorkspace[0].key), "payload 不含工作区完整路径（只留显示名）");
+  const privatePayload = buildProfilePayload(snapshot);
+  ok(!JSON.stringify(privatePayload).includes("会话 A"), "payload 不含会话标题");
+  ok(!JSON.stringify(privatePayload).includes("/Users/me/proj-a"), "payload 不含 cwd 原文");
+  ok(profilePayload.weekendShare >= 0 && profilePayload.weekendShare <= 1, "weekendShare 是 0–1 占比");
+  ok(profilePayload.nightShare >= 0 && profilePayload.nightShare <= 1, "nightShare 是 0–1 占比");
+
+  let rejected = false;
+  try {
+    assertProfilePayload({ ...profilePayload, title: "不该出现" });
+  } catch {
+    rejected = true;
+  }
+  ok(rejected, "白名单断言拒绝额外键（防止后续改动夹带标题 / 路径）");
+
+  const fingerprintA = profileFingerprint(profilePayload);
+  const fingerprintB = profileFingerprint(buildProfilePayload(modelSnap));
+  eq(fingerprintA, fingerprintB, "同统计的指纹稳定（稳定 JSON）");
+  eq(fingerprintA.length, 16, "指纹取 sha256 前 16 位");
+  const changedPayload = buildProfilePayload({ ...modelSnap, totals: { ...modelSnap.totals, turns: modelSnap.totals.turns + 1 } });
+  ok(profileFingerprint(changedPayload) !== fingerprintA, "统计变化后指纹随之变化");
+
+  const localZh = localProfile(profilePayload, "zh");
+  const localEn = localProfile(profilePayload, "en");
+  ok(localZh.traits.length >= 3 && localZh.traits.length <= 5, "本地规则画像 3–5 条特征");
+  ok(localEn.traits.length >= 3 && localEn.traits.length <= 5, "英文本地规则画像 3–5 条特征");
+  ok(localZh.traits.every((line) => [...line].length <= PROFILE_LINE_MAX), "本地规则每条特征 ≤40 字符");
+  ok(localEn.traits.every((line) => [...line].length <= PROFILE_LINE_MAX), "英文本地规则每条特征 ≤40 字符");
+  ok(localZh.advice.length > 0 && [...localZh.advice].length <= PROFILE_LINE_MAX, "本地规则恰好 1 条建议且 ≤40 字符");
+  ok(localZh.traits.some((line) => line.includes("轮") || line.includes("步")), "本地规则覆盖任务偏好（轮次 / 步骤）");
+  ok(localZh.traits.some((line) => line.includes("主要使用") || line.includes("Token")), "本地规则覆盖技术栈倾向（模型 / Token）");
+  ok(localZh.traits.some((line) => line.includes("等待用户")), "本地规则覆盖协作模式（等待用户）");
+
+  const parsed = parseProfileText("\u0060\u0060\u0060json\n" + JSON.stringify({ traits: ["节奏稳定", "聚焦交付", "模型集中"], advice: "保持当前节奏。" }) + "\n\u0060\u0060\u0060");
+  eq(parsed.traits.length, 3, "解析模型输出：接受代码围栏里的 3 条特征");
+  eq(parsed.advice, "保持当前节奏。", "解析模型输出：保留建议");
+  const clamped = parseProfileText(JSON.stringify({ traits: ["长".repeat(100), "b", "c"], advice: "建议".repeat(30) }));
+  ok([...clamped.traits[0]].length === PROFILE_LINE_MAX, "解析后单条特征压到 40 字符");
+  ok([...clamped.advice].length === PROFILE_LINE_MAX, "解析后建议压到 40 字符");
+  let parseRejected = null;
+  try {
+    parseProfileText("这不是 JSON");
+  } catch (error) {
+    parseRejected = error.code;
+  }
+  eq(parseRejected, "AI_PARSE_FAILED", "解析失败带稳定 code（路由据此降级）");
+  let shortRejected = null;
+  try {
+    parseProfileText(JSON.stringify({ traits: ["只有一条"], advice: "x" }));
+  } catch (error) {
+    shortRejected = error.code;
+  }
+  eq(shortRejected, "AI_PARSE_FAILED", "少于 3 条特征视为解析失败（不猜）");
+
+  const cardSource = await readFile(new URL("../src/client/profile-card.jsx", import.meta.url), "utf8");
+  const clientIndexSource = await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8");
+  ok(cardSource.includes("<CardHead"), "画像卡复用 CardHead（标题 + 右侧 hint + 右上按钮）");
+  ok(/status === "probing" \|\| status === "disabled"\) return null/.test(cardSource), "未启用 / probe 中整卡不渲染（不显示入口）");
+  ok(cardSource.includes("disabled={generating}") && cardSource.includes("profile.generating"), "生成中按钮禁用并显示「生成中…」");
+  ok(clientIndexSource.includes('import { ProfileCard }') && clientIndexSource.includes("<ProfileCard"), "ProfileCard 已接入按日期页");
+}
+
 console.log("\n—— 报告结构对齐（看板 → 报告）——");
 {
   // 回填中：状态行必须显示「正在计算中……」；数据用模型快照，时刻 / 日历 / KPI 都有内容。
@@ -1204,6 +1289,7 @@ console.log("\n—— 报告结构对齐（看板 → 报告）——");
   ok(parityHtml.includes("模型占比 · 面积 = Token") && parityHtml.includes("按日模型趋势"), "结构：模型 treemap / 按日趋势都有小标题");
   ok(parityHtml.includes("最活跃模型") && parityHtml.includes("请求占比") && parityHtml.includes("模型费用"), "结构：KPI 含「模型费用」与「最活跃模型」");
   ok(parityHtml.includes("含等待用户") && parityHtml.includes("净活跃"), "结构：KPI / footer 写清净活跃与含等待用户口径");
+  ok(!parityHtml.includes("用户画像") && !parityHtml.includes('data-kind="ai-profile"') && !parityHtml.includes("本地规则版"), "结构：报告不展示 AI 画像（有意不同，见 report-parity）");
   {
     const hrefs = [...parityHtml.matchAll(/href="([^"]+)"/g)].map((match) => match[1]);
     ok(hrefs.every((href) => /^https:\/\/(api-docs\.deepseek\.com|platform\.kimi\.com|platform\.claude\.com)\//.test(href)), "结构：报告外链仅官方计费页", hrefs.join(" · "));
@@ -1711,6 +1797,239 @@ eq(unsupportedChip.link, null, "服务不存在：没有链接可给");
 eq(formatMoney(12.34, "CNY"), "¥12.34", "金额格式化：¥ 两位小数");
 eq(formatMoney(0.5, "USD"), "$0.5000", "金额格式化：<1 用四位小数");
 eq(formatMoney(null, "CNY"), "\u2014", "金额格式化：没有值显示 —");
+
+// ---------------------------------------------------------------- AI 用户画像（默认关闭 / 可选 llm / 降级）
+console.log("\n—— AI 用户画像（默认关闭 / 缓存 / 降级 / 超时）——");
+
+/** llm 服务桩：listProviders / listModels / prepareCall / stream 全本地，spy 记录次数。 */
+function makeLlm({ providers = [{ id: "p" }], models = [{ id: "m" }], text = "", finishKind = "stop", hang = false, prepareError = null } = {}) {
+  const spy = { providers: 0, models: 0, prepare: 0, stream: 0, payload: null };
+  const service = {
+    listProviders() {
+      spy.providers += 1;
+      return providers;
+    },
+    async listModels() {
+      spy.models += 1;
+      return models;
+    },
+    async prepareCall(config) {
+      spy.prepare += 1;
+      if (prepareError !== null) throw prepareError;
+      if (hang) return new Promise(() => {});
+      return {
+        config: { ...config },
+        stream(options) {
+          spy.stream += 1;
+          spy.payload = options;
+          return (async function* () {
+            if (text !== "") yield { type: "text-delta", text };
+            yield { type: "usage", usage: { inputTokens: 12, outputTokens: 34 } };
+            yield { type: "finish", reason: { kind: finishKind } };
+          })();
+        },
+      };
+    },
+  };
+  return { spy, service };
+}
+
+/** 起一个隔离宿主实例：可选 llm / 默认模型 / aiProfile 配置。 */
+function bootProfile({ aiProfile = {}, llm, defaultSelection } = {}) {
+  const routeList = [];
+  const getSpy = { count: 0 };
+  const pRecords = [
+    { header: { id: "p1", createdAt: base, cwd: "/tmp/secret-workspace", isSeeded: false, version: 4 }, live: false, persisted: true },
+  ];
+  const pValues = {
+    sessionStats: { turns: 2, steps: 4, llmMs: HOUR, toolMs: 0 },
+    tokenUsage: { uncachedInputTokens: 100, outputTokens: 50, cacheReadTokens: 400, cacheWriteTokens: 0 },
+    title: "机密会话标题不要外发",
+  };
+  const pCtx = {
+    logger: { info() {}, warn() {} },
+    effect(fn) { fn(); return () => {}; },
+    on() { return () => {}; },
+    get(name) {
+      getSpy.count += 1;
+      if (name === "llm") return llm;
+      if (name === "agentDefaultModel") return defaultSelection === undefined ? undefined : { currentSelection: () => defaultSelection };
+      return undefined;
+    },
+    sessions: { get: () => undefined },
+    sessionProjections: { snapshot: () => undefined },
+    sessionQuery: {
+      listSessions: async () => pRecords,
+      observeSession: async () => ({ header: pRecords[0].header, projections: { asOfSeq: 1, values: pValues }, dispose() {} }),
+      readSession: async () => ({
+        session: {}, inheritedEventCount: 0,
+        events: [{
+          type: "assistant/message", seq: 1, time: base,
+          data: {
+            turn: 1, step: 1,
+            message: { role: "assistant", source: { kind: "model", provider: "p", model: "m" } },
+            usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 300, cacheWriteTokens: 0 },
+            stream: [{ type: "chunk", time: 0 }, { type: "chunk", time: 400 }],
+          },
+        }],
+      }),
+    },
+    sessionProjectionCache: { cachedSnapshot: () => ({ asOfSeq: 1, values: pValues }) },
+    webServer: { register(spec) { routeList.push(spec); return () => {}; } },
+  };
+  const config = {
+    indexPath: "/tmp/wl-verify-profile-" + process.pid + "-" + (bootProfile.seq++) + ".json",
+    aiProfile: { enabled: true, ...aiProfile },
+  };
+  const index = apply(pCtx, config);
+  return { routeList, indexPath: config.indexPath, profile: index.profile, getSpy };
+}
+bootProfile.seq = 1;
+
+/** 删掉本次测试的索引与对应画像缓存。 */
+async function cleanupProfile(host, body) {
+  await rm(host.indexPath, { force: true }).catch(() => {});
+  if (typeof body?.fingerprint === "string" && body.fingerprint !== "") {
+    await rm(host.profile.cachePath("zh", body.fingerprint), { force: true }).catch(() => {});
+  }
+}
+
+// 1) 默认关闭：路由返回 enabled:false，零服务调用（连 ctx.get 都不发生）
+{
+  const llm = makeLlm();
+  const host = bootProfile({ aiProfile: { enabled: false }, llm: llm.service });
+  await waitHealth(host.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "画像默认关闭实例索引完成");
+  const res = await routeJson(host.routeList, "/workload-report/v1/profile?days=30&tz=UTC");
+  eq(res.status, 200, "默认关闭：/profile 仍返回 200");
+  eq(res.body.enabled, false, "默认关闭：enabled=false");
+  eq(res.body.code, "AI_PROFILE_DISABLED", "默认关闭：code=AI_PROFILE_DISABLED");
+  eq(host.profile.calls, 0, "默认关闭：模型调用次数 = 0");
+  eq(llm.spy.prepare, 0, "默认关闭：prepareCall 一次都没调");
+  eq(host.getSpy.count, 0, "默认关闭：ctx.get 也一次不调（零服务调用）");
+  const probe = await routeJson(host.routeList, "/workload-report/v1/profile?probe=1");
+  eq(probe.body.enabled, false, "默认关闭 probe：enabled=false（前端据此不渲染入口）");
+  eq(llm.spy.prepare, 0, "默认关闭 probe：仍然零模型调用");
+  await cleanupProfile(host, null);
+}
+
+// 2) llm 服务缺失：本地规则版 + LLM_UNAVAILABLE
+{
+  const host = bootProfile({ llm: undefined });
+  await waitHealth(host.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "无 llm 实例索引完成");
+  const probe = await routeJson(host.routeList, "/workload-report/v1/profile?probe=1");
+  eq(probe.body.available, false, "无 llm：probe.available=false");
+  eq(probe.body.code, "LLM_UNAVAILABLE", "无 llm：probe.code=LLM_UNAVAILABLE");
+  const res = await routeJson(host.routeList, "/workload-report/v1/profile?days=30&tz=UTC");
+  eq(res.body.source, "local", "无 llm：降级 source=local");
+  eq(res.body.code, "LLM_UNAVAILABLE", "无 llm：code=LLM_UNAVAILABLE");
+  ok(res.body.traits.length >= 3 && res.body.traits.length <= 5, "无 llm：仍有 3–5 条本地特征");
+  ok(typeof res.body.advice === "string" && res.body.advice.length > 0, "无 llm：仍有 1 条本地建议");
+  await cleanupProfile(host, res.body);
+}
+
+// 3) 未登录（provider 列表为空）：本地规则版 + ACCOUNT_SIGN_IN_REQUIRED
+{
+  const llm = makeLlm({ providers: [] });
+  const host = bootProfile({ llm: llm.service });
+  await waitHealth(host.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "未登录实例索引完成");
+  const probe = await routeJson(host.routeList, "/workload-report/v1/profile?probe=1");
+  eq(probe.body.signedIn, false, "未登录：probe.signedIn=false");
+  eq(probe.body.code, "ACCOUNT_SIGN_IN_REQUIRED", "未登录：probe.code=ACCOUNT_SIGN_IN_REQUIRED");
+  const res = await routeJson(host.routeList, "/workload-report/v1/profile?days=30&tz=UTC");
+  eq(res.body.source, "local", "未登录：降级 source=local");
+  eq(res.body.code, "ACCOUNT_SIGN_IN_REQUIRED", "未登录：code=ACCOUNT_SIGN_IN_REQUIRED");
+  eq(llm.spy.prepare, 0, "未登录：不发起模型调用");
+  await cleanupProfile(host, res.body);
+}
+
+// 4) 解析失败 / 非 stop：本地规则版 + 稳定 code
+{
+  const llm = makeLlm({ text: "这不是 JSON" });
+  const host = bootProfile({ llm: llm.service, aiProfile: { provider: "p", model: "m" } });
+  await waitHealth(host.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "解析失败实例索引完成");
+  const res = await routeJson(host.routeList, "/workload-report/v1/profile?days=30&tz=UTC");
+  eq(res.body.source, "local", "解析失败：降级 source=local");
+  eq(res.body.code, "AI_PARSE_FAILED", "解析失败：code=AI_PARSE_FAILED");
+  eq(llm.spy.prepare, 1, "解析失败：确实调用过一次模型");
+  await cleanupProfile(host, res.body);
+}
+{
+  const llm = makeLlm({ text: JSON.stringify({ traits: ["a", "b", "c"], advice: "x" }), finishKind: "max-tokens" });
+  const host = bootProfile({ llm: llm.service, aiProfile: { provider: "p", model: "m" } });
+  await waitHealth(host.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "非 stop 实例索引完成");
+  const res = await routeJson(host.routeList, "/workload-report/v1/profile?days=30&tz=UTC");
+  eq(res.body.source, "local", "非 stop：降级 source=local");
+  eq(res.body.code, "AI_NOT_STOPPED", "非 stop：code=AI_NOT_STOPPED");
+  await cleanupProfile(host, res.body);
+}
+
+// 5) 超时：AbortSignal.timeout(timeoutMs) 触发降级，路由不悬挂
+{
+  const llm = makeLlm({ hang: true });
+  const host = bootProfile({ llm: llm.service, aiProfile: { provider: "p", model: "m", timeoutMs: 40 } });
+  await waitHealth(host.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "超时实例索引完成");
+  const started = Date.now();
+  const res = await routeJson(host.routeList, "/workload-report/v1/profile?days=30&tz=UTC");
+  const elapsed = Date.now() - started;
+  ok(elapsed < 1000, "超时：路由在 1s 内返回（不悬挂）", elapsed + "ms");
+  eq(res.body.source, "local", "超时：降级 source=local");
+  eq(res.body.code, "AI_TIMEOUT", "超时：code=AI_TIMEOUT");
+  eq(llm.spy.prepare, 1, "超时：模型准备只发起一次");
+  await cleanupProfile(host, res.body);
+}
+
+// 6) 成功 + 指纹缓存：第二次不再调用模型，force=1 才重新生成
+{
+  const traits = ["节奏稳定", "任务聚焦", "模型集中", "协作确认少"];
+  const llm = makeLlm({ text: JSON.stringify({ traits, advice: "保持当前节奏。" }) });
+  const host = bootProfile({ llm: llm.service, aiProfile: { provider: "p", model: "m" } });
+  await waitHealth(host.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "成功实例索引完成");
+  const probe = await routeJson(host.routeList, "/workload-report/v1/profile?probe=1");
+  eq(probe.body.available, true, "probe：已登录可用");
+  eq(llm.spy.prepare, 0, "probe 只预检，不调用模型");
+
+  const first = await routeJson(host.routeList, "/workload-report/v1/profile?days=30&tz=UTC&lang=zh");
+  eq(first.body.source, "llm", "成功：source=llm");
+  eq(first.body.code, null, "成功：code=null");
+  eq(first.body.cached, false, "成功：首次 cached=false");
+  eq(first.body.usage.input, 12, "成功：记录输入 tokens");
+  eq(first.body.usage.output, 34, "成功：记录输出 tokens");
+  eq(first.body.traits.length, 4, "成功：返回 4 条特征");
+  eq(first.body.advice, "保持当前节奏。", "成功：返回建议");
+  ok(first.body.generatedAt > 0, "成功：记录生成时间");
+  eq(llm.spy.prepare, 1, "成功：模型调用 1 次");
+
+  const sentPayload = JSON.parse(llm.spy.payload.messages[0].content[0].text);
+  eq(
+    JSON.stringify(Object.keys(sentPayload).sort()),
+    JSON.stringify([...PROFILE_PAYLOAD_KEYS].sort()),
+    "实际发给模型的键集合严格等于白名单",
+  );
+  ok(!JSON.stringify(sentPayload).includes("机密会话标题"), "实际发送内容不含会话标题");
+  ok(!JSON.stringify(sentPayload).includes("/tmp/secret-workspace"), "实际发送内容不含路径原文");
+
+  const second = await routeJson(host.routeList, "/workload-report/v1/profile?days=30&tz=UTC&lang=zh");
+  eq(second.body.cached, true, "缓存命中：第二次 cached=true");
+  eq(second.body.fingerprint, first.body.fingerprint, "缓存命中：同一统计指纹");
+  eq(llm.spy.prepare, 1, "缓存命中：第二次请求模型调用次数仍为 1");
+
+  const forced = await routeJson(host.routeList, "/workload-report/v1/profile?days=30&tz=UTC&lang=zh&force=1");
+  eq(forced.body.cached, false, "force=1：跳过缓存重新生成");
+  eq(llm.spy.prepare, 2, "force=1：模型调用次数 +1");
+  await cleanupProfile(host, first.body);
+}
+
+// 7) 未配置 provider/model：回落到宿主默认模型
+{
+  const llm = makeLlm({ text: JSON.stringify({ traits: ["a", "b", "c"], advice: "d" }) });
+  const host = bootProfile({ llm: llm.service, defaultSelection: { provider: "p", model: "m" } });
+  await waitHealth(host.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "默认模型实例索引完成");
+  const res = await routeJson(host.routeList, "/workload-report/v1/profile?days=30&tz=UTC");
+  eq(res.body.source, "llm", "默认模型：成功 source=llm");
+  eq(res.body.model.provider, "p", "默认模型：provider 来自 agentDefaultModel");
+  eq(res.body.model.model, "m", "默认模型：model 来自 agentDefaultModel");
+  await cleanupProfile(host, res.body);
+}
 
 // 收尾：删掉本次的临时索引
 await rm(INDEX_PATH, { force: true }).catch(() => {});
