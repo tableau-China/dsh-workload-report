@@ -10,7 +10,7 @@
  *      （不解析日志、不读内部文件格式，投影口径由 Harness 自己维护。）
  *   3. 暴露只读 HTTP 接口：快照 JSON 与自包含 HTML 报告。
  *
- * 本插件不写任何文件、不发送任何网络请求；数据全部留在本机。
+ * 本插件默认零外发；可选功能（余额 / AI 画像）开启后才会请求。数据默认全部留在本机。
  */
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -19,6 +19,8 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { PROJECTION_KEYS, aggregate, present, rowFromSession, tokensTotal } from "./src/aggregate.js";
+import { AI_PROFILE_DEFAULTS, ProfileService, profileCodeOf } from "./src/profile-service.js";
+import { buildProfilePayload, localProfile, profileFingerprint } from "./src/ai-profile.js";
 import { renderReport } from "./src/report-html.js";
 import { DEFAULT_WAIT_MIN_MS, DEFAULT_WAIT_TOOLS, foldSessionModels, resolvePricing } from "./src/models.js";
 
@@ -107,6 +109,13 @@ const DEFAULTS = {
    * 结果按 refreshMs 缓存。详见 README 的隐私章节。
    */
   balance: { enabled: false, refreshMs: 300000 },
+  /**
+   * AI 用户画像：**默认关闭**。
+   * 关闭时 /profile 直接返回 enabled:false，一次 llm 服务调用都不发，界面不渲染入口；
+   * 开启后只把 src/ai-profile.js 白名单里的聚合统计发给模型（不含对话正文 / 标题 / 路径），
+   * 结果按统计指纹缓存到索引同目录。详见 docs/ai-profile.md。
+   */
+  aiProfile: { ...AI_PROFILE_DEFAULTS },
 };
 
 /** 把未知异常收敛成一行文本。 */
@@ -1032,8 +1041,12 @@ export function apply(ctx, config = {}) {
   if (config.balance !== undefined && config.balance !== null) {
     merged.balance = { ...DEFAULTS.balance, ...config.balance };
   }
+  if (config.aiProfile !== undefined && config.aiProfile !== null) {
+    merged.aiProfile = { ...DEFAULTS.aiProfile, ...config.aiProfile };
+  }
   const apiPath = typeof merged.apiPath === "string" && merged.apiPath.startsWith("/") ? merged.apiPath.replace(/\/+$/, "") : DEFAULTS.apiPath;
   const index = new WorkloadIndex(ctx, { ...merged, apiPath });
+  index.profile = new ProfileService(ctx, merged.aiProfile, index);
 
   index.ensureIndex({ force: true });
   const ready = (async () => {
@@ -1137,6 +1150,36 @@ export function apply(ctx, config = {}) {
         sendJson(res, 200, { generatedAt: Date.now(), ...snapshot });
         return;
       }
+      if (route === "/profile") {
+        // AI 用户画像（默认关闭）：只读、旁路调用，不阻塞 /snapshot 与报告。
+        // probe=1 只回答 enabled / 登录状态；force=1 跳过缓存重新生成。
+        const lang = params.get("lang") === "en" ? "en" : "zh";
+        let body;
+        try {
+          body = await index.profile.handle({
+            query,
+            lang,
+            force: params.get("force") === "1",
+            probe: params.get("probe") === "1",
+          });
+        } catch (error) {
+          // 连续计快照都失败时也要降级，不把异常抛给 UI。
+          const payload = buildProfilePayload({});
+          body = {
+            enabled: true,
+            source: "local",
+            code: profileCodeOf(error),
+            ...localProfile(payload, lang),
+            usage: { input: 0, output: 0, total: 0 },
+            model: null,
+            generatedAt: Date.now(),
+            fingerprint: profileFingerprint(payload),
+            cached: false,
+          };
+        }
+        sendJson(res, 200, body);
+        return;
+      }
       if (route === "/report.html") {
         const snapshot = await index.snapshot(query);
         const html = renderReport(snapshot, {
@@ -1154,7 +1197,7 @@ export function apply(ctx, config = {}) {
         sendHtml(res, 200, html);
         return;
       }
-      sendJson(res, 404, { error: `未知路由 ${route}`, routes: ["/snapshot", "/export.json", "/report.html", "/health", "/balance"] });
+      sendJson(res, 404, { error: `未知路由 ${route}`, routes: ["/snapshot", "/export.json", "/report.html", "/profile", "/health", "/balance"] });
     } catch (error) {
       sendJson(res, 500, { error: reasonOf(error) });
     }
@@ -1170,6 +1213,11 @@ export function apply(ctx, config = {}) {
     merged.balance.enabled === true
       ? "[workload-report] 余额显示已启用：宿主将访问 platform.deepseek.com（可在配置里设 balance.enabled=false 关闭）"
       : "[workload-report] 余额显示默认关闭：不查询、不外发请求",
+  );
+  ctx.logger.info(
+    merged.aiProfile.enabled === true
+      ? "[workload-report] AI 用户画像已启用：仅发送聚合统计，按需触发（可在配置里设 aiProfile.enabled=false 关闭）"
+      : "[workload-report] AI 用户画像默认关闭：不调用 llm、不生成、界面不显示入口",
   );
   // 返回索引实例：离线测试用来精确断言"打开 N 次 = 0 次读日志"与折叠定时器行为。
   return index;
