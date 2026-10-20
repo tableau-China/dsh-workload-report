@@ -1550,7 +1550,7 @@ console.log("\n—— AI 用户画像（payload 白名单 / 指纹 / 本地规�
     "导航：AI 用户画像页签右对齐（data-align=end）",
   );
   ok(clientIndexSource.includes('tab === "aiProfile"'), "导航：页签切换到画像视图");
-  ok(stylesSource.includes('.wl-tab[data-align="end"] { margin-left: auto; }'), "导航样式：右对齐用 margin-left:auto");
+  ok(/\.wl-tab\[data-align="end"\] \{[^}]*margin-left:\s*auto/.test(stylesSource), "导航样式：右对齐用 margin-left:auto");
   eq(translate("zh", "tab.aiProfile"), "AI 用户画像", "页签文案：中文为「AI 用户画像」");
   eq(translate("en", "tab.aiProfile"), "AI profile", "页签文案：英文为 AI profile");
   eq(translate("zh", "profile.title"), "AI 用户画像", "标题：中文为「AI 用户画像」");
