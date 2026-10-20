@@ -18,7 +18,7 @@
 | `MetricBarCell` | `src/client/bar-cell.jsx`（宽度纯函数 `src/client/bar-width.js`） | 表格内的指标比例条 | 主要会话、按日期明细 |
 | `hourTokensNote` | `src/client/hour-status.js` | 时刻图 legend 右侧状态文案判据 | 时刻分析（running / idle / 隐藏三态） |
 | `sectorPath` | `src/sector-path.js` | 环形图扇区几何（看板与 HTML 报告共用） | 工作区 / 模型环形图、报告 |
-| `ProfileCard` | `src/client/profile-card.jsx` | AI 用户画像卡片（CardHead + `.wl-hint` / `.wl-status`，不另造卡片头） | 主要会话页（紧随会话表） |
+| `ProfileCard` | `src/client/profile-card.jsx` | AI 用户画像卡片（CardHead + `.wl-hint` / `.wl-status`，不另造卡片头） | 主要会话页右列（与会话表同一 grid 行；<=1080px 堆叠） |
 
 ## 2. 切换控件：只有 `ChipGroup` + `Chip`
 
@@ -124,3 +124,4 @@
 8. `test/verify.mjs` 是否补了对应结构断言（标记存在性，稳定可跑）？
 9. 报告是否仍自包含（无脚本 / 无外链资源 / 外链仅官方计费页）？
 10. 新增卡片是否复用了 `CardHead`，补充说明是否用 `.wl-hint` / `.wl-status`？AI 画像按 `docs/ai-profile.md` 的白名单发送数据，且**不进入报告**。
+11. 主要会话页的会话表与画像卡是否是 `wl-session-layout` 的同一行兄弟（左约 2fr / 右约 1fr），并在 `<=1080px` 回落堆叠？不要把画像卡塞进表格内部。

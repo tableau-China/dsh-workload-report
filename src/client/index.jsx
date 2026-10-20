@@ -1540,10 +1540,10 @@ function BySessionView({ data, t, lang = "zh", days = 0, scope = "all", allTime 
       return previous.dir === "desc" ? { key, dir: "asc" } : null;
     });
 
-  // 区块顺序由 SESSION_PAGE_SECTIONS 决定（与 verify 的 DOM 顺序断言同源）：
-  // 会话表在前，AI 画像卡紧随其后，同一滚动流。
+  // 两列布局由 SESSION_PAGE_SECTIONS 决定（与 verify 的 DOM 顺序断言同源）：
+  // 会话表在左、画像卡在右，是同一个 grid 行的兄弟；窄屏由样式回落为上下堆叠。
   return (
-    <>
+    <div className="wl-session-layout" data-layout="sessions-profile">
       {SESSION_PAGE_SECTIONS.map((section) => {
         if (section === "sessions") {
           return (
@@ -1594,6 +1594,7 @@ function BySessionView({ data, t, lang = "zh", days = 0, scope = "all", allTime 
             </div>
           );
         }
+        // 画像卡直接作为 grid 的第二列子节点：与会话表同级，不额外包一层容器。
         return (
           <ProfileCard
             key="profile"
@@ -1606,7 +1607,7 @@ function BySessionView({ data, t, lang = "zh", days = 0, scope = "all", allTime 
           />
         );
       })}
-    </>
+    </div>
   );
 }
 

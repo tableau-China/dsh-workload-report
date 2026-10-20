@@ -4,6 +4,8 @@
  * 类名前缀 wl- 避免与官方样式冲突。
  */
 
+import { SESSION_LAYOUT } from "./session-layout.js";
+
 export const STYLES = `
 .wl-overlay {
   position: fixed;
@@ -173,6 +175,26 @@ export const STYLES = `
 }
 .wl-footer-item:hover { background: var(--dsw-alias-interactive-bg-hover, #f2f3f5); color: var(--dsw-alias-label-primary, #111); }
 .wl-icon { flex: 0 0 auto; display: block; }
+/* 主要会话页：会话表在左（约 2fr）、画像卡在右（约 1fr），两者是同一 grid 行的兄弟。
+   窄屏（<= 1080px）自动回落为上下堆叠：会话在上、画像在下。
+   画像未启用时 ProfileCard 返回 null，:has 不命中，会话表自动占满整行。 */
+.wl-session-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: ${SESSION_LAYOUT.gap}px;
+  align-items: start;
+  margin-bottom: 14px;
+}
+/* 只有画像卡真实渲染时才是两列；enabled:false 时 ProfileCard 返回 null，自动回到单列。 */
+.wl-session-layout:has(> .wl-profile-card) {
+  grid-template-columns: minmax(0, ${SESSION_LAYOUT.sessionsFr}fr) minmax(${SESSION_LAYOUT.profileMinWidth}px, ${SESSION_LAYOUT.profileFr}fr);
+}
+.wl-session-layout > .wl-card { margin-bottom: 0; }
+.wl-session-layout > .wl-profile-card { min-width: 0; align-self: start; }
+@media (max-width: ${SESSION_LAYOUT.stackBreakpoint}px) {
+  .wl-session-layout,
+  .wl-session-layout:has(> .wl-profile-card) { grid-template-columns: minmax(0, 1fr); }
+}
 /* AI 用户画像：正文复用 .wl-hint / .wl-status；这里只定义来源徽标与特征列表 */
 /* 特别底色：普通卡片是 bg-layer-1，这里用 bg-layer-2 叠 6% 品牌色（只走宿主 token）。
    浅色下是极淡的蓝灰、深色下是极淡的深蓝，与普通卡片有可辨差异但不刺眼。 */
@@ -181,6 +203,16 @@ export const STYLES = `
   background: color-mix(in srgb, var(--dsw-static-deepseek-500, #4d6bfe) 6%, var(--dsw-alias-bg-layer-2, #f2f3f5));
   border-color: color-mix(in srgb, var(--dsw-static-deepseek-500, #4d6bfe) 16%, var(--dsw-alias-border-l2, #e5e7eb));
 }
+/* 首开提示面板：三行说明 + 主按钮；面板本身不触发任何请求（点击按钮才生成）。 */
+.wl-profile-notice {
+  display: grid; gap: 7px; padding: 11px 12px; border-radius: 10px;
+  border: 1px dashed color-mix(in srgb, var(--dsw-static-deepseek-500, #4d6bfe) 24%, var(--dsw-alias-border-l2, #e5e7eb));
+  background: color-mix(in srgb, var(--dsw-static-deepseek-500, #4d6bfe) 4%, transparent);
+}
+.wl-profile-notice-line { margin: 0; font-size: 12px; line-height: 1.55; color: var(--dsw-alias-label-secondary, #4b5563); }
+.wl-profile-notice-actions { margin-top: 2px; }
+.wl-profile-notice-actions .wl-btn { width: 100%; justify-content: center; }
+.wl-profile-window { margin: 0 0 8px; }
 .wl-profile-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 2px 0 10px; }
 .wl-profile-source {
   display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: 999px;
