@@ -1,5 +1,35 @@
 # CHANGELOG — dsh-workload-report
 
+## v0.7.1（2026-10-20）— 画像卡移到会话表之后 + 截断抢救（去掉 maxTokens）
+
+### 问题
+
+- 现场报 `AI_NOT_STOPPED`（「模型未正常结束，已用本地规则」）：画像要求严格 JSON，旧版
+  `prepareCall` 固定传 `maxTokens: 1600`，长输出被截断后 `finish.kind=length`、JSON 不完整。
+- 画像卡原先在「按日期」页末尾，与「主要会话」表分离；标题只叫「用户画像」。
+
+### 变更
+
+- **布局**：`ProfileCard` 移到「主要会话」页，紧随会话表；同一滚动流，由
+  `src/client/session-layout.js` 的 `SESSION_PAGE_SECTIONS = ["sessions", "profile"]` 单一事实源渲染。
+- **标题**：zh「AI 用户画像」/ en「AI user profile」，zh/en 同步替换，不留旧键。
+- **特别底色**：`.wl-profile-card` 用 `--dsw-alias-bg-layer-2` 叠 6% `--dsw-static-deepseek-500`，
+  深色 / 浅色都跟随宿主主题；边框同色 16%。只用 token，不写死色值。
+- **移除 `maxTokens`**：默认配置与 `prepareCall` 参数都不再传；配置里即使写了也忽略（代码注释说明原因）。
+- **截断抢救**：`finish.kind=length / max-tokens` 或文本明显未收尾时，`repairProfileJson()` 补齐
+  未闭合的字符串 / 数组 / 对象括号（必要时回退到上一个逗号边界丢掉半截键值）后再解析；
+  成功标记 `truncated: true`，失败才降级 `AI_NOT_STOPPED`。
+- **诊断增强**：`diagnostic` 记录 `finish.kind`、`textLength`、`repaired`、`excerpt`（前 300 字）。
+- **UI 提示**：`truncated` 时卡片底部小字「输出被截断，已修复采用」（新键 `profile.truncated`）。
+- **缓存**：`PROFILE_CACHE_VERSION` 3 → **4**（新增 truncated / diagnostic 字段）。
+
+### 测试
+
+- 离线断言 **942 项**（连跑 2 次 exit 0）：新增 prepareCall 参数不含 maxTokens（spy 捕获）、
+  可修复截断 → source=llm + truncated=true、不可修复 → local + AI_NOT_STOPPED + diagnostic 字段、
+  DOM 顺序（会话表 → 画像卡）、标题、底色声明与普通卡片不同、i18n 逐键对齐无死键。
+- 真机截图 `.tmp/shots/profile-light.png` / `profile-dark.png`，并记录深浅色卡片计算背景。
+
 ## v0.7.0（2026-10-20）— AI 画像质量提升：数字举证 + 结构化渲染
 
 ### 问题

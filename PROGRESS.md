@@ -2,6 +2,22 @@
 
 日期用 `YYYY-MM-DD`；只记录影响后续决策的事实。
 
+## 2026-10-20 画像卡布局 + 截断抢救（v0.7.1）
+
+### 事实
+
+- 「用户画像」卡从「按日期」页移到「主要会话」页，紧随会话表；标题改「AI 用户画像」；
+  底色在 `bg-layer-2` 上叠 6% 品牌色（`--dsw-static-deepseek-500`），深浅色都可见且有差异。
+- 现场 `AI_NOT_STOPPED` 根因是旧版 `prepareCall` 固定传 `maxTokens: 1600`：长 JSON 被截断，
+  `finish.kind=length`。现已移除 maxTokens，并在截断时先修复 JSON 括号再解析。
+- `PROFILE_CACHE_VERSION` 3 → **4**；旧缓存自动失效重算。
+
+### 验证
+
+- `node build.mjs && node test/verify.mjs` 连跑 2 次：**942 项断言，exit 0**（906 → 942）。
+- 真实浏览器（隔离实例）量测深浅色下 `.wl-profile-card` 与普通 `.wl-card` 的 computed background，
+  截图落在 `.tmp/shots/profile-light.png` / `profile-dark.png`。
+
 ## 2026-10-20 AI 画像质量提升（v0.7.0，数字举证 + 结构化渲染）
 
 ### 问题
