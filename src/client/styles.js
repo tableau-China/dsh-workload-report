@@ -79,6 +79,8 @@ export const STYLES = `
   background: var(--dsw-static-deepseek-500, #4d6bfe); border-color: transparent; color: #fff;
 }
 .wl-btn[data-kind="primary"]:hover { filter: brightness(1.05); color: #fff; }
+.wl-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.wl-btn:disabled:hover { filter: none; }
 .wl-body { padding: 18px 20px 24px; overflow: auto; }
 /* KPI：5 列等宽栅格；Tokens / 模型费用各跨 2 列 —— 8 张卡 = 10 格，正好排满 2 行 */
 .wl-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
@@ -171,6 +173,24 @@ export const STYLES = `
 }
 .wl-footer-item:hover { background: var(--dsw-alias-interactive-bg-hover, #f2f3f5); color: var(--dsw-alias-label-primary, #111); }
 .wl-icon { flex: 0 0 auto; display: block; }
+/* AI 用户画像：正文复用 .wl-hint / .wl-status；这里只定义来源徽标与特征列表 */
+.wl-profile-card { margin-bottom: 14px; }
+.wl-profile-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 2px 0 10px; }
+.wl-profile-source {
+  display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 600;
+  background: var(--dsw-alias-bg-layer-2, #f2f3f5);
+  color: var(--dsw-alias-label-secondary, #4b5563);
+}
+.wl-profile-source[data-source="llm"] {
+  background: color-mix(in srgb, var(--dsw-static-deepseek-500, #4d6bfe) 14%, var(--dsw-alias-bg-layer-1, #ffffff));
+  color: var(--dsw-static-deepseek-600, #3b57e0);
+}
+.wl-profile-traits { margin: 0; padding-left: 18px; display: grid; gap: 5px; font-size: 12px; line-height: 1.6; color: var(--dsw-alias-label-primary, #1a1d21); }
+.wl-profile-advice { margin: 10px 0 0; font-size: 12px; line-height: 1.6; color: var(--dsw-alias-label-secondary, #4b5563); }
+.wl-profile-advice strong { margin-right: 6px; color: var(--dsw-alias-label-primary, #1a1d21); font-weight: 600; }
+.wl-profile-card .wl-status[data-kind="profile-signin"] { margin: 0 0 8px; white-space: normal; }
+.wl-profile-card .wl-state { padding: 14px 0; text-align: left; }
 /* 顶部工具栏余额 chip：紧凑、只用宿主主题 token；未启用时组件根本不渲染（无外壳） */
 .wl-balance {
   display: inline-flex; align-items: center; gap: 6px; max-width: 220px;

@@ -14,6 +14,7 @@ import { balanceChip } from "./balance.js";
 import { MetricBarCell } from "./bar-cell.jsx";
 import { Chip, ChipGroup } from "./chips.jsx";
 import { CardHead } from "./card-head.jsx";
+import { ProfileCard } from "./profile-card.jsx";
 import { hourTokensNote } from "./hour-status.js";
 import { sectorPath } from "../sector-path.js";
 import {
@@ -1252,7 +1253,7 @@ function SkeletonBody({ t }) {
  *   4) 「按日期明细」默认折叠
  * 模型明细 / treemap / 按日趋势已移到独立页签「模型用量」。
  */
-function ByDayView({ data, t }) {
+function ByDayView({ data, t, lang, days, scope, allTime = false }) {
   const [dailyMode, setDailyMode] = useState("calendar");
   // 时刻分析口径：默认 Tokens（Token 产出），可切「轮次」（该小时 starts）
   const [hourMeasure, setHourMeasure] = useState("tokens");
@@ -1387,6 +1388,9 @@ function ByDayView({ data, t }) {
           </table>
         </div>
       </details>
+
+      {/* AI 用户画像：默认关闭时组件 probe 到 enabled=false，整卡不渲染 */}
+      <ProfileCard t={t} lang={lang} days={days} scope={scope} allTime={allTime} tz={localTimeZone()} />
     </>
   );
 }
@@ -1685,7 +1689,7 @@ function Overlay({ control }) {
                   </button>
                 ))}
               </div>
-              {tab === "byDay" ? <ByDayView data={state.data} t={t} /> : null}
+              {tab === "byDay" ? <ByDayView data={state.data} t={t} lang={lang} days={days} scope={scope} allTime={allTime} /> : null}
               {tab === "model" ? <ModelSection data={state.data} t={t} /> : null}
               {tab === "byWorkspace" ? <ByWorkspaceView data={state.data} t={t} /> : null}
               {tab === "bySession" ? <BySessionView data={state.data} t={t} /> : null}
