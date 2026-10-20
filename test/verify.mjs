@@ -1600,7 +1600,7 @@ console.log("\n—— 报告结构对齐（看板 → 报告）——");
   const parityHtml = renderReport(runningSnap, { theme: "light", title: "对齐报告" });
   ok(parityHtml.includes('data-kind="hour-dot"'), "结构：时刻图有人类消息密度点（data-kind=hour-dot）");
   ok(parityHtml.includes("Tokens 口径") && parityHtml.includes("Token 产出"), "结构：时刻图明确默认 Tokens 口径");
-  ok(parityHtml.includes("轮次（该小时开始的会话数）") && parityHtml.includes('aria-label="时刻分析：轮次"'), "结构：轮次作为第二张小图呈现（不伪造切换按钮）");
+  ok(!parityHtml.includes("轮次（该小时开始的会话数）"), "结构：轮次小图已按需求移除（报告不展示该子图）");
   ok(!parityHtml.includes("wl-chip") && !parityHtml.includes("<button"), "结构：报告没有看板切换控件 / 按钮");
   ok(parityHtml.includes('data-kind="hour-tokens-missing"') && parityHtml.includes('data-state="running"') && parityHtml.includes("正在计算中……"), "结构：回填中状态行显示「正在计算中……」");
   ok(/<div class="card-head">[\s\S]{0,80}<div class="card-head-text"><h2>[^<]+<\/h2><span class="card-hint"/.test(parityHtml), "结构：卡片说明在标题右侧（card-head-text 内）");

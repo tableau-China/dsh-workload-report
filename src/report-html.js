@@ -290,6 +290,7 @@ function workspaceBars(items, palette, metric, rangeDays = 0) {
       return `<li>
   <div class="ws-head">
     <span class="ws-name">${escapeHtml(item.label)}</span>
+    <span class="ws-days">活跃 ${formatInt(item.activeDays ?? 0)} 天</span>
     <span class="ws-meta">最近使用 ${escapeHtml(dateOf(item.lastUsedAt))}</span>
   </div>
   <div class="ws-metrics">
@@ -391,56 +392,6 @@ function hourChart(hours, palette, status = null) {
   ${labels}
 </svg>
 ${legend}`;
-}
-
-/**
- * 「轮次」第二张小图（静态报告没有切换控件）：同样的 24 个小时桶，柱高＝该小时开始的会话数。
- * 放在 Tokens 主图下方，明确标注口径，避免伪造 Tokens / 轮次切换按钮。
- */
-function hourTurnsChart(hours, palette) {
-  const width = 520;
-  const height = 92;
-  const pad = { top: 14, right: 6, bottom: 18, left: 6 };
-  const innerW = width - pad.left - pad.right;
-  const innerH = height - pad.top - pad.bottom;
-  const max = Math.max(1, ...hours.map((hour) => hour.starts ?? 0));
-  const step = innerW / hours.length;
-  const barW = Math.max(3, step * 0.62);
-  const peak = hours.reduce((best, hour) => ((hour.starts ?? 0) > (best.starts ?? 0) ? hour : best), hours[0]);
-  const bars = hours
-    .map((hour, index) => {
-      const value = hour.starts ?? 0;
-      const h = (value / max) * innerH;
-      const x = pad.left + step * index + (step - barW) / 2;
-      const y = pad.top + innerH - h;
-      const isPeak = hour.hour === peak?.hour && value > 0;
-      const title = `${hour.hour}:00–${hour.hour}:59 · 轮次 ${formatInt(value)} · Token ${formatInt(hour.tokensTotal ?? 0)}`;
-      return `<g><rect data-kind="hour-turns-bar" x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${barW.toFixed(2)}" height="${Math.max(h, 1).toFixed(2)}" rx="2" fill="${isPeak ? palette.peak : palette.input}"><title>${escapeHtml(title)}</title></rect></g>`;
-    })
-    .join("");
-  const peakLabel = (() => {
-    const value = peak?.starts ?? 0;
-    if (!(value > 0)) return "";
-    const index = hours.indexOf(peak);
-    const h = (value / max) * innerH;
-    const x = pad.left + step * index + step / 2;
-    const y = pad.top + innerH - h - 4;
-    return `<text data-kind="hour-turns-peak" x="${x.toFixed(1)}" y="${y.toFixed(1)}" text-anchor="middle" font-size="9" font-weight="650" fill="${palette.text}">${escapeHtml(formatInt(value))}</text>`;
-  })();
-  const labels = hours
-    .map((hour, index) =>
-      hour.hour % 3 === 0
-        ? `<text x="${(pad.left + step * index + step / 2).toFixed(1)}" y="${height - 4}" text-anchor="middle" font-size="9" fill="${palette.muted}">${hour.hour}</text>`
-        : "",
-    )
-    .join("");
-  return `<h3 class="sub-title">轮次（该小时开始的会话数）</h3>
-<svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" role="img" aria-label="时刻分析：轮次">
-  <line x1="${pad.left}" y1="${pad.top + innerH}" x2="${width - pad.right}" y2="${pad.top + innerH}" stroke="${palette.border}" />
-  ${bars}
-  ${peakLabel}
-  ${labels}
-</svg>`;
 }
 
 /**
@@ -799,7 +750,16 @@ export function renderReport(snapshot, options = {}) {
   .m-share { font-size: 11px; font-weight: 400; color: ${palette.muted}; margin-left: 7px; }
   .m-sub { font-size: 11px; color: ${palette.muted}; margin-top: 5px; line-height: 1.5; }
   .ws-foot { font-size: 11px; color: ${palette.muted}; margin-top: 9px; padding-top: 7px; border-top: 1px dashed ${palette.border}; }
+    .daily-pair { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+    .daily-pair .daily-cell { min-width: 0; }
+    .daily-pair svg { max-width: 100%; height: auto; }
+    @media (max-width: 760px) { .daily-pair { grid-template-columns: 1fr; } }
   .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .bars li { display: grid; grid-template-columns: 168px minmax(0, 1fr); column-gap: 14px; row-gap: 4px; align-items: start; }
+    .bars li > .ws-head { grid-column: 1; grid-row: 1 / span 2; display: flex; flex-direction: column; gap: 3px; }
+    .bars li > .ws-metrics { grid-column: 2; }
+    .bars li > .ws-foot { grid-column: 2; }
+    .ws-head .ws-days { font-size: 11px; color: ${palette.muted}; }
   .two-col .card { margin-bottom: 20px; }
   .pie-wrap { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
   .pie-legend { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; flex: 1 1 200px; font-size: 12px; }
@@ -838,13 +798,19 @@ export function renderReport(snapshot, options = {}) {
 
   <section class="card">
     ${cardHead("每日用量趋势", "颜色与柱高＝活跃时长")}
-    <h3 class="sub-title">活跃日历（全部历史）</h3>
-    ${calendarHeatmap(snapshot.calendar, palette)}
-    <h3 class="sub-title">柱状图（当前区间）</h3>
-    ${dailyChart(snapshot.byDay, palette)}
-    <div class="legend">
-      <span><i style="background:${palette.input}"></i>工作日</span>
-      <span><i style="background:${palette.weekend}"></i>周末</span>
+    <div class="daily-pair">
+      <div class="daily-cell">
+        <h3 class="sub-title">活跃日历（全部历史）</h3>
+        ${calendarHeatmap(snapshot.calendar, palette)}
+      </div>
+      <div class="daily-cell">
+        <h3 class="sub-title">柱状图（当前区间）</h3>
+        ${dailyChart(snapshot.byDay, palette)}
+        <div class="legend">
+          <span><i style="background:${palette.input}"></i>工作日</span>
+          <span><i style="background:${palette.weekend}"></i>周末</span>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -852,7 +818,6 @@ export function renderReport(snapshot, options = {}) {
     <section class="card">
       ${cardHead("时刻分析", "Tokens 口径 · 柱＝Token 产出 · 点＝人类消息密度")}
       ${hourChart(snapshot.byHour, palette, hourStatus)}
-      ${hourTurnsChart(snapshot.byHour, palette)}
     </section>
     <section class="card">
       ${cardHead("工作区占比", "按时长；Token 占比见下表")}
@@ -869,7 +834,7 @@ export function renderReport(snapshot, options = {}) {
   </section>
 
   <section class="card">
-    ${cardHead("按工作区分布", "左＝付出 · 右＝消耗；条＝占全部比例")}
+    ${cardHead("按工作区分布")}
     ${workspaceBars(snapshot.byWorkspace, palette, "activeMs", range.days)}
     <table>
       <thead><tr><th>工作区</th><th>活跃天数</th><th>会话</th><th>对话</th><th>轮次</th><th>步骤</th><th>活跃时长</th><th>Token</th><th>时长占比</th><th>Token 占比</th></tr></thead>
