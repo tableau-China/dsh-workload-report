@@ -142,7 +142,7 @@ export function ProfileCard({ t, lang = "zh", days, scope, allTime = false, tz }
   const view = profile === null ? null : profileSections(profile);
 
   return (
-    <div className="wl-card wl-profile-card" data-kind="ai-profile" data-source={source ?? undefined} aria-busy={generating}>
+    <div className="wl-card wl-profile-card" data-kind="ai-profile" data-section="profile" data-source={source ?? undefined} aria-busy={generating}>
       <CardHead title={t("profile.title")} hint={t("profile.hint")}>
         <button
           type="button"
@@ -218,6 +218,10 @@ export function ProfileCard({ t, lang = "zh", days, scope, allTime = false, tz }
               })
               : t("profile.usage.local", { time: timestamp })}
           </p>
+          {/* 输出被截断但 JSON 修复成功：卡片底部一行小字说明（不打断阅读、不弹错） */}
+          {profile?.truncated === true ? (
+            <p className="wl-hint wl-hint-spaced" data-kind="profile-truncated">{t("profile.truncated")}</p>
+          ) : null}
         </>
       ) : null}
     </div>

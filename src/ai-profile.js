@@ -648,6 +648,13 @@ class ProfileParseError extends Error {
   }
 }
 
+/** 诊断用摘录：去控制字符、压空白，最多 300 个字符（只来自模型输出）。 */
+export function profileExcerpt(text, max = 300) {
+  const clean = Array.from(String(text ?? "").replace(/[\u0000-\u001f]+/g, " ").replace(/\s+/g, " ").trim());
+  const limit = Math.max(1, Math.round(Number(max) || 300));
+  return clean.slice(0, limit).join("");
+}
+
 /** 去掉 BOM、代码围栏与三引号包裹；保留内部原文。 */
 function unwrapProfileText(text) {
   let raw = String(text ?? "").replace(/^\uFEFF/, "").trim();
@@ -666,6 +673,105 @@ function tryParseJson(text) {
   } catch {
     return null;
   }
+}
+
+/**
+ * 扫描 JSON 文本的括号 / 字符串状态，返回补齐未闭合部分所需的后缀。
+ *
+ * 这是"截断可抢救"的基础：只补结构（字符串引号 + { / [ 的右括号），
+ * 不改写已有内容；结构已经坏掉（右括号与左括号不匹配）时返回 null。
+ */
+function jsonClosureOf(text) {
+  const chars = Array.from(String(text ?? ""));
+  const stack = [];
+  let inString = false;
+  let escaped = false;
+  for (const char of chars) {
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === "{" || char === "[") {
+      stack.push(char);
+      continue;
+    }
+    if (char === "}" || char === "]") {
+      const open = stack.pop();
+      if ((char === "}" && open !== "{") || (char === "]" && open !== "[")) return null;
+    }
+  }
+  let suffix = "";
+  // 末尾停在字符串里：补引号（若最后一个字符是未完成的转义，先补一个反斜杠）。
+  if (inString) suffix += escaped ? "\\\"" : '"';
+  for (let index = stack.length - 1; index >= 0; index -= 1) {
+    suffix += stack[index] === "{" ? "}" : "]";
+  }
+  return { suffix, balanced: !inString && stack.length === 0 };
+}
+
+/** 文本是否明显没有收尾（JSON 括号 / 字符串未闭合）。 */
+export function isProfileTextUnfinished(text) {
+  const unwrapped = unwrapProfileText(String(text ?? ""));
+  const start = unwrapped.indexOf("{");
+  if (start < 0) return false;
+  const closure = jsonClosureOf(unwrapped.slice(start).trim());
+  return closure === null || closure.balanced === false;
+}
+
+/** 从后往前找一个可安全截断的边界（逗号 / 已打开的括号），用于丢掉半截的键值。 */
+function lastRepairBoundary(text) {
+  const chars = Array.from(String(text ?? ""));
+  let inString = false;
+  let escaped = false;
+  let boundary = -1;
+  for (let index = 0; index < chars.length; index += 1) {
+    const char = chars[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === ",") boundary = index;
+    else if (char === "{" || char === "[") boundary = index + 1;
+  }
+  return boundary;
+}
+
+/**
+ * 截断抢救：先原样尝试，失败就补齐未闭合的字符串 / 数组 / 对象括号，再 JSON.parse。
+ * 仍然失败时逐级回退到上一个逗号 / 括号边界，丢掉被截断的半截键值（例如 `"risk":`）。
+ *
+ * @param text - 模型输出原文（可带代码围栏 / 前后解释）。
+ * @returns `{ text, repaired }`（text 为可解析的 JSON 字符串），无法修复时返回 null。
+ */
+export function repairProfileJson(text) {
+  const original = String(text ?? "").trim();
+  const unwrapped = unwrapProfileText(original);
+  const start = unwrapped.indexOf("{");
+  if (start < 0) return null;
+  let body = unwrapped.slice(start).trim();
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    const closure = jsonClosureOf(body);
+    if (closure === null) return null;
+    const candidate = body + closure.suffix;
+    if (tryParseJson(candidate) !== null) {
+      return { text: candidate, repaired: candidate.trim() !== original };
+    }
+    const boundary = lastRepairBoundary(body);
+    if (boundary <= 0) return null;
+    const next = body.slice(0, boundary).replace(/[\s,]+$/, "");
+    if (next === body || next === "") return null;
+    body = next;
+  }
+  return null;
 }
 
 /** 把模型输出归一化成严格结构；任何不符合 schema 的地方都视为解析失败（不猜）。 */

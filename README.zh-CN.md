@@ -54,7 +54,7 @@ dsh plugin --profile web add link:$PWD
 - **主要会话与按日期明细**：主要数值列都有比例条（会话：轮次 / 步骤 / 活跃 / 输出；日期明细：对话 / 轮次 / 活跃 / Token）；主要会话表头可排序；日期明细覆盖最近 31 天。
 - **导出自包含 HTML 报告**：单文件、内联 CSS + 内联 SVG，**无脚本、无外部资源**；支持浅 / 深色、自定义标题与备注、`anonymize=1` 匿名化工作区与会话标题。报告与看板同口径：8 张 KPI、日历 + 柱状、小时密度点 + 轮次小图、表格比例条，外链仅官方计费页。
 - **主题与语言自适应**：颜色全部使用宿主主题 token（`--dsw-*`），自动跟随浅 / 深色；中英文文案逐键对齐。
-- **AI 用户画像（可选，默认关闭）**：按日期页的一张卡片，只凭**聚合统计**生成「headline + 4–6 个维度（每条结论引用数字 + 证据）+ 2–3 条建议 + 风险提示」，绝不发送对话、标题或路径；新增时段 / 会话 / Token / 趋势结构，同一统计指纹直接复用磁盘缓存；任何失败都降级为同构的本地规则版。详见 [AI 用户画像](#ai-用户画像)。
+- **AI 用户画像（可选，默认关闭）**：主要会话页会话表之后的一张卡片（特别底色），只凭**聚合统计**生成「headline + 4–6 个维度（每条结论引用数字 + 证据）+ 2–3 条建议 + 风险提示」，绝不发送对话、标题或路径；新增时段 / 会话 / Token / 趋势结构，同一统计指纹直接复用磁盘缓存；输出被截断时先修复 JSON，修不好才降级为同构的本地规则版。详见 [AI 用户画像](#ai-用户画像)。
 
 ## 界面截图
 
@@ -139,8 +139,8 @@ dsh plugin --profile web add link:$PWD
       enabled: false               # true 时按需调用模型，只发聚合统计
       provider: ""                 # 空 = 使用宿主 agentDefaultModel
       model: ""                    # 与 provider 成对配置
-      maxTokens: 1600              # 4–6 维度 + 2–3 建议
       timeoutMs: 60000             # AbortSignal.timeout(timeoutMs)
+      # 刻意不提供 maxTokens：输出上限会截断 JSON，截断时由插件修复括号抢救
       cacheTtlMs: 86400000         # 指纹缓存时长（毫秒）；0 = 不落盘
 ```
 
@@ -148,7 +148,7 @@ dsh plugin --profile web add link:$PWD
 
 ## AI 用户画像
 
-**默认关闭、按需点击生成。** 开启后，按日期页会多一张「用户画像」卡片：
+**默认关闭、按需点击生成。** 开启后，主要会话页会在会话表之后多一张「AI 用户画像」卡片（特别底色，与普通卡片区分）：
 
 - **触发**：打开面板只做 `probe`（不调用模型）；点「生成画像 / 重新生成」才真正请求，生成中按钮禁用。
 - **发送什么**：严格白名单的 56 个聚合字段——区间、净活跃 / 等待、会话与轮次、Token 四分量与占比、
@@ -157,13 +157,15 @@ dsh plugin --profile web add link:$PWD
   **绝不发送**对话正文、会话标题、cwd / 路径、会话 id 或事件日志；宿主会断言键集合严格等于白名单，
   并递归拒绝私有键与路径字符串。
 - **Prompt**：资深生产力分析师；每条结论**必须引用数字**，禁止空泛建议；只输出严格 JSON
-  （headline / dimensions / advice / risk），temperature 0.35、maxTokens 1600。
-- **解析**：干净 JSON → 代码围栏 → 前后夹文字时宽松提取 → 仍失败才降级；失败时原始输出前 300 字进
-  `diagnostic.excerpt`。
+  （headline / dimensions / advice / risk），temperature 0.35、**不传 maxTokens**。
+- **解析 / 截断抢救**：干净 JSON → 代码围栏 → 前后夹文字时宽松提取；若 `finish.kind=length`
+  或文本明显未收尾，先补齐未闭合的字符串 / 数组 / 对象括号再解析，成功则标记 `truncated: true`
+  （卡片底部提示「输出被截断，已修复采用」）；修不好才降级，原始输出前 300 字进 `diagnostic.excerpt`。
 - **缓存**：白名单稳定 JSON 的 SHA-256 前 16 位（新增字段自动参与）；结果与索引同目录原子落盘
-  （`.tmp` → `rename`，`PROFILE_CACHE_VERSION = 3`）。指纹相同直接返回缓存，不再调用模型；`force=1` 重新生成。
+  （`.tmp` → `rename`，`PROFILE_CACHE_VERSION = 4`）。指纹相同直接返回缓存，不再调用模型；`force=1` 重新生成。
 - **失败降级**：llm 缺失、未登录 / 无模型、超时、非 `stop` 结束、空输出、JSON 解析失败——
-  一律返回**本地规则版**（同构 headline + 4–6 维度 + 2–3 建议 + risk，每条结论同样带数字，不联网）。
+  一律返回**本地规则版**（同构 headline + 4–6 维度 + 2–3 建议 + risk，每条结论同样带数字，不联网）；
+  其中「非 stop 但 JSON 可修复」的截断会改用修复结果（`truncated: true`），只有修不好才降级。
   响应始终带 `source: "llm" | "local"` 与稳定 `code`，不向 UI 抛错。
 - **可诊断**：失败响应额外带 `diagnostic.error.{code,message,stage}`（保留底层错误码，message 脱敏且 ≤300 字符）
   与 `route` / `precheck`；`/health` 的 `diagnostics.aiProfile` 给最近一次结果。

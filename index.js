@@ -1189,6 +1189,7 @@ export function apply(ctx, config = {}) {
             cached: false,
             route: index.profile.last?.route ?? null,
             precheck: index.profile.last?.precheck ?? { providers: [], models: [] },
+            truncated: false,
             diagnostic: buildProfileDiagnostic(error, "route"),
           };
         }

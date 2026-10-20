@@ -10,11 +10,13 @@ import { renderReport } from "../src/report-html.js";
 import { balanceChip } from "../src/client/balance.js";
 import {
   PROFILE_DIMENSION_KEYS, PROFILE_EVIDENCE_MAX, PROFILE_HEADLINE_MAX, PROFILE_INSIGHT_MAX, PROFILE_LINE_MAX,
-  PROFILE_PAYLOAD_KEYS, PROFILE_TITLE_MAX, assertProfilePayload, buildProfilePayload, localProfile, parseProfileText, profileFingerprint,
+  PROFILE_PAYLOAD_KEYS, PROFILE_TITLE_MAX, assertProfilePayload, buildProfilePayload, isProfileTextUnfinished, localProfile, parseProfileText,
+  profileFingerprint, repairProfileJson,
 } from "../src/ai-profile.js";
 import { profileSections } from "../src/profile-view.js";
-import { AI_PROFILE_DEFAULTS, systemPrompt } from "../src/profile-service.js";
+import { AI_PROFILE_DEFAULTS, TRUNCATION_FINISH_KINDS, systemPrompt } from "../src/profile-service.js";
 import { hourTokensNote } from "../src/client/hour-status.js";
+import { SESSION_PAGE_SECTIONS } from "../src/client/session-layout.js";
 import { translate } from "../src/client/locales.js";
 import {
   DEFAULT_PRICING, DEFAULT_WAIT_TOOLS, allocateLlmMs, cacheHitRate, costOf, emptyModelBucket, foldSessionModels,
@@ -1416,6 +1418,25 @@ console.log("\n—— AI 用户画像（payload 白名单 / 指纹 / 本地规�
   const nullRisk = parseProfileText(JSON.stringify({ ...sampleProfile, risk: null }));
   eq(nullRisk.risk, null, "risk=null 合法");
 
+  // —— 截断抢救：补齐未闭合的字符串 / 数组 / 对象括号 ——
+  const completeText = JSON.stringify({ ...sampleProfile, risk: null });
+  const missingBrace = completeText.slice(0, -1);
+  ok(isProfileTextUnfinished(missingBrace), "截断检测：缺右括号判定为未收尾");
+  ok(!isProfileTextUnfinished(completeText), "截断检测：完整 JSON 判定为已收尾");
+  const repairedBrace = repairProfileJson(missingBrace);
+  ok(repairedBrace !== null && repairedBrace.repaired === true, "JSON 修复：缺根对象右括号可补齐");
+  eq(parseProfileText(repairedBrace.text).headline, sampleProfile.headline, "JSON 修复：补齐后可正常解析出画像");
+  const repairedTail = repairProfileJson(completeText.slice(0, -2));
+  ok(repairedTail !== null && repairedTail.repaired === true, "JSON 修复：截断在半截值上时回退到上一个逗号边界");
+  ok(parseProfileText(repairedTail.text).dimensions.length >= 4, "JSON 修复：回退边界后仍保留足够维度");
+  const midString = completeText.slice(0, completeText.indexOf("夜间型深度工作者") + 5);
+  const repairedString = repairProfileJson(midString);
+  ok(repairedString !== null && repairedString.repaired === true, "JSON 修复：截断在字符串中间时补引号 + 括号");
+  eq(JSON.parse(repairedString.text).headline, "夜间型深度", "JSON 修复：字符串中间截断保留已输出部分");
+  eq(repairProfileJson("这不是 JSON"), null, "JSON 修复：没有 JSON 对象时返回 null");
+  eq(repairProfileJson('{"a":]'), null, "JSON 修复：括号已错配时返回 null（不猜）");
+  ok(TRUNCATION_FINISH_KINDS.includes("length") && TRUNCATION_FINISH_KINDS.includes("max-tokens"), "截断 finish.kind 覆盖 length / max-tokens（provider 命名不一）");
+
   // —— 前端渲染结构（同构归一化 + 源码结构） ——
   const view = profileSections(sampleProfile);
   eq(view.headline, sampleProfile.headline, "渲染结构：headline 直接透传");
@@ -1451,8 +1472,40 @@ console.log("\n—— AI 用户画像（payload 白名单 / 指纹 / 本地规�
   ok(cardSource.includes("<CardHead"), "画像卡复用 CardHead（标题 + 右侧 hint + 右上按钮）");
   ok(/status === "probing" \|\| status === "disabled"\) return null/.test(cardSource), "未启用 / probe 中整卡不渲染（不显示入口）");
   ok(cardSource.includes("disabled={generating}") && cardSource.includes("profile.generating"), "生成中按钮禁用并显示「生成中…」");
-  ok(clientIndexSource.includes('import { ProfileCard }') && clientIndexSource.includes("<ProfileCard"), "ProfileCard 已接入按日期页");
+  ok(clientIndexSource.includes('import { ProfileCard }') && clientIndexSource.includes("<ProfileCard"), "ProfileCard 已接入主要会话页（画像卡）");
+  // 布局：会话表在前、画像卡紧随其后（区块顺序数组 = 渲染顺序，两者同构）。
+  eq(SESSION_PAGE_SECTIONS.join(">"), "sessions>profile", "布局：主要会话页区块顺序 = 会话表 → 画像卡");
+  const sessionBlockSource = clientIndexSource.slice(
+    clientIndexSource.indexOf("function BySessionView"),
+    clientIndexSource.indexOf("function Overlay"),
+  );
+  const sessionTableEnd = sessionBlockSource.indexOf("</table>");
+  const profileCardAt = sessionBlockSource.indexOf("<ProfileCard");
+  ok(sessionTableEnd > 0 && profileCardAt > sessionTableEnd, "布局：画像卡 DOM 顺序在会话表之后（紧跟 <table>）");
+  eq(translate("zh", "profile.title"), "AI 用户画像", "标题：中文为「AI 用户画像」");
+  eq(translate("en", "profile.title"), "AI user profile", "标题：英文同步为 AI user profile");
+  ok(localesSource.includes('"profile.title": "AI 用户画像"') && localesSource.includes('"profile.title": "AI user profile"'), "标题：zh/en 同步替换，不保留旧键");
+  const profileCardCss = stylesSource.slice(stylesSource.indexOf(".wl-profile-card"), stylesSource.indexOf(".wl-profile-meta"));
+  ok(
+    /background:\s*color-mix\(in srgb,\s*var\(--dsw-static-deepseek-500[^;]*var\(--dsw-alias-bg-layer-2/.test(profileCardCss),
+    "底色：画像卡用 layer-2 叠极淡品牌色（只用宿主 token）",
+  );
+  ok(
+    /\.wl-card \{[^}]*background: var\(--dsw-alias-bg-layer-1/.test(stylesSource) &&
+      !/\.wl-profile-card \{[^}]*background: var\(--dsw-alias-bg-layer-1/.test(profileCardCss),
+    "底色：画像卡与普通卡片（layer-1）不同，有可辨差异",
+  );
+  ok(
+    cardSource.includes('data-kind="profile-truncated"') && cardSource.includes('t("profile.truncated")'),
+    "截断提示：卡片底部渲染 profile.truncated 小字",
+  );
+  ok(
+    localesSource.includes('"profile.truncated": "输出被截断，已修复采用"') &&
+      localesSource.includes('"profile.truncated": "Output truncated; repaired and used"'),
+    "截断提示：zh/en 新键齐全",
+  );
   ok(cardSource.includes("profileSections(profile)"), "卡片用 profileSections 做同构归一化");
+  ok(cardSource.includes('data-kind="ai-profile"') && cardSource.includes('data-section="profile"'), "渲染结构：画像卡带 data-section=profile（DOM 顺序可量测）");
   ok(cardSource.includes('data-kind="profile-headline"'), "渲染结构：顶部大字 headline（data-kind）");
   ok(cardSource.includes('data-kind="profile-dimensions"') && cardSource.includes("data-key={item.key}"), "渲染结构：维度列表带 key / title / insight");
   ok(cardSource.includes('data-kind="profile-evidence"'), "渲染结构：灰色证据小字");
@@ -2177,12 +2230,38 @@ async function cleanupProfile(host, body) {
   await cleanupProfile(host, res.body);
 }
 {
-  const llm = makeLlm({ text: aiHostText(), finishKind: "max-tokens" });
+  // 无法修复的截断：模型在字符串中间就断了，补齐后 schema 仍不合格 → 本地规则 + AI_NOT_STOPPED
+  const truncatedText = '{"headline":"被截断的画像","dimensions":[{"key":"rhythm","title":"节奏","insight":"上午活跃 62%';
+  const llm = makeLlm({ text: truncatedText, finishKind: "length" });
   const host = bootProfile({ llm: llm.service, aiProfile: { provider: "p", model: "m" } });
-  await waitHealth(host.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "非 stop 实例索引完成");
+  await waitHealth(host.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "不可修复截断实例索引完成");
   const res = await routeJson(host.routeList, "/workload-report/v1/profile?days=30&tz=UTC");
-  eq(res.body.source, "local", "非 stop：降级 source=local");
-  eq(res.body.code, "AI_NOT_STOPPED", "非 stop：code=AI_NOT_STOPPED");
+  eq(res.body.source, "local", "不可修复截断：降级 source=local");
+  eq(res.body.code, "AI_NOT_STOPPED", "不可修复截断：code=AI_NOT_STOPPED");
+  eq(res.body.diagnostic?.finish?.kind, "length", "不可修复截断：diagnostic.finish.kind=length");
+  eq(res.body.diagnostic?.textLength, Array.from(truncatedText).length, "不可修复截断：diagnostic.textLength 记录输出字符数");
+  eq(res.body.diagnostic?.repaired, false, "不可修复截断：diagnostic.repaired=false");
+  ok(String(res.body.diagnostic?.excerpt ?? "").includes("被截断的画像"), "不可修复截断：diagnostic.excerpt 保留前 300 字");
+  ok([...String(res.body.diagnostic?.excerpt ?? "")].length <= 300, "不可修复截断：diagnostic.excerpt ≤300 字符");
+  await cleanupProfile(host, res.body);
+}
+{
+  // 可修复的截断：finish.kind=length + 缺根对象右括号 → 补齐后 source=llm + truncated=true
+  const completeText = aiHostText();
+  const truncatedText = completeText.slice(0, -1);
+  const llm = makeLlm({ text: truncatedText, finishKind: "length" });
+  const host = bootProfile({ llm: llm.service, aiProfile: { provider: "p", model: "m" } });
+  await waitHealth(host.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "可修复截断实例索引完成");
+  const res = await routeJson(host.routeList, "/workload-report/v1/profile?days=30&tz=UTC");
+  eq(res.body.source, "llm", "可修复截断：source=llm（不降级）");
+  eq(res.body.code, null, "可修复截断：code=null");
+  eq(res.body.truncated, true, "可修复截断：truncated=true");
+  eq(res.body.headline, AI_HOST_SAMPLE.headline, "可修复截断：采用修复后的 headline");
+  eq(res.body.dimensions.length, 4, "可修复截断：采用修复后的 4 个维度");
+  eq(res.body.diagnostic?.finish?.kind, "length", "可修复截断：diagnostic.finish.kind=length");
+  eq(res.body.diagnostic?.textLength, Array.from(truncatedText).length, "可修复截断：diagnostic.textLength");
+  eq(res.body.diagnostic?.repaired, true, "可修复截断：diagnostic.repaired=true");
+  ok(String(res.body.diagnostic?.excerpt ?? "").startsWith('{"headline"'), "可修复截断：diagnostic.excerpt 保留输出开头");
   await cleanupProfile(host, res.body);
 }
 
@@ -2205,7 +2284,7 @@ async function cleanupProfile(host, body) {
 // 6) 成功 + 指纹缓存：第二次不再调用模型，force=1 才重新生成
 {
   const llm = makeLlm({ text: aiHostText() });
-  const host = bootProfile({ llm: llm.service, aiProfile: { provider: "p", model: "m" } });
+  const host = bootProfile({ llm: llm.service, aiProfile: { provider: "p", model: "m", maxTokens: 1600 } });
   await waitHealth(host.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "成功实例索引完成");
   const probe = await routeJson(host.routeList, "/workload-report/v1/profile?probe=1");
   eq(probe.body.available, true, "probe：已登录可用");
@@ -2229,8 +2308,9 @@ async function cleanupProfile(host, body) {
   eq(first.body.risk, null, "成功：risk=null 透传");
   ok(first.body.generatedAt > 0, "成功：记录生成时间");
   eq(llm.spy.prepare, 1, "成功：模型调用 1 次");
-  eq(llm.spy.prepareConfig?.maxTokens, 1600, "成功：maxTokens 默认 1600");
-  eq(AI_PROFILE_DEFAULTS.maxTokens, 1600, "配置默认 maxTokens=1600");
+  ok(!("maxTokens" in llm.spy.prepareConfig), "成功：prepareCall 参数不含 maxTokens（配置里写了也忽略）");
+  eq(AI_PROFILE_DEFAULTS.maxTokens, undefined, "配置默认已移除 maxTokens（避免 JSON 被截断）");
+  eq(host.profile.config.maxTokens, undefined, "配置归一化后不保留 maxTokens");
   eq(llm.spy.prepareConfig?.temperature, 0.35, "成功：temperature=0.35");
   eq(llm.spy.prepareConfig?.reasoningEffort, undefined, "成功：仍然不指定 reasoningEffort");
 

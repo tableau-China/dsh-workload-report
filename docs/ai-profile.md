@@ -16,12 +16,14 @@
       enabled: false        # 默认关闭；true 才会按需调用模型
       provider: ""          # 空 = 使用宿主 agentDefaultModel.currentSelection()
       model: ""             # 与 provider 成对出现
-      maxTokens: 1600       # 4–6 维度 + 2–3 建议，留足输出
       timeoutMs: 60000      # AbortSignal.timeout(timeoutMs)
       cacheTtlMs: 86400000  # 指纹缓存 24h；0 = 不落盘
 ```
 
-调用参数固定 `temperature: 0.35`；路由优先级：`aiProfile.provider/model`（两者都非空）→ 宿主
+**不再提供 `maxTokens`。** 画像要求严格 JSON，输出上限会把 JSON 截断（`finish.kind=length`），
+旧版 `maxTokens: 1600` 正是现场「AI_NOT_STOPPED」的根因；配置里即使写了也会被忽略。
+
+调用参数固定 `temperature: 0.35`（不传 `maxTokens`）；路由优先级：`aiProfile.provider/model`（两者都非空）→ 宿主
 `agentDefaultModel.currentSelection()`。调用前用 `llm.listProviders()` / `llm.listModels(provider)` 预检；
 空列表即未登录 / 无 key。**不指定 `reasoningEffort`**（部分模型不支持 off）。
 
@@ -95,22 +97,34 @@
 归一化时统一裁剪长度（headline 30 / title 8 / insight 60 / evidence 40 / advice 40 / risk 40），
 并要求 4–6 个合法维度、每条 insight 含数字、2–3 条建议；不满足即降级（不猜）。
 
-## 5. 触发与缓存
+## 5. 截断抢救（finish.kind=length）
+
+当 `finish.kind` 为 `length` / `max-tokens`（或文本明显未收尾）时，先做 **JSON 修复**再解析：
+
+1. 从第一个 `{` 开始，扫描栈记录未闭合的字符串 / `[` / `{`；
+2. 补齐缺失的引号与右括号（末尾停在转义符时先补完转义）；
+3. 直接 `JSON.parse`；若仍有半截键值（如 `"risk":`），逐级回退到上一个逗号 / 括号边界再补齐；
+4. 修好且 schema 合格 → 使用该结果并标记 `truncated: true`（UI 底部小字「输出被截断，已修复采用」）；
+5. 修不好 → 降级本地规则，`code = AI_NOT_STOPPED`，diagnostic 记录 `finish.kind` / `textLength` /
+   `repaired:false` / `excerpt`（前 300 字）。
+
+## 6. 触发与缓存
 
 - 前端挂载时先 `GET /profile?probe=1`：只回答 `enabled / available / signedIn`，**不生成、不调用模型**。
 - 点击「生成画像」才 `GET /profile?...`；再次点击是「重新生成」，带 `force=1`。
 - 指纹：白名单对象**稳定 JSON（键排序）**的 SHA-256 前 16 位；新增字段自动参与指纹。
-- 缓存文件：与索引同目录，`<索引基名>-ai-<lang>-<指纹>.json`（`PROFILE_CACHE_VERSION = 3`）；
+- 缓存文件：与索引同目录，`<索引基名>-ai-<lang>-<指纹>.json`（`PROFILE_CACHE_VERSION = 4`）；
   先写 `.tmp` 再 `rename` 原子替换。
 - 指纹 + 语言相同且在 `cacheTtlMs` 内 → 直接返回缓存，**不再调用模型**；`force=1` 跳过读缓存但仍更新缓存。
 - 同指纹并发请求共享一次生成（`inflight`），双击不会重复调用。
 - 缓存只存生成结果、指纹与本次诊断字段（`route / precheck / diagnostic / costHint`），不存 payload 本身。
 - 调试覆盖（`provider=` / `model=`）不读也不写缓存，避免一次试跑污染正常路径。
 
-## 6. 调用与降级
+## 7. 调用与降级
 
 ```js
-const call = await llm.prepareCall({ provider, model, temperature: 0.35, maxTokens: 1600 }, signal);
+// 刻意不传 maxTokens：截断会破坏 JSON；截断时走 repairProfileJson() 抢救
+const call = await llm.prepareCall({ provider, model, temperature: 0.35 }, signal);
 for await (const chunk of call.stream({ ...call.config, system, messages, signal })) {
   // text-delta → 累积文本；usage → 记录 input/output；finish.kind === "stop" → 成功
 }
@@ -128,7 +142,7 @@ for await (const chunk of call.stream({ ...call.config, system, messages, signal
 | `ACCOUNT_SIGN_IN_REQUIRED` | 无 provider / 无可用模型 | 本地规则版 + 前端「未登录」提示 |
 | `MISSING_CREDENTIAL` | provider 未注册 / 缺凭据 | 本地规则版 |
 | `AI_TIMEOUT` | 超过 timeoutMs | 本地规则版 |
-| `AI_NOT_STOPPED` | finish.kind ≠ stop | 本地规则版 |
+| `AI_NOT_STOPPED` | finish.kind ≠ stop 且 JSON 修复失败 | 本地规则版（可修复时改用修复结果 + `truncated:true`） |
 | `AI_PARSE_FAILED` | 无 JSON / 维度不足 / 缺数字 / 缺建议 | 本地规则版 + `diagnostic.excerpt` |
 | `AI_EMPTY_RESULT` | 模型输出空文本 | 本地规则版 |
 | `AI_FAILED` | 其他异常 | 本地规则版 |
@@ -137,14 +151,17 @@ for await (const chunk of call.stream({ ...call.config, system, messages, signal
 每条 insight 也带数字，降级时与 AI 版观感一致。成功时 `source: "llm"`。
 两种结果都记录 `usage: { input, output, total }`、`costHint` 与 `generatedAt`，卡片小字显示。
 
-## 7. 诊断（失败时定位真实原因）
+## 8. 诊断（失败时定位真实原因）
 
 失败时 `/profile` 仍然返回 200 + 本地规则版，但额外带诊断字段：
 
 | 字段 | 内容 |
 | --- | --- |
 | `diagnostic` | `{ source: "local", code: <映射码>, error: { code, message, stage } }`；`error.code` 是**底层原始码**（如 `PROVIDER_NOT_FOUND`） |
-| `diagnostic.excerpt` | 仅解析失败：模型原始输出前 300 字（不含会话数据） |
+| `diagnostic.finish` | `{ kind }`：模型侧结束原因（`stop` / `length` / `max-tokens` …） |
+| `diagnostic.textLength` | 本次模型输出的字符数（按 Unicode 码点） |
+| `diagnostic.repaired` | 是否走过 JSON 修复（失败路径固定 `false`） |
+| `diagnostic.excerpt` | 解析 / 截断失败：模型原始输出前 300 字（不含会话数据） |
 | `route` | `{ provider, model, origin }`；`origin` = `config` / `agentDefaultModel`，调试覆盖时为 `query` |
 | `precheck` | `{ providers: [...], models: [...前 10] }`；分别是 `listProviders()` / `listModels(provider)` 的结果 |
 
@@ -189,7 +206,7 @@ curl -s 'http://127.0.0.1:3080/workload-report/v1/profile?days=30&force=1&provid
 curl -s 'http://127.0.0.1:3080/workload-report/v1/health'
 ```
 
-## 8. 前端状态与渲染结构
+## 9. 前端状态与渲染结构
 
 | 状态 | 表现 |
 | --- | --- |
@@ -198,6 +215,7 @@ curl -s 'http://127.0.0.1:3080/workload-report/v1/health'
 | 生成中 | 按钮禁用，显示「生成中…」 |
 | AI 生成 | 徽标「AI 生成」+ headline / dimensions / advice / risk + usage / 时间 |
 | 本地规则版 | 徽标「本地规则版」+ 对应 code 原因 + 同样的结构 + 时间 |
+| 输出被截断但已修复 | AI 结果正常展示；卡片底部小字「输出被截断，已修复采用」 |
 
 卡片结构（`src/client/profile-card.jsx` + `src/profile-view.js`）：
 
@@ -209,14 +227,14 @@ curl -s 'http://127.0.0.1:3080/workload-report/v1/health'
 
 `profileSections()` 对 AI / 本地 / 旧 `traits` 缓存做同构归一化，并在客户端再裁剪一次长度。
 
-## 9. 报告与 Token 口径
+## 10. 报告与 Token 口径
 
 - **静态 HTML 报告不展示画像**（见 `docs/report-parity.md` 的「有意不同」）：导出文件面向客户 / 打印，
   不应夹带 AI 对个人的判断；报告继续保持无脚本、自包含。
 - AI 调用是**旁路辅助调用**，不写入任何会话事件，因此**不计入本插件的 Token / 费用报表**；
   卡片上单独显示这次调用的 input/output tokens（`usage` / `costHint`）与生成时间。
 
-## 10. 验证
+## 11. 验证
 
 `test/verify.mjs` 覆盖：
 
@@ -225,7 +243,11 @@ curl -s 'http://127.0.0.1:3080/workload-report/v1/health'
 - 趋势 14 天窗口的环比、不足 14 天时为 `null`；
 - 本地规则与 AI 同构：headline / 4–6 维度 / 2–3 建议 / risk，每条 insight 含数字且长度受限；
 - 解析四路径（干净 JSON / 围栏 / 宽松提取 / 失败降级 + `diagnostic.excerpt`），以及缺数字 / 维度不足 / 建议不足；
-- prompt 含「引用数字」「可用键」与完整 schema；`maxTokens=1600`、`temperature=0.35`、不指定 `reasoningEffort`；
-- 前端渲染结构（headline / dimensions / evidence / advice / risk / 来源徽标 / usage / 重生成）与样式；
+- prompt 含「引用数字」「可用键」与完整 schema；`temperature=0.35`、不指定 `reasoningEffort`、
+  `prepareCall` 参数不含 `maxTokens`；
+- 截断抢救：缺右括号的 JSON 修复成功 → `source=llm` + `truncated=true` + `diagnostic.repaired=true`；
+  修不好 → `AI_NOT_STOPPED` + `diagnostic.finish.kind / textLength / excerpt`；
+- 前端渲染结构（headline / dimensions / evidence / advice / risk / 来源徽标 / usage / 重生成 / 截断小字）与样式；
+- 布局：画像卡在主要会话表之后；标题「AI 用户画像」；特别底色只用宿主 token；
 - 默认关闭零服务调用、指纹缓存、`force=1`、五种失败降级、诊断脱敏与 `/health.aiProfile`；
 - i18n zh/en 逐键对齐、无死键。

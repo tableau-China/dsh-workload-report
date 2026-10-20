@@ -139,8 +139,8 @@ Override any of these in the profile's `cordis.patch.yml` (all optional):
       enabled: false               # true = on-demand model call with aggregate stats only
       provider: ""                 # empty = host agentDefaultModel selection
       model: ""                    # use together with provider
-      maxTokens: 1600              # 4–6 dimensions + 2–3 advice items
       timeoutMs: 60000             # AbortSignal.timeout(timeoutMs)
+      # deliberately no maxTokens: an output cap truncates the JSON; the plugin repairs it instead
       cacheTtlMs: 86400000         # fingerprint cache TTL (ms); 0 = no disk cache
 ```
 
@@ -148,14 +148,14 @@ The default model prices are built in and offline; `pricing.overrides`, `pricing
 
 ## AI user profile
 
-**Off by default and generated on demand.** Enable it only if you want a short “how you work” card next to your stats:
+**Off by default and generated on demand.** Enable it only if you want a short “how you work” card. It follows the top-sessions table on the **Top sessions** tab and uses a subtle tinted surface.
 
 - **Trigger**: opening the panel only runs a `probe` (no model call). The model is called when you click **Generate profile / Regenerate**; the button is disabled while generating.
 - **What is sent**: a strict whitelist of 56 aggregate fields — range, net active / wait time, sessions and turns, the four token components and their shares, cache-hit rate, average session / turns / steps, four session-duration buckets, 24 hourly token buckets, five time bands (active + token shares), top 5 workspaces, top 5 models, workspace count / switches, model count / multi-model, weekend / night share, and a last-7-days vs previous-7-days trend. **Never** conversation content, session titles, cwd, paths, session ids, or event logs. The host asserts the key set is exactly the whitelist and recursively rejects private keys and path-like strings.
-- **Prompt**: senior productivity analyst; every insight **must cite a number**, and generic advice is forbidden. The reply must be strict JSON (`headline / dimensions / advice / risk`), `temperature: 0.35`, `maxTokens: 1600`.
-- **Parsing**: clean JSON → code fence → lenient first-`{`-to-last-`}` extraction → only then fall back. On failure the first 300 characters of the raw output go into `diagnostic.excerpt`.
-- **Cache**: SHA-256 (first 16 hex chars) of the stable JSON of that whitelist (new fields participate automatically). The result is cached on disk next to the index (atomic `tmp` → `rename`, `PROFILE_CACHE_VERSION = 3`); an identical fingerprint returns the cache without another model call. `force=1` regenerates.
-- **Failure = local rules**: missing `llm` service, not signed in / no models, timeout, non-`stop` finish, empty output, or unparsable JSON all fall back to a deterministic **local rules** profile with the same shape (headline + 4–6 dimensions + 2–3 advice + risk, every insight still numeric, no network). The response always carries `source: "llm" | "local"` and a stable `code`; nothing is thrown to the UI.
+- **Prompt**: senior productivity analyst; every insight **must cite a number**, and generic advice is forbidden. The reply must be strict JSON (`headline / dimensions / advice / risk`), `temperature: 0.35`; **no `maxTokens`** is sent.
+- **Parsing / truncation rescue**: clean JSON → code fence → lenient first-`{`-to-last-`}` extraction. When `finish.kind=length` or the text is clearly unfinished, the plugin closes unclosed strings / arrays / objects and parses again; success is marked `truncated: true` (card footer says “Output truncated; repaired and used”). Only an unrepairable result falls back, with the first 300 characters in `diagnostic.excerpt`.
+- **Cache**: SHA-256 (first 16 hex chars) of the stable JSON of that whitelist (new fields participate automatically). The result is cached on disk next to the index (atomic `tmp` → `rename`, `PROFILE_CACHE_VERSION = 4`); an identical fingerprint returns the cache without another model call. `force=1` regenerates.
+- **Failure = local rules**: missing `llm` service, not signed in / no models, timeout, empty output, or unparsable JSON all fall back to a deterministic **local rules** profile with the same shape (headline + 4–6 dimensions + 2–3 advice + risk, every insight still numeric, no network). A non-`stop` finish whose JSON can be repaired is used instead (`truncated: true`); only an unrepairable one falls back. The response always carries `source: "llm" | "local"` and a stable `code`; nothing is thrown to the UI.
 - **Diagnosable**: failures also carry `diagnostic.error.{code,message,stage}` (the underlying error code is preserved; the message is redacted and capped at 300 characters) plus `route` / `precheck`; `/health` exposes `diagnostics.aiProfile` with the latest attempt. For debugging, `provider=` / `model=` query parameters override just that request (only when `enabled=true`; no config write, no cache write, no restart).
 - **Not counted in this report**: the profile call is an auxiliary call outside any session, so it is **not** included in this plugin's token / cost report. The card shows that call's input/output tokens and generation time separately.
 - **Not in the HTML report**: the static export intentionally omits the profile (see `docs/report-parity.md`); an AI judgment about a person does not belong in a file sent to a client or printed.

@@ -16,23 +16,32 @@ import { basename, dirname, join } from "node:path";
 import {
   PROFILE_PAYLOAD_KEYS,
   buildProfilePayload,
+  isProfileTextUnfinished,
   localProfile,
   parseProfileText,
+  profileExcerpt,
   profileFingerprint,
+  repairProfileJson,
 } from "./ai-profile.js";
 
-/** 默认配置（profile 的 cordis.patch.yml 可覆盖 aiProfile）。 */
+/**
+ * 默认配置（profile 的 cordis.patch.yml 可覆盖 aiProfile）。
+ *
+ * 铁律：这里**不提供 maxTokens**。画像要求模型输出严格 JSON，一旦被输出上限截断，
+ * finish.kind 会变成 length、JSON 不完整，旧版传 maxTokens:1600 正是现场
+ * 「AI_NOT_STOPPED / 模型未正常结束」的根因。输出长度交给模型 / provider 的默认上限，
+ * 真被截断时走 repairProfileJson() 补齐括号抢救；配置里即使写了 maxTokens 也忽略。
+ */
 export const AI_PROFILE_DEFAULTS = Object.freeze({
   enabled: false,
   provider: "",
   model: "",
-  maxTokens: 1600,
   timeoutMs: 60000,
   cacheTtlMs: 86400000,
 });
 
-/** 缓存文件格式版本（改字段时 +1；不影响索引 INDEX_VERSION）。v3 起为 headline/dimensions/advice/risk + costHint。 */
-const PROFILE_CACHE_VERSION = 3;
+/** 缓存文件格式版本（改字段时 +1；不影响索引 INDEX_VERSION）。v4 起带 truncated / diagnostic。 */
+const PROFILE_CACHE_VERSION = 4;
 
 /** 稳定错误码：前端按它显示原因，并一律降级为本地规则版。 */
 export const PROFILE_CODES = Object.freeze({
@@ -59,6 +68,27 @@ export class ProfileError extends Error {
 
 /** 失败阶段（diagnostic.error.stage）；顺序即调用链。 */
 export const PROFILE_STAGES = Object.freeze(["route", "precheck", "prepareCall", "stream", "parse", "finish"]);
+
+/**
+ * 这些 finish.kind 表示"输出被上限截断"（不同 provider 命名不一致）。
+ * 截断时先尝试 JSON 修复，不直接判定失败。
+ */
+export const TRUNCATION_FINISH_KINDS = Object.freeze(["length", "max-tokens", "max_tokens", "maxTokens", "token-limit"]);
+
+/** finish.kind 是否是输出截断。 */
+export function isTruncationFinish(kind) {
+  return TRUNCATION_FINISH_KINDS.includes(String(kind ?? ""));
+}
+
+/** 截断且无法修复：带 finish / textLength / excerpt，路由据此降级并写 diagnostic。 */
+function truncatedProfileError(finishKind, textLength, excerpt, repaired = false) {
+  const error = new ProfileError(PROFILE_CODES.notStopped, "模型未正常结束：" + finishKind, "finish");
+  error.finishKind = finishKind;
+  error.textLength = textLength;
+  error.repaired = repaired;
+  error.rawText = excerpt;
+  return error;
+}
 
 /** 诊断 message 上限（字符数，按 Unicode 码点算）。 */
 const MAX_DIAGNOSTIC_CHARS = 300;
@@ -108,7 +138,13 @@ export function buildProfileDiagnostic(error, fallbackStage = "route") {
       stage,
     },
   };
-  // 解析失败时把模型原始输出前 300 字附在 diagnostic 上（只来自模型，不含会话数据）。
+  // 解析 / 截断失败时附上模型输出事实（只来自模型，不含会话数据）。
+  //   finish.kind：模型侧结束原因；textLength：输出字符数；repaired：是否走 JSON 修复。
+  if (typeof error?.finishKind === "string" && error.finishKind !== "") {
+    diagnostic.finish = { kind: error.finishKind };
+  }
+  if (Number.isFinite(Number(error?.textLength))) diagnostic.textLength = Math.max(0, Math.round(Number(error.textLength)));
+  if (typeof error?.repaired === "boolean") diagnostic.repaired = error.repaired;
   if (typeof error?.rawText === "string" && error.rawText !== "") diagnostic.excerpt = error.rawText;
   return diagnostic;
 }
@@ -147,11 +183,11 @@ export function normalizeAiProfile(config = {}) {
     return Number.isFinite(number) && number > 0 ? number : fallback;
   };
   const ttl = Number(raw.cacheTtlMs);
+  // raw.maxTokens 被刻意忽略：输出上限会导致 JSON 截断，见 AI_PROFILE_DEFAULTS 的说明。
   return {
     enabled: raw.enabled === true,
     provider: typeof raw.provider === "string" ? raw.provider.trim() : "",
     model: typeof raw.model === "string" ? raw.model.trim() : "",
-    maxTokens: Math.max(1, Math.round(positive(raw.maxTokens, AI_PROFILE_DEFAULTS.maxTokens))),
     timeoutMs: Math.max(1, Math.round(positive(raw.timeoutMs, AI_PROFILE_DEFAULTS.timeoutMs))),
     cacheTtlMs: Number.isFinite(ttl) && ttl >= 0 ? Math.round(ttl) : AI_PROFILE_DEFAULTS.cacheTtlMs,
   };
@@ -521,7 +557,9 @@ export class ProfileService {
         model: generated.model,
         route: generated.route,
         precheck: generated.precheck,
-        diagnostic: null,
+        // 截断修复成功时保留 finish / textLength / repaired / excerpt，供 UI 与排查使用。
+        truncated: generated.truncated === true,
+        diagnostic: generated.diagnostic ?? null,
       };
       this.recordLast({ code: null, stage: "finish", error: null, route: generated.route, precheck: generated.precheck });
     } catch (error) {
@@ -548,6 +586,7 @@ export class ProfileService {
         model: null,
         route,
         precheck,
+        truncated: false,
         diagnostic,
       };
       this.recordLast({ code, stage, error: diagnostic.error.message, route, precheck });
@@ -583,8 +622,11 @@ export class ProfileService {
       this.calls += 1;
       let call;
       try {
+        // 不传 maxTokens：画像输出是严格 JSON，任何输出上限都可能把 JSON 截断。
+        // 旧版 maxTokens:1600 在长维度输出时会触发 finish.kind=length，正是现场
+        // 「AI_NOT_STOPPED」的根因；截断时改由 repairProfileJson() 抢救。
         call = await llm.prepareCall(
-          { provider: route.provider, model: route.model, temperature: 0.35, maxTokens: this.config.maxTokens },
+          { provider: route.provider, model: route.model, temperature: 0.35 },
           signal,
         );
       } catch (error) {
@@ -610,23 +652,89 @@ export class ProfileService {
         throw tagStage(error, "stream", trace);
       }
       trace.stage = "finish";
-      if (finish === null || finish?.kind !== "stop") {
-        const failureCode = finish?.failure?.code;
-        if (failureCode === PROFILE_CODES.signIn || failureCode === PROFILE_CODES.missingCredential) {
-          throw new ProfileError(failureCode, "模型调用未完成：" + String(finish?.kind ?? "unknown"), "finish");
+      const finishKind = finish === null ? "none" : String(finish?.kind ?? "unknown");
+      const failureCode = finish?.failure?.code;
+      const textLength = Array.from(text).length;
+      const excerpt = profileExcerpt(text);
+      /** 给任意异常补上本次模型输出事实（失败诊断 / parse 失败都用）。 */
+      const attachFinish = (error) => {
+        error.finishKind = finishKind;
+        error.textLength = textLength;
+        if (typeof error.repaired !== "boolean") error.repaired = false;
+        if (typeof error.rawText !== "string" || error.rawText === "") error.rawText = excerpt;
+        return error;
+      };
+      /**
+       * 截断抢救：补齐未闭合的字符串 / 数组 / 对象括号后重新解析。
+       * 成功返回带 truncated:true 的结果；JSON 修不好或 schema 不合格返回 null。
+       */
+      const parseTruncated = () => {
+        const repair = repairProfileJson(text);
+        if (repair === null) return null;
+        let repaired;
+        try {
+          repaired = parseProfileText(repair.text);
+        } catch {
+          return null;
         }
-        throw new ProfileError(PROFILE_CODES.notStopped, "模型未正常结束：" + String(finish?.kind ?? "unknown"), "finish");
+        return {
+          ...repaired,
+          usage,
+          model: { provider: route.provider, model: route.model },
+          route,
+          precheck: trace.precheck,
+          truncated: true,
+          diagnostic: {
+            source: "llm",
+            code: null,
+            finish: { kind: finishKind },
+            textLength,
+            repaired: repair.repaired,
+            excerpt,
+          },
+        };
+      };
+
+      if (finishKind !== "stop") {
+        if (failureCode === PROFILE_CODES.signIn || failureCode === PROFILE_CODES.missingCredential) {
+          throw attachFinish(new ProfileError(failureCode, "模型调用未完成：" + finishKind, "finish"));
+        }
+        // 截断（length / max-tokens）或文本明显未收尾 → 先尝试 JSON 修复，不直接失败。
+        const salvageable = isTruncationFinish(finishKind) || isProfileTextUnfinished(text);
+        if (!salvageable || text.trim() === "") {
+          throw truncatedProfileError(finishKind, textLength, excerpt, false);
+        }
+        trace.stage = "parse";
+        const salvaged = parseTruncated();
+        if (salvaged !== null) return salvaged;
+        throw truncatedProfileError(finishKind, textLength, excerpt, false);
       }
-      if (text.trim() === "") throw new ProfileError(PROFILE_CODES.empty, "模型输出为空", "finish");
+
+      // finish.kind=stop 但文本明显未收尾（个别 provider 会先 stop 再截断）：同样抢救一次。
+      if (isProfileTextUnfinished(text)) {
+        trace.stage = "parse";
+        const salvaged = parseTruncated();
+        if (salvaged !== null) return salvaged;
+      }
+
+      if (text.trim() === "") throw attachFinish(new ProfileError(PROFILE_CODES.empty, "模型输出为空", "finish"));
       trace.stage = "parse";
       let parsed;
       try {
         parsed = parseProfileText(text);
       } catch (error) {
-        throw tagStage(error, "parse", trace);
+        throw tagStage(attachFinish(error), "parse", trace);
       }
       trace.stage = "finish";
-      return { ...parsed, usage, model: { provider: route.provider, model: route.model }, route, precheck: trace.precheck };
+      return {
+        ...parsed,
+        usage,
+        model: { provider: route.provider, model: route.model },
+        route,
+        precheck: trace.precheck,
+        truncated: false,
+        diagnostic: null,
+      };
     })();
 
     try {
