@@ -159,6 +159,9 @@ dsh plugin --profile web add link:$PWD
 - **失败降级**：llm 缺失、未登录 / 无模型、超时、非 `stop` 结束、空输出、JSON 解析失败——
   一律返回**本地规则版**（纯统计 3–5 条特征 + 1 条建议，不联网）。响应始终带 `source: "llm" | "local"`
   与稳定 `code`，不向 UI 抛错。
+- **可诊断**：失败响应额外带 `diagnostic.error.{code,message,stage}`（保留底层错误码，message 脱敏且 ≤300 字符）
+  与 `route` / `precheck`；`/health` 的 `diagnostics.aiProfile` 给最近一次结果。
+  排查时可用 `provider=` / `model=` 查询参数试跑（仅 `enabled=true` 生效，不写配置、不写缓存、不需要重启）。
 - **不计入本插件 Token 报表**：这是一次旁路辅助调用，不写入任何会话事件，因此不进本插件的 Token / 费用统计；
   卡片单独显示这次调用的输入 / 输出 Token 与生成时间。
 - **不写入 HTML 报告**：静态导出有意不展示画像（见 `docs/report-parity.md`）——给客户或打印的文件里，
@@ -174,7 +177,8 @@ dsh plugin --profile web add link:$PWD
 | `GET {apiPath}/export.json?...` | 同上，带 `content-disposition` 下载 |
 | `GET {apiPath}/report.html?days=90&theme=dark&anonymize=1&title=...` | 自包含 HTML 报告 |
 | `GET {apiPath}/profile?days=30&tz=...&lang=zh&probe=1` | AI 用户画像：`probe=1` 只查 enabled / 登录状态；否则按需生成；`force=1` 跳过指纹缓存 |
-| `GET {apiPath}/health` | 索引诊断（会话数、检查点命中、冷读、读取失败、耗时） |
+| `GET {apiPath}/profile?...&provider=...&model=...` | **调试入口**：临时覆盖本次调用的路由（仅 enabled 生效、不写配置、不写缓存） |
+| `GET {apiPath}/health` | 索引诊断（会话数、检查点命中、冷读、读取失败、耗时）；`diagnostics.aiProfile` 含最近一次画像的 code / stage / error / route |
 | `GET {apiPath}/balance` | 顶部工具栏 chip 用的余额状态；不触发索引 |
 
 参数：`from`/`to`（YYYY-MM-DD，优先于 `days`）、`days`、`all=1`（最早的活跃日 → 今天）、`tz`（IANA 时区）、`scope`。

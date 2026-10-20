@@ -1,5 +1,35 @@
 # CHANGELOG — dsh-workload-report
 
+## 未发布（2026-10-20）— AI 画像诊断增强：保留真实错误 + 路由可见
+
+### 问题
+
+用户开启 `aiProfile.enabled=true` 后，`GET /profile` 返回 `enabled:true, source:local, code:AI_FAILED, usage 全 0`，
+但通用码 `AI_FAILED` 吞掉了真实原因；宿主默认模型被覆盖为自定义网关（provider 可能不在 `listProviders()` 里），
+从响应无法判断失败发生在路由、预检还是 `prepareCall`。
+
+### 变更
+
+- **失败诊断**：`/profile` 失败响应新增 `diagnostic: { source, code, error: { code, message, stage } }`。
+  `diagnostic.code` 仍是稳定映射码；`diagnostic.error.code` **保留底层原始码**（如 `PROVIDER_NOT_FOUND`），
+  message 脱敏（token / key / secret / bearer 与明文密钥 → `[redacted]`）并压到 **≤300 字符**。
+- **路由可见**：新增 `route: { provider, model, origin }`（`config` / `agentDefaultModel` / `listProviders`，
+  调试覆盖为 `query`）与 `precheck: { providers, models(前 10) }`；listProviders / listModels 失败时给空数组。
+- **失败阶段**：`stage` = `route` / `precheck` / `prepareCall` / `stream` / `finish` / `parse`。
+- **/health**：`diagnostics.aiProfile = { enabled, lastCode, lastStage, lastError, lastAt, route }`，
+  与最近一次 `/profile` 生成同源。
+- **调试入口**：`/profile?provider=&model=` 仅覆盖本次请求，仅 `enabled=true` 生效；不写配置、不需要重启，
+  也不读 / 不写指纹缓存；文档标注为调试入口。
+- **行为不变**：仍然失败即降级本地规则版（3–5 条特征 + 1 条建议）；缓存格式升到 `PROFILE_CACHE_VERSION = 2`
+  （新增诊断字段，旧缓存自动失效重算）。
+- **文档**：`docs/ai-profile.md` 新增「诊断」章节（stage 表 + 三条排查命令）；README 中英同步。
+
+### 测试
+
+- 离线断言 **680 → 731**（连跑 2 次 exit 0）：底层 code 保留、stage=prepareCall、route / precheck、
+  脱敏（无 key / token 字样）与 300 字符截断、provider/model 查询覆盖（且不写缓存）、
+  默认路径仍 3–5 条 + 1 建议、现场场景（默认 provider 不在 listProviders）、`/health.aiProfile` 字段固定。
+
 ## 未发布（2026-10-20）— AI 用户画像：默认关闭 + 白名单 + 本地降级
 
 ### 变更

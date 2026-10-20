@@ -154,6 +154,7 @@ The default model prices are built in and offline; `pricing.overrides`, `pricing
 - **What is sent**: a strict whitelist of aggregate statistics — range, net active time, wait time, conversations, turns, steps, total tokens, cache-hit rate, 24 hourly token buckets, top 5 workspaces by name + share, top 5 models by name + share, weekend share, and night share (22:00–06:00). **Never** conversation content, session titles, cwd, paths, session ids, or event logs. The host asserts the payload key set is exactly the whitelist.
 - **Cache**: SHA-256 (first 16 hex chars) of the stable JSON of that whitelist. The result is cached on disk next to the index (atomic `tmp` → `rename`); an identical fingerprint returns the cache without another model call. `force=1` regenerates.
 - **Failure = local rules**: missing `llm` service, not signed in / no models, timeout, non-`stop` finish, empty output, or unparsable JSON all fall back to a deterministic **local rules** profile (3–5 traits + 1 suggestion, no network). The response always carries `source: "llm" | "local"` and a stable `code`; nothing is thrown to the UI.
+- **Diagnosable**: failures also carry `diagnostic.error.{code,message,stage}` (the underlying error code is preserved; the message is redacted and capped at 300 characters) plus `route` / `precheck`; `/health` exposes `diagnostics.aiProfile` with the latest attempt. For debugging, `provider=` / `model=` query parameters override just that request (only when `enabled=true`; no config write, no cache write, no restart).
 - **Not counted in this report**: the profile call is an auxiliary call outside any session, so it is **not** included in this plugin's token / cost report. The card shows that call's input/output tokens and generation time separately.
 - **Not in the HTML report**: the static export intentionally omits the profile (see `docs/report-parity.md`); an AI judgment about a person does not belong in a file sent to a client or printed.
 
@@ -167,7 +168,8 @@ Full details: [docs/ai-profile.md](./docs/ai-profile.md).
 | `GET {apiPath}/export.json?...` | Same payload with a `content-disposition` header |
 | `GET {apiPath}/report.html?days=90&theme=dark&anonymize=1&title=...` | Self-contained HTML report |
 | `GET {apiPath}/profile?days=30&tz=...&lang=zh&probe=1` | AI user profile: `probe=1` only reports enabled/signed-in; otherwise generates on demand; `force=1` bypasses the fingerprint cache |
-| `GET {apiPath}/health` | Index diagnostics (sessions, checkpoint hits, cold reads, read failures, duration) |
+| `GET {apiPath}/profile?...&provider=...&model=...` | **Debug entry**: override the route for this request only (only when enabled; no config write, no cache write) |
+| `GET {apiPath}/health` | Index diagnostics (sessions, checkpoint hits, cold reads, read failures, duration); `diagnostics.aiProfile` has the latest profile code / stage / error / route |
 | `GET {apiPath}/balance` | Cached balance state for the toolbar chip; never touches the index |
 
 Parameters: `from`/`to` (YYYY-MM-DD, take precedence over `days`), `days`, `all=1` (earliest active day → today), `tz` (IANA time zone), `scope`.

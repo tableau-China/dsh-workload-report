@@ -2,6 +2,32 @@
 
 日期用 `YYYY-MM-DD`；只记录影响后续决策的事实。
 
+## 2026-10-20 AI 画像诊断增强（保留真实错误 + 路由可见）
+
+### 问题
+
+现场：`aiProfile.enabled=true` 后 `/profile` 返回 `code:AI_FAILED`、usage 全 0、model:null，
+但看不出失败阶段；宿主 `agentDefaultModel` 被用户覆盖为 `magpie / workbuddy-ai/default-model`（自定义网关），
+而 `llm.listProviders()` 里可能没有 `magpie`。
+
+### 实现
+
+- `src/profile-service.js`：调用链按 `route → precheck → prepareCall → stream → finish → parse` 打 `stage`；
+  `trace` 记录 `route / precheck`，异常经 `tagStage()` 带回；失败响应带
+  `diagnostic.error.{code,message,stage}`（底层 code 保留）与 `route / precheck`。
+- 脱敏 `sanitizeDiagnosticMessage()`：敏感词 / 明文密钥 → `[redacted]`，≤300 字符；同时用于 `/health.lastError`。
+- `/profile?provider=&model=` 调试覆盖：仅 `enabled=true` 生效，不写配置、不读写缓存；`origin=query`。
+- `/health.diagnostics.aiProfile`：`{ enabled, lastCode, lastStage, lastError, lastAt, route }`。
+- 默认行为不变：失败仍 local（3–5 条 + 1 条建议）；`PROFILE_CACHE_VERSION` 1 → 2。
+- 文档：`docs/ai-profile.md` 诊断章节、README 中英、CHANGELOG。
+
+### 验证
+
+- `node build.mjs && node test/verify.mjs` 连跑 2 次：**731 项断言，exit 0**（680 → 731）。
+- 覆盖：底层 `PROVIDER_NOT_FOUND` 保留、`stage=prepareCall`、脱敏 / 截断、provider/model 覆盖传到
+  `prepareCall` 且不写缓存、现场场景（默认 provider 不在 listProviders）、`/health.aiProfile` 字段固定。
+- 真实已登录 llm 环境**仍未实测**（隔离工作区只有 mock）；本次只保证诊断字段与降级链路。
+
 ## 2026-10-20 AI 用户画像（可选 / 默认关闭）
 
 ### 目标
