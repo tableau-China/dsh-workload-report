@@ -1,13 +1,11 @@
 /**
  * 「主要会话」页的区块结构（单一事实源）。
  *
- * 会话表在左、AI 画像卡在右：两者是同一个 grid 行的兄弟节点，
- * 会话表约 2fr、画像卡约 1fr，画像卡顶部对齐；窄屏（<= 1080px）回落为上下堆叠。
- *
- * 不要把画像卡塞进会话表内部，也不要放回「按日期」页或插到会话表之前。
+ * 「主要会话」页只包含会话表；「AI 用户画像」是独立的顶层页签（导航右侧），
+ * 不再与本页共用两列布局（0.7.2 起）。
  */
 
-export const SESSION_PAGE_SECTIONS = Object.freeze(["sessions", "profile"]);
+export const SESSION_PAGE_SECTIONS = Object.freeze(["sessions"]);
 
 /** 两列布局参数：组件（index.jsx / profile-card.jsx）、样式与测试共用。 */
 export const SESSION_LAYOUT = Object.freeze({

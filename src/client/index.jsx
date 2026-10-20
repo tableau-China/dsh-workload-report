@@ -1540,10 +1540,9 @@ function BySessionView({ data, t, lang = "zh", days = 0, scope = "all", allTime 
       return previous.dir === "desc" ? { key, dir: "asc" } : null;
     });
 
-  // 两列布局由 SESSION_PAGE_SECTIONS 决定（与 verify 的 DOM 顺序断言同源）：
-  // 会话表在左、画像卡在右，是同一个 grid 行的兄弟；窄屏由样式回落为上下堆叠。
+  // 「主要会话」页只放会话表；「AI 用户画像」是独立的顶层页签（导航右侧）。
   return (
-    <div className="wl-session-layout" data-layout="sessions-profile">
+    <div className="wl-session-page" data-page="sessions">
       {SESSION_PAGE_SECTIONS.map((section) => {
         if (section === "sessions") {
           return (
@@ -1594,19 +1593,17 @@ function BySessionView({ data, t, lang = "zh", days = 0, scope = "all", allTime 
             </div>
           );
         }
-        // 画像卡直接作为 grid 的第二列子节点：与会话表同级，不额外包一层容器。
-        return (
-          <ProfileCard
-            key="profile"
-            t={t}
-            lang={lang}
-            days={days}
-            scope={scope}
-            allTime={allTime}
-            tz={localTimeZone()}
-          />
-        );
+        return null;
       })}
+    </div>
+  );
+}
+
+/** 「AI 用户画像」页：导航右对齐的独立页签，不与「主要会话」共用布局。 */
+function ByProfileView({ t, lang, days, scope, allTime }) {
+  return (
+    <div className="wl-profile-page" data-page="ai-profile">
+      <ProfileCard t={t} lang={lang} days={days} scope={scope} allTime={allTime} tz={localTimeZone()} />
     </div>
   );
 }
@@ -1708,12 +1705,24 @@ function Overlay({ control }) {
                     {t(`tab.${key}`)}
                   </button>
                 ))}
+                <button
+                  type="button"
+                  className="wl-tab"
+                  data-active={tab === "aiProfile"}
+                  data-align="end"
+                  onClick={() => setTab("aiProfile")}
+                >
+                  {t("tab.aiProfile")}
+                </button>
               </div>
               {tab === "byDay" ? <ByDayView data={state.data} t={t} /> : null}
               {tab === "model" ? <ModelSection data={state.data} t={t} /> : null}
               {tab === "byWorkspace" ? <ByWorkspaceView data={state.data} t={t} /> : null}
               {tab === "bySession" ? (
                 <BySessionView data={state.data} t={t} lang={lang} days={days} scope={scope} allTime={allTime} />
+              ) : null}
+              {tab === "aiProfile" ? (
+                <ByProfileView t={t} lang={lang} days={days} scope={scope} allTime={allTime} />
               ) : null}
               <p className="wl-note">
                 <strong>{t("note.title")}</strong>：{t("note.body")}

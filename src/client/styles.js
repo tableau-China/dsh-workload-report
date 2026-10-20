@@ -97,6 +97,7 @@ export const STYLES = `
 .wl-kpi-steps { font-size: 18px; }
 .wl-kpi-sub { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); margin-top: 6px; line-height: 1.45; }
 .wl-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--dsw-alias-border-l2, #e5e7eb); margin-bottom: 14px; }
+.wl-tab[data-align="end"] { margin-left: auto; }
 .wl-tab {
   border: none; background: transparent; font: inherit; font-size: 13px; cursor: pointer; padding: 8px 14px;
   color: var(--dsw-alias-label-tertiary, #6b7280); border-bottom: 2px solid transparent; margin-bottom: -1px;

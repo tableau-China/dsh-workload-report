@@ -1530,52 +1530,29 @@ console.log("\n—— AI 用户画像（payload 白名单 / 指纹 / 本地规�
     "提示面板 / 窗口小字：zh/en 新键齐全",
   );
   ok(!localesSource.includes('"profile.intro"') && !cardSource.includes("profile.intro"), "旧 intro 文案已随提示面板升级删除（无死键）");
-  ok(clientIndexSource.includes('import { ProfileCard }') && clientIndexSource.includes("<ProfileCard"), "ProfileCard 已接入主要会话页（画像卡）");
-  // 布局：会话表在左、画像卡在右，是同一个 grid 行的兄弟；窄屏由样式回落为上下堆叠。
-  eq(SESSION_PAGE_SECTIONS.join(">"), "sessions>profile", "布局：主要会话页区块顺序 = 会话表 → 画像卡");
+  ok(clientIndexSource.includes('import { ProfileCard }') && clientIndexSource.includes("<ProfileCard"), "ProfileCard 已接入（作为独立页签）");
+  // 布局：AI 用户画像 = 与「按日期/模型用量/按工作区/主要会话」并列的顶层页签，且在导航右侧。
+  eq(SESSION_PAGE_SECTIONS.join(">"), "sessions", "布局：主要会话页只包含会话表（画像不再并列）");
   const sessionBlockSource = clientIndexSource.slice(
     clientIndexSource.indexOf("function BySessionView"),
+    clientIndexSource.indexOf("function ByProfileView"),
+  );
+  ok(!sessionBlockSource.includes("<ProfileCard"), "布局：会话页不再渲染画像卡");
+  ok(sessionBlockSource.includes('data-page="sessions"'), "布局：会话页使用独立容器（非两列 grid）");
+  ok(!clientIndexSource.includes("wl-session-layout"), "布局：两列布局已移除");
+  const profileViewSource = clientIndexSource.slice(
+    clientIndexSource.indexOf("function ByProfileView"),
     clientIndexSource.indexOf("function Overlay"),
   );
-  const layoutAt = sessionBlockSource.indexOf('className="wl-session-layout"');
-  const layoutData = sessionBlockSource.indexOf('data-layout="sessions-profile"');
-  const sessionsAt = sessionBlockSource.indexOf('data-section="sessions"');
-  const profileCardAt = sessionBlockSource.indexOf("<ProfileCard");
+  ok(profileViewSource.includes("<ProfileCard"), "布局：画像卡渲染在独立页签视图里");
   ok(
-    layoutAt > 0 && layoutData > layoutAt && sessionsAt > layoutData && profileCardAt > sessionsAt,
-    "布局：会话表与画像卡是同一 grid 行的兄弟（画像卡直接作为第二列子节点）",
+    clientIndexSource.includes('data-align="end"') && clientIndexSource.includes('tab.aiProfile'),
+    "导航：AI 用户画像页签右对齐（data-align=end）",
   );
-  ok(
-    sessionBlockSource.slice(sessionsAt, profileCardAt).includes("</table>") && !sessionBlockSource.includes("wl-session-profile"),
-    "布局：画像卡不在会话表内部（表结束后才进入右列；不额外包容器）",
-  );
-  // 几何：2fr / 1fr，画像卡左边界 > 会话表右边界；窄屏回落堆叠（同一左边界、画像在下）。
-  const wideGeometry = sessionLayoutGeometry(1200, { sessionsHeight: 420 });
-  ok(!wideGeometry.stacked, "布局几何：1200px 为左右两列");
-  ok(wideGeometry.profile.left > wideGeometry.sessions.right, "布局几何：画像卡左边界 > 会话表右边界");
-  ok(Math.abs(wideGeometry.sessions.width / wideGeometry.profile.width - 2) < 0.01, "布局几何：左右宽度比约 2:1");
-  ok(wideGeometry.profile.top === wideGeometry.sessions.top, "布局几何：画像卡与会话表顶部对齐");
-  const narrowGeometry = sessionLayoutGeometry(1080, { sessionsHeight: 420 });
-  ok(narrowGeometry.stacked, "布局几何：<=1080px 回落为上下堆叠");
-  ok(
-    narrowGeometry.profile.left === narrowGeometry.sessions.left && narrowGeometry.profile.top > narrowGeometry.sessions.bottom,
-    "布局几何：窄屏画像卡位于会话表正下方（同一左边界）",
-  );
-  eq(SESSION_LAYOUT.stackBreakpoint, 1080, "布局：窄屏断点固定 1080px");
-  ok(
-    stylesSource.includes("grid-template-columns: minmax(0, ${SESSION_LAYOUT.sessionsFr}fr) minmax(${SESSION_LAYOUT.profileMinWidth}px, ${SESSION_LAYOUT.profileFr}fr)") &&
-      stylesSource.includes(".wl-session-layout:has(> .wl-profile-card)"),
-    "布局样式：只有画像卡渲染时才两列，比例取自 SESSION_LAYOUT（2fr / 1fr）",
-  );
-  const narrowCss = stylesSource.slice(stylesSource.indexOf("@media (max-width: ${SESSION_LAYOUT.stackBreakpoint}px)"));
-  ok(
-    narrowCss.includes(".wl-session-layout") && narrowCss.includes("grid-template-columns: minmax(0, 1fr)"),
-    "布局样式：窄屏断点内回落为单列（会话在上、画像在下）",
-  );
-  ok(
-    stylesSource.includes(".wl-session-layout > .wl-profile-card { min-width: 0; align-self: start; }"),
-    "布局样式：画像卡右列顶部对齐、可收缩；关闭时 ProfileCard 返回 null → 单列",
-  );
+  ok(clientIndexSource.includes('tab === "aiProfile"'), "导航：页签切换到画像视图");
+  ok(stylesSource.includes('.wl-tab[data-align="end"] { margin-left: auto; }'), "导航样式：右对齐用 margin-left:auto");
+  eq(translate("zh", "tab.aiProfile"), "AI 用户画像", "页签文案：中文为「AI 用户画像」");
+  eq(translate("en", "tab.aiProfile"), "AI profile", "页签文案：英文为 AI profile");
   eq(translate("zh", "profile.title"), "AI 用户画像", "标题：中文为「AI 用户画像」");
   eq(translate("en", "profile.title"), "AI user profile", "标题：英文同步为 AI user profile");
   ok(localesSource.includes('"profile.title": "AI 用户画像"') && localesSource.includes('"profile.title": "AI user profile"'), "标题：zh/en 同步替换，不保留旧键");
