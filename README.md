@@ -1,7 +1,7 @@
 # TimeMirror for DSH · Workload Report
 
 > **See your effort and your token spend on the same picture** — by **date** and by **workspace**: a calendar heatmap, time-of-day analysis, workspace share, model usage, and a **one-click self-contained HTML report** you can send straight to a client.
-> A DeepSeek Harness (DSH) plugin. Current version: **0.6.6**.
+> A DeepSeek Harness (DSH) plugin. Current version: **0.7.0**.
 
 > TimeMirror is a macOS time-distribution app I published on the Mac App Store; this plugin brings the same idea to AI-assisted work. The package/repo keeps the descriptive name `dsh-workload-report` so it can be found in the DSH ecosystem; the brand stays TimeMirror.
 
@@ -43,7 +43,7 @@ Uninstall: `dsh plugin --profile web remove dsh-workload-report`.
 - **Two opt-in exceptions** are the optional balance chip (`balance.enabled: true`, off by default), where the **host** calls the official `deepseekAccount` service, and the optional **AI user profile** (`aiProfile.enabled: true`, off by default), which calls the configured model provider with aggregate statistics only. See [Privacy](#privacy).
 - **No invented numbers.** Unreadable legacy sessions are excluded and counted in the UI; models without an official price show **—** instead of a made-up cost.
 
-## Features (0.6.6)
+## Features (0.7.0)
 
 - **Eight KPIs**: cumulative active time (**net active**, waiting shown on a second line), total tokens (full integer you can verify), model cost, active days, conversations, turns / steps, cache-read share, and the most active model.
 - **Daily usage trend**: calendar heatmap (Mon–Sun × Year-Week, colour and bar height = active time) or a bar chart; weekends use a different colour, the peak bar is always labelled, and every calendar cell, bar, weekday total and axis label has its own tooltip.
@@ -139,7 +139,7 @@ Override any of these in the profile's `cordis.patch.yml` (all optional):
       enabled: false               # true = on-demand model call with aggregate stats only
       provider: ""                 # empty = host agentDefaultModel selection
       model: ""                    # use together with provider
-      maxTokens: 900
+      maxTokens: 1600              # 4–6 dimensions + 2–3 advice items
       timeoutMs: 60000             # AbortSignal.timeout(timeoutMs)
       cacheTtlMs: 86400000         # fingerprint cache TTL (ms); 0 = no disk cache
 ```
@@ -151,9 +151,11 @@ The default model prices are built in and offline; `pricing.overrides`, `pricing
 **Off by default and generated on demand.** Enable it only if you want a short “how you work” card next to your stats:
 
 - **Trigger**: opening the panel only runs a `probe` (no model call). The model is called when you click **Generate profile / Regenerate**; the button is disabled while generating.
-- **What is sent**: a strict whitelist of aggregate statistics — range, net active time, wait time, conversations, turns, steps, total tokens, cache-hit rate, 24 hourly token buckets, top 5 workspaces by name + share, top 5 models by name + share, weekend share, and night share (22:00–06:00). **Never** conversation content, session titles, cwd, paths, session ids, or event logs. The host asserts the payload key set is exactly the whitelist.
-- **Cache**: SHA-256 (first 16 hex chars) of the stable JSON of that whitelist. The result is cached on disk next to the index (atomic `tmp` → `rename`); an identical fingerprint returns the cache without another model call. `force=1` regenerates.
-- **Failure = local rules**: missing `llm` service, not signed in / no models, timeout, non-`stop` finish, empty output, or unparsable JSON all fall back to a deterministic **local rules** profile (3–5 traits + 1 suggestion, no network). The response always carries `source: "llm" | "local"` and a stable `code`; nothing is thrown to the UI.
+- **What is sent**: a strict whitelist of 56 aggregate fields — range, net active / wait time, sessions and turns, the four token components and their shares, cache-hit rate, average session / turns / steps, four session-duration buckets, 24 hourly token buckets, five time bands (active + token shares), top 5 workspaces, top 5 models, workspace count / switches, model count / multi-model, weekend / night share, and a last-7-days vs previous-7-days trend. **Never** conversation content, session titles, cwd, paths, session ids, or event logs. The host asserts the key set is exactly the whitelist and recursively rejects private keys and path-like strings.
+- **Prompt**: senior productivity analyst; every insight **must cite a number**, and generic advice is forbidden. The reply must be strict JSON (`headline / dimensions / advice / risk`), `temperature: 0.35`, `maxTokens: 1600`.
+- **Parsing**: clean JSON → code fence → lenient first-`{`-to-last-`}` extraction → only then fall back. On failure the first 300 characters of the raw output go into `diagnostic.excerpt`.
+- **Cache**: SHA-256 (first 16 hex chars) of the stable JSON of that whitelist (new fields participate automatically). The result is cached on disk next to the index (atomic `tmp` → `rename`, `PROFILE_CACHE_VERSION = 3`); an identical fingerprint returns the cache without another model call. `force=1` regenerates.
+- **Failure = local rules**: missing `llm` service, not signed in / no models, timeout, non-`stop` finish, empty output, or unparsable JSON all fall back to a deterministic **local rules** profile with the same shape (headline + 4–6 dimensions + 2–3 advice + risk, every insight still numeric, no network). The response always carries `source: "llm" | "local"` and a stable `code`; nothing is thrown to the UI.
 - **Diagnosable**: failures also carry `diagnostic.error.{code,message,stage}` (the underlying error code is preserved; the message is redacted and capped at 300 characters) plus `route` / `precheck`; `/health` exposes `diagnostics.aiProfile` with the latest attempt. For debugging, `provider=` / `model=` query parameters override just that request (only when `enabled=true`; no config write, no cache write, no restart).
 - **Not counted in this report**: the profile call is an auxiliary call outside any session, so it is **not** included in this plugin's token / cost report. The card shows that call's input/output tokens and generation time separately.
 - **Not in the HTML report**: the static export intentionally omits the profile (see `docs/report-parity.md`); an AI judgment about a person does not belong in a file sent to a client or printed.

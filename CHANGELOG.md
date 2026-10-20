@@ -1,5 +1,44 @@
 # CHANGELOG — dsh-workload-report
 
+## v0.7.0（2026-10-20）— AI 画像质量提升：数字举证 + 结构化渲染
+
+### 问题
+
+用户反馈画像「比较简单」：只有 5 条泛泛特征 + 1 条建议，缺乏数据支撑与差异化。根因是
+① 发给模型的聚合字段只有 14 个，且没有时段 / 会话结构 / 趋势对比；② prompt 没要求结构化输出与数字举证；
+③ `maxTokens` 只有 900，`temperature` 0.4。
+
+### 变更
+
+- **白名单 14 → 56 个键**：新增时段结构（5 段活跃 + Token 占比）、会话结构（会话数、平均会话时长、
+  <15m / 15–60m / 1–3h / >3h 四桶、平均轮次 / 步骤）、Token 四分量与占比、平均每轮输出、平均会话时长、
+  工作区数 / Top1 占比 / 切换次数、waitShare、近 7 天 vs 前 7 天环比（不足 14 天为 `null`）、
+  模型数 / Top1 占比 / 多模型标记。全部从 `present(aggregate(...))` 快照派生，不新增数据源。
+- **隐私断言加严**：键集合严格相等之外，递归拒绝 title / cwd / path / sessionId / prompt / content /
+  message / text 等私有键、路径分隔符、换行与超长字符串；`byWorkspace.name` / `byModel.name` 只留显示名。
+- **Prompt 重写**：资深生产力分析师；每条 insight **必须引用数字**；禁止空泛建议；只输出严格 JSON
+  （`headline / dimensions(4–6) / advice(2–3) / risk`），并附「可用键」与单位说明。
+  `maxTokens` 900 → **1600**，`temperature` 0.4 → **0.35**，仍不指定 `reasoningEffort`。
+- **解析四路径**：干净 JSON → 代码围栏 / 三引号 → 首个 `{` 到最后一个 `}` 宽松提取 → 仍失败才降级
+  `AI_PARSE_FAILED`，原始输出前 300 字放进 `diagnostic.excerpt`。维度不足 / 结论缺数字 / 建议不足都视为失败。
+- **本地规则同构**：本地版也输出 headline + 4–6 维度 + 2–3 建议 + risk，每条 insight 带数字，
+  失败降级时卡片观感与 AI 版一致。
+- **前端卡片**：顶部大字 headline；维度列表（标题 + 含数字结论 + 灰色证据小字）；2–3 条建议（带 why）；
+  有 risk 时浅色警示条；保留来源徽标 / usage / 生成时间 / 重新生成按钮。新增 `src/profile-view.js`
+  做同构归一化与客户端长度兜底。
+- **成本与缓存**：响应新增 `costHint: { inputTokens, outputTokens }`（不猜价格）；新增字段自动参与指纹；
+  `PROFILE_CACHE_VERSION` 2 → **3**（旧缓存自动失效重算）。
+- **版本与文档**：`package.json` 0.6.6 → **0.7.0**；`docs/ai-profile.md` 重写白名单 / prompt / 解析 /
+  渲染章节；README 中英同步；截图 `.tmp/shots/profile-ai-light.png` / `profile-ai-dark.png` /
+  `profile-local-light.png`。
+
+### 测试
+
+- 离线断言 **906 项**（连跑 2 次 exit 0）：白名单 56 键严格相等、新增字段守恒与趋势 null 语义、
+  隐私键 / 路径不外发、本地画像同构与长度上限、解析四路径 + 三种拒绝、prompt 约束、前端渲染结构与样式、
+  指纹缓存、`costHint`、五种失败降级、诊断脱敏、`/health.aiProfile` 字段固定。
+- 运行实例当前仍是旧版（`traits`），未重启 DSH；本轮生成路径以 verify 的 llm 桩为准（usage 12/34）。
+
 ## 未发布（2026-10-20）— AI 画像诊断增强：保留真实错误 + 路由可见
 
 ### 问题

@@ -2,6 +2,37 @@
 
 日期用 `YYYY-MM-DD`；只记录影响后续决策的事实。
 
+## 2026-10-20 AI 画像质量提升（v0.7.0，数字举证 + 结构化渲染）
+
+### 问题
+
+画像已能真实生成（usage 约 479/73），但用户反馈「比较简单」：5 条泛泛特征 + 1 条建议。
+根因：① 白名单只有 14 个字段，没有时段 / 会话结构 / 趋势；② prompt 没要求结构化输出与数字举证；
+③ `maxTokens` 900、`temperature` 0.4。
+
+### 实现
+
+- `src/ai-profile.js`：白名单 14 → **56 键**（时段 5 段活跃 / Token 占比、会话时长四桶、
+  Token 四分量、均值、工作区 / 模型结构、waitShare、近 7 天 vs 前 7 天趋势）。
+  全部从 `present(aggregate(...))` 的 snapshot / bySession 派生，不新增数据源。
+  断言递归拒绝私有键 / 路径 / 换行 / 超长字符串；趋势环比允许负数与 `null`。
+- 本地规则画像升级为同构结构：`headline + dimensions(4–6) + advice(2–3) + risk`，
+  每条 insight 仍带数字；无时段数据时回退到高峰小时，不写「深夜 0%」。
+- `src/profile-service.js`：prompt 重写（资深分析师 / 必须引用数字 / 禁止空泛建议 / 严格 JSON schema /
+  可用键 + 单位）；`maxTokens 1600`、`temperature 0.35`、仍不指定 `reasoningEffort`；
+  解析四路径；`diagnostic.excerpt`（解析失败原始输出前 300 字）；`costHint`；缓存版本 2 → 3。
+- 前端：新增 `src/profile-view.js`（AI / 本地 / 旧 traits 同构归一化 + 长度兜底）；
+  `ProfileCard` 改为 headline 大字 + 维度（结论 / 灰色证据）+ 风险条 + 建议（why），保留徽标 / usage / 重生成。
+
+### 验证
+
+- `node build.mjs && node test/verify.mjs` 连跑 2 次：**906 项断言，exit 0**（732 → 906）。
+- 截图：`.tmp/shots/profile-ai-light.png`、`profile-ai-dark.png`、`profile-local-light.png`
+  （真实 STYLES + profileSections/localProfile 同构 DOM；headline 1 / 维度 5 / 证据 5 / 建议 2 / risk 1）。
+- 运行中的 DSH（127.0.0.1:3080）能 probe 到 magpie + workbuddy-ai/deepseek-v4.1-flash，
+  但它加载的是旧版代码（响应仍是 `traits`，缓存 v2），**未重启实例**；本轮生成链路以 verify 的 llm 桩为准
+  （usage 12/34，mock），真实模型的 headline / dimensions 需重载插件后再采一次。
+
 ## 2026-10-20 AI 画像诊断增强（保留真实错误 + 路由可见）
 
 ### 问题
