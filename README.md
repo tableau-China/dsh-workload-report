@@ -116,6 +116,11 @@ Override any of these in the profile's `cordis.patch.yml` (all optional):
   config:
     defaultDays: 7                 # initial range: 7 | 30 | 90 | all
     refreshMs: 30000               # index refresh interval (ms)
+    snapshotCacheMs: 15000         # snapshot cache per query (invalidated by events/index/fold)
+    modelFoldWarmupMs: 2000        # warm-up fold after the index is ready (never from opening the panel)
+    modelFoldIntervalMs: 720000    # periodic fold maintenance (12 min)
+    modelFoldIdleMs: 600000        # only refold a live session after 10 min without events
+    modelRetryMs: 1800000          # retry failed rows after 30 min (never changes the status line)
     defaultScope: all              # all | main | subagent
     modelUsage: auto               # auto | off (off = do not read event logs for model/hourly data)
     excludeWait: true              # false = keep 0.6.0 behaviour (no wait detection)
@@ -175,7 +180,7 @@ All statistics stay on your machine. The plugin registers **read-only** HTTP rou
 | --- | --- |
 | `pnpm add -D esbuild puppeteer-core` | Install build and browser-test dependencies (or point `ESBUILD_PATH` / `WL_PUPPETEER_DIR` at existing installs) |
 | `node build.mjs` | Bundle `src/client/` into `lib/client.js` (ModuleLoader factory format) with esbuild |
-| `node test/verify.mjs` | **566 offline assertions**: aggregation semantics, time zones, turn-based hour bucketing and conservation, hourly tokens by message time, human-message density, wait exclusion (all three rules + long-task exemption + `excludeWait:false` regression), index/read fallbacks, report structure parity, i18n key alignment, and balance states |
+| `node test/verify.mjs` | **595 offline assertions**: aggregation semantics, time zones, turn-based hour bucketing and conservation, hourly tokens by message time, human-message density, wait exclusion (all three rules + long-task exemption + `excludeWait:false` regression), index/read fallbacks, report structure parity, i18n key alignment, and balance states |
 | `./test/e2e-boot.sh 3299` | Boot an **isolated instance** (own DSH_HOME and port) without touching your running GUI |
 | `node test/e2e-ui.mjs` | Real-browser E2E: calendar/bar switching, geometry, donuts, report export, time-of-day card |
 

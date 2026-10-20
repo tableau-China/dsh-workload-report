@@ -116,6 +116,11 @@ dsh plugin --profile web add link:$PWD
   config:
     defaultDays: 7                 # 初始区间：7 | 30 | 90 | all
     refreshMs: 30000               # 索引刷新间隔（毫秒）
+    snapshotCacheMs: 15000         # 同参数快照缓存（事件/索引/折叠完成立即失效）
+    modelFoldWarmupMs: 2000        # 索引就绪后预热折叠；打开面板不触发
+    modelFoldIntervalMs: 720000    # 例行折叠维护（12 分钟）
+    modelFoldIdleMs: 600000        # 活会话空闲 10 分钟才重折
+    modelRetryMs: 1800000          # 失败行 30 分钟后低频重试（不改状态行）
     defaultScope: all              # all | main | subagent
     modelUsage: auto               # auto | off（off = 不读事件日志，不做模型/小时维度）
     excludeWait: true              # false = 回到 0.6.0 行为（不判定等待）
@@ -175,7 +180,7 @@ dsh plugin --profile web add link:$PWD
 | --- | --- |
 | `pnpm add -D esbuild puppeteer-core` | 安装构建与浏览器测试依赖（也可用 `ESBUILD_PATH` / `WL_PUPPETEER_DIR` 指向已有安装） |
 | `node build.mjs` | 用 esbuild 把 `src/client/` 打成 `lib/client.js`（ModuleLoader 工厂格式） |
-| `node test/verify.mjs` | **566 项离线断言**：聚合口径、时区、轮次落桶与守恒、按消息时间的小时 Token、人类消息密度、等待剔除（三层判定 + 长任务豁免 + `excludeWait:false` 回归）、索引 / 冷读兜底、报告结构对齐、i18n 逐键对齐、余额状态 |
+| `node test/verify.mjs` | **595 项离线断言**：聚合口径、时区、轮次落桶与守恒、按消息时间的小时 Token、人类消息密度、等待剔除（三层判定 + 长任务豁免 + `excludeWait:false` 回归）、索引 / 冷读兜底、报告结构对齐、i18n 逐键对齐、余额状态 |
 | `./test/e2e-boot.sh 3299` | 起一个**隔离实例**（独立 DSH_HOME + 端口），不影响正在用的 GUI |
 | `node test/e2e-ui.mjs` | 真实浏览器 E2E：日历 / 柱状切换、几何校验、环形图、报告导出、时刻卡 |
 

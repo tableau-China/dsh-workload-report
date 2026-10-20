@@ -1,5 +1,26 @@
 # CHANGELOG — dsh-workload-report
 
+## 未发布（2026-10-20）— 打开性能：零折叠 + 三态状态 + 耗时指标
+
+### 变更
+
+- **打开面板不再触发模型折叠**：`snapshot()` / `sync()` 都不调用 `scheduleModelFold()`；改由索引就绪预热、
+  12 分钟例行维护、60 秒空闲/转冷检查驱动。打开 5 次面板读日志次数：159 → 0。
+- **折叠 phase 三态**：`first-fold`（本轮含从未折过的会话）显示「正在计算中……」；
+  `background`（已有数据的重折/重试）只显示灰点「后台更新中」；`idle` 且 N>0 显示「Token 未计入 N 个会话」。
+  失败行 `failedRows` 永不参与状态判断，重试降到 30 分钟一次。
+- **活会话节流**：距上次事件 ≥ 10 分钟才按空闲重折，事件增量仍以 50 为阈值。
+- **缓存**：快照缓存 TTL 5s → 15s（同参数同 query），活会话事件 / 索引刷新 / 折叠完成立即失效；
+  客户端 SWR 保留，首屏先渲染上次结果。
+- **指标**：`/health` 与 `/snapshot.diagnostics` 新增 `snapshotMs`、`snapshotCache`（命中/未命中/命中率/TTL）、
+  `foldRoundMs`、`foldSessionsRead`、`foldRounds` 等；新增 `test/bench-open.mjs`（`pnpm bench:open`）。
+- **聚合性能**：`Intl.DateTimeFormat` 按时区缓存，500 会话冷开 449 → 25 ms；热开 2.86 → 1.12 ms。
+
+### 测试
+
+- 离线断言 **567 → 595**（连跑 2 次 exit 0）：打开零折叠、缓存命中率/TTL、折叠三态、失败重试窗口、
+  指标字段、background 样式；E2E 新增三态 DOM 断言与截图。
+
 ## v0.6.6（2026-10-17）— 报告对齐看板 + report-parity 机制 + 文档/截图更新
 
 ### 变更

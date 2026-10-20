@@ -68,10 +68,11 @@
 - 图例项：`.wl-legend-item` + `<i>` 色块；只解释颜色，不写「（点越大越多）」这类解释。
 - 需要右侧状态时：`.wl-legend-group` 放左侧图例项，`.wl-status` 放右侧（`margin-left: auto`），
   容器加 `.wl-hour-legend`（`justify-content: space-between`）。
-- 时刻图的状态三态由 `hourTokensNote` 决定：
-  `modelFold.running === true` → 「正在计算中……」；
-  空闲且 `hourTokensSource.missing > 0` → 「Token 未计入 N 个会话」；
-  空闲且 N=0 → 返回 `null`，整条不渲染。
+- 时刻图的状态三态由 `hourTokensNote` 决定（判据是宿主 `modelFold.phase`）：
+  `first-fold`（本轮含从未折过的会话）→ 「正在计算中……」；
+  `background`（已有数据的后台重折/重试）→ 「后台更新中」灰点小字，不打扰；
+  `idle` 且 `hourTokensSource.missing > 0` → 「Token 未计入 N 个会话」；`idle` 且 N=0 → 返回 `null`。
+  `failedRows` 只计入「未计入」提示，**绝不**把状态变成计算中。
 
 ## 5. 状态提示与 hint
 

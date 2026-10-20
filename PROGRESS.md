@@ -2,6 +2,45 @@
 
 日期用 `YYYY-MM-DD`；只记录影响后续决策的事实。
 
+## 2026-10-20 看板打开性能：打开零折叠 + 折叠三态 + 耗时指标
+
+### 问题
+
+用户实测：每次打开看板，「时刻分析」状态行都停在「正在计算中……」，感觉一直在算。
+根因：`snapshot()` 每次都调用 `scheduleModelFold()`，打开面板会排队甚至启动 `readSession()` 读事件日志；
+sync 末尾也会触发折叠（打开面板触发的重扫同样会读日志）。
+
+### 量化（隔离实例，500 个会话；`node test/bench-open.mjs`）
+
+| 场景 | 优化前 | 优化后 | 说明 |
+| --- | --- | --- | --- |
+| 冷缓存首开 | **448.9 ms** | **25.3 ms** | 聚合首次构建；Intl formatter 按时区缓存 |
+| 热缓存再开 | 2.86 ms | 1.12 ms | 同参数快照缓存 TTL 5s → 15s；命中率 5/6 = 83.3% |
+| 回填中打开（5 次均值） | 63.5 ms | 3.2 ms | 折叠不再由打开触发；首开 313 → 11.6 ms |
+| 打开 5 次触发的读日志次数 | **159 次**（新增 1 会话，refreshMs=0） | **0 次** | 断言锁死 |
+
+真实隔离实例（60 个真实会话副本）：冷开 78.5 → **13 ms**，热开 5.0 → **2–3 ms**；
+首次预热折叠仍会读 60 份日志（本机 15.3s），但由定时器发起，打开面板不排队。
+
+### 实现
+
+- `index.js`：`snapshot()` 删除 `scheduleModelFold()`；sync 末尾不再触发折叠。
+  触发源收敛到 `apply()` 的定时器：索引就绪后预热一次、12 分钟例行维护、60 秒空闲/转冷检查；
+  活会话重折需「距上次事件 ≥ 10 分钟」或「事件增量 > 50」。
+- 折叠三态：`modelFold.phase = first-fold | background | idle`；`failedRows` 不参与 phase。
+- 指标：`/health` 与 `/snapshot.diagnostics` 暴露 `snapshotMs`、`snapshotCache.{hits,misses,hitRate,ttlMs}`、
+  `foldRoundMs`、`foldSessionsRead`、`foldRounds`、`foldScheduled/foldWarmupAt`。
+- 缓存：`snapshotCacheMs` 5000 → 15000；活会话事件 / 索引刷新 / 折叠完成立即失效。
+- 失败重试：`modelRetryMs` 15 → 30 分钟；失败行只计入「Token 未计入」提示。
+- 聚合：`dateKey / hourOf / zoneOffsetMinutes` 按时区缓存 `Intl.DateTimeFormat`（冷开的主要成本）。
+- 前端：`hourTokensNote` 按 phase 渲染；background 为灰点小字；只在后台真在跑时 5s 轮询。
+
+### 验证
+
+- `node build.mjs && node test/verify.mjs` 连跑 2 次：**595 项断言，exit 0**（567 → 595，新增 28 项）。
+- 三态 DOM：E2E 拦截 snapshot，断言 `data-state=first-fold / background / idle` 与文案，截图
+  `test/.artifacts/07-status-first-fold.png` / `08-status-background.png` / `09-status-idle.png`。
+
 ## 2026-10-17 发布 0.6.6：报告对齐 + README 重写 + 截图重拍
 
 ### 背景

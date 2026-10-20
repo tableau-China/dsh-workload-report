@@ -42,11 +42,15 @@ DSH 里**模型与 token 都在事件日志**里，官方有读取接口，不�
 **采集策略**
 
 1. **首次回填**：`readSession(id)` 读整份事件日志 → 只折 `assistant/message` + `request/header`（忽略 `tool/result` 正文，体积最大头）
-2. **重折判定（0.4.1 起）**：行上记 `modelFoldSeq`（折叠时的事件水位）。**pending 只算"从未折过"的行**（界面「回填中 x/y」只看它）；
-   已折过的，只有 `asOfSeq - modelFoldSeq > modelRefoldDelta`（默认 50）或会话**已非 live** 时才重折。
+2. **重折判定（0.4.1 起）**：行上记 `modelFoldSeq`（折叠时的事件水位）。**pending 只算"从未折过"的行**（界面「填 x/y」只看它）；
+   已折过的，只有 `asOfSeq - modelFoldSeq > modelRefoldDelta`（默认 50）或会话**已非 live** 时才重折；
+   活会话还要满足「距上次事件 ≥ `modelFoldIdleMs`（默认 10 分钟）」才按空闲重折，避免每次打开都排队。
    `readSession` 失败的行把原因记在行上（`modelFoldError / modelFoldErrorAt`，计入 `failedRows`，**不算 pending**），
-   过了 `modelRetryMs` 再试。活会话的 `asOfSeq` 每个事件 +1，**不能**拿"水位前进"直接当"要重折"——这是 0.4.0 的线上缺陷。
-3. **结果落盘**：`models`、`hours`（时刻分布的 UTC 24 桶）与 `modelFoldSeq` 随行写进 `index-v4.json`，重启读回 → 重启后不重折（实测 `/health.modelFold.done = 0`）；
+   过了 `modelRetryMs`（默认 30 分钟）再试。活会话的 `asOfSeq` 每个事件 +1，**不能**拿"水位前进"直接当"要重折"——这是 0.4.0 的线上缺陷。
+2.1 **触发源**：只在 `index.js` 的定时器里折叠——索引就绪后预热一次（`modelFoldWarmupMs`）、
+   每 `modelFoldIntervalMs`（默认 12 分钟）例行维护、每 `modelIdleCheckMs`（默认 60 秒）只处理转冷/空闲会话。
+   `snapshot()` 与 `sync()` **都不触发折叠**：打开面板永远不读事件日志。
+3. **结果落盘**：`models`、`hours`（时刻分布的 UTC 24 桶）与 `modelFoldSeq` 随行写进 `index-v7.json`，重启读回 → 重启后不重折（实测 `/health.modelFold.done = 0`）；
    行被投影重建（活会话 / 检查点命中 / 冷读）时由 `carryModelFields()` 整组搬运，不会丢。
 4. **成本控制**：并发 4（可配）；`modelFoldMaxEvents` 超限的巨型会话跳过并计入 `diagnostics`；`modelUsage: off` 完全关闭
 5. **渐进**：模型维度后台回填，看板先出总量，模型区显示「回填中 x/y」；折完 `pending = 0`、提示自动消失
@@ -85,6 +89,12 @@ DSH 里**模型与 token 都在事件日志**里，官方有读取接口，不�
   config:
     modelUsage: auto            # auto | off（默认 auto）
     modelFoldConcurrency: 4     # 回填并发
+    modelFoldWarmupMs: 2000     # 索引就绪后预热折叠（打开面板不触发）
+    modelFoldIntervalMs: 720000 # 例行维护：重折 / 失败重试（12 分钟）
+    modelIdleCheckMs: 60000     # 只检查转冷/空闲会话（60 秒）
+    modelFoldIdleMs: 600000     # 活会话距上次事件 ≥ 10 分钟才按空闲重折
+    modelRetryMs: 1800000       # 失败行 30 分钟后低频重试（不改 UI 状态）
+    snapshotCacheMs: 15000      # 同参数快照缓存；事件/索引/折叠完成立即失效
     modelAliases:               # 展示名（同 workspaceAliases 的用法）
       "deepseek-official/deepseek-v4-flash": V4 Flash
       "deepseek-official/deepseek-v4-pro": V4 Pro
