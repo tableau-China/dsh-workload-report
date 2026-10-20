@@ -770,20 +770,23 @@ function DailyChart({ days, t }) {
 function modelFoldState(data) {
   const fold = data?.diagnostics?.modelFold ?? {};
   const lastError = typeof fold.lastError === "string" && fold.lastError !== "" ? fold.lastError : null;
+  const running = fold.running === true;
+  const phase = fold.phase ?? (running ? "first-fold" : "idle");
   return {
     pending: typeof fold.pending === "number" ? fold.pending : 0,
     refold: typeof fold.refold === "number" ? fold.refold : 0,
     failedRows: typeof fold.failedRows === "number" ? fold.failedRows : 0,
     done: typeof fold.done === "number" ? fold.done : 0,
     total: typeof fold.total === "number" ? fold.total : 0,
-    running: fold.running === true,
+    running,
+    phase,
     lastError,
   };
 }
 
-/** 是否还有"从未折过"的会话在等回填——界面提示与 pending 同步，折完即消失。 */
+/** 是否在首次回填（从未折过）——只在真的算时显示「回填中」，空闲排队不显示。 */
 function isModelFolding(data) {
-  return modelFoldState(data).pending > 0;
+  return modelFoldState(data).phase === "first-fold";
 }
 
 /**
@@ -1610,17 +1613,16 @@ function Overlay({ control }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [open, control]);
 
-  // 首次建索引要冷读历史会话（可能几分钟）、模型回填要读事件日志：
-  // 两者还在进行时每 5 秒自动重拉一次，回填完成（pending=0）后自动停下。
+  // 首次建索引要冷读历史会话（可能几分钟）、模型折叠正在跑时要跟进进度：
+  // 只在**后台确实在跑**时每 5 秒重拉；pending 但没在跑（等定时器）不轮询——
+  // 打开面板本身绝不启动读日志，也不该让页面一直空转请求。
   const modelFold = modelFoldState(state.data);
-  const modelPending = modelFold.pending;
   const modelRunning = modelFold.running;
   useEffect(() => {
-    // 回填 / 重折进行中也继续轮询：否则「正在计算中……」会停在旧快照上
-    if (!open || (!indexing && !modelRunning && modelPending === 0)) return undefined;
+    if (!open || (!indexing && !modelRunning)) return undefined;
     const timer = setTimeout(() => setRefreshKey((value) => value + 1), 5000);
     return () => clearTimeout(timer);
-  }, [open, indexing, modelPending, modelRunning, refreshKey]);
+  }, [open, indexing, modelRunning, refreshKey]);
 
   const exportReport = useCallback(() => {
     const query = new URLSearchParams({

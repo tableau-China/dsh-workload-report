@@ -161,8 +161,8 @@ try {
   ok(/工作量报告/.test(entryTitle) || /Workload/.test(entryTitle), "入口带说明文案", entryTitle);
   await page.screenshot({ path: join(ARTIFACTS, "01-sidebar-entry.png") });
 
-  // 打开看板
-  await page.click(".wl-footer-item");
+  // 打开看板（用 DOM click：底部入口可能被窗口边缘/滚动条遮挡，坐标点击不稳）
+  await page.evaluate(() => document.querySelector(".wl-footer-item")?.click());
   await page.waitForSelector(".wl-panel", { timeout: 30000 });
   await page.waitForFunction(() => document.querySelectorAll(".wl-kpi-value").length >= 6, { timeout: 30000 });
   // 骨架屏会先渲染（数值位是「加载中…」）：等真实快照到位、骨架被替换后再断言数值
@@ -655,6 +655,81 @@ try {
   const darkResponse = await reportPage.goto(reportUrl.replace("theme=light", "theme=dark"), { waitUntil: "networkidle2", timeout: 60000 });
   ok(darkResponse?.status() === 200, "深色报告页返回 200");
   await reportPage.screenshot({ path: join(ARTIFACTS, "06-report-dark.png"), fullPage: true });
+
+  // ---- 状态行三态 DOM 断言：first-fold / background / idle（拦截快照，只改 diagnostics）----
+  // 回到「按日」页签（时刻分析卡在这里），并取一张真实快照作为底稿。
+  await page.evaluate(() => {
+    const tab = [...document.querySelectorAll(".wl-tab")].find((node) => /按日|By day/i.test(node.textContent || ""));
+    tab?.click();
+  });
+  await sleep(1200);
+  const snapshotUrl = await page.evaluate(() => {
+    const entries = performance.getEntriesByType("resource").map((entry) => entry.name).filter((name) => name.includes("/workload-report/v1/snapshot"));
+    return entries[entries.length - 1] ?? null;
+  });
+  ok(typeof snapshotUrl === "string", "找到看板的快照请求 URL", String(snapshotUrl));
+  const realSnapshot = await page.evaluate(async (url) => (await fetch(url)).json(), snapshotUrl);
+  let fakeStatus = null;
+  await page.setRequestInterception(true);
+  page.on("request", (request) => {
+    const isSnapshot = request.url().includes("/workload-report/v1/snapshot");
+    if (fakeStatus === null || !isSnapshot) {
+      void request.continue();
+      return;
+    }
+    const body = JSON.parse(JSON.stringify(realSnapshot));
+    body.diagnostics = {
+      ...body.diagnostics,
+      modelFold: {
+        ...body.diagnostics.modelFold,
+        phase: fakeStatus.phase,
+        running: fakeStatus.running,
+        pending: fakeStatus.pending,
+        failedRows: fakeStatus.failedRows,
+      },
+      hourTokensSource: { ...(body.diagnostics.hourTokensSource ?? {}), missing: fakeStatus.missing },
+    };
+    void request.respond({ status: 200, contentType: "application/json; charset=utf-8", body: JSON.stringify(body) });
+  });
+  const clickRefresh = async () => {
+    await page.evaluate(() => {
+      const button = [...document.querySelectorAll(".wl-head .wl-btn")].find((node) => /刷新|Refresh/i.test(node.textContent || ""));
+      button?.click();
+    });
+  };
+  const statusCase = async (name, status, selectorState, expectedText, shot) => {
+    fakeStatus = status;
+    await clickRefresh();
+    await page.waitForFunction(
+      (state) => document.querySelector('[data-kind="hour-tokens-missing"]')?.getAttribute("data-state") === state,
+      { timeout: 20000 },
+      selectorState,
+    ).catch(() => {});
+    const dom = await page.evaluate(() => {
+      const node = document.querySelector('[data-kind="hour-tokens-missing"]');
+      const style = node === null ? null : getComputedStyle(node);
+      return {
+        state: node?.getAttribute("data-state") ?? null,
+        text: node?.textContent ?? null,
+        color: style?.color ?? null,
+        before: node === null ? null : getComputedStyle(node, "::before").content,
+      };
+    });
+    ok(dom.state === selectorState && (dom.text ?? "").includes(expectedText), `状态行三态：${name}`, JSON.stringify(dom));
+    if (shot !== null) await page.screenshot({ path: join(ARTIFACTS, shot) });
+    return dom;
+  };
+  const firstFoldDom = await statusCase("first-fold", { phase: "first-fold", running: true, pending: 3, failedRows: 0, missing: 0 }, "first-fold", "正在计算", "07-status-first-fold.png");
+  const backgroundDom = await statusCase("background", { phase: "background", running: true, pending: 0, failedRows: 2, missing: 5 }, "background", "后台更新中", "08-status-background.png");
+  const idleDom = await statusCase("idle", { phase: "idle", running: false, pending: 0, failedRows: 4, missing: 3 }, "idle", "Token 未计入 3 个会话", "09-status-idle.png");
+  ok(firstFoldDom.color !== idleDom.color, "first-fold 用强调色，与 idle 的 muted 不同", `${firstFoldDom.color} vs ${idleDom.color}`);
+  ok(backgroundDom.before !== null && backgroundDom.before !== "none", "background 带灰点（::before）", String(backgroundDom.before));
+  ok(idleDom.text.includes("未计入"), "失败行不阻塞：idle 仍只显示「未计入 N 个会话」", String(idleDom.text));
+  // idle + N=0：整条不渲染
+  fakeStatus = { phase: "idle", running: false, pending: 0, failedRows: 6, missing: 0 };
+  await clickRefresh();
+  await page.waitForFunction(() => document.querySelector('[data-kind="hour-tokens-missing"]') === null, { timeout: 20000 }).catch(() => {});
+  ok((await page.evaluate(() => document.querySelector('[data-kind="hour-tokens-missing"]') === null)), "idle + N=0：状态行整条不渲染（失败行不会让它变成计算中）");
 
   // API 自检
   const apiResult = await page.evaluate(async () => {

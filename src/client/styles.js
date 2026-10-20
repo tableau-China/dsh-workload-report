@@ -108,7 +108,12 @@ export const STYLES = `
 .wl-hint a:hover { text-decoration: underline; }
 /* 状态提示（未计入 / 计算中 / 回填中 / 读取失败）统一走这一条 */
 .wl-status { font-size: 11px; line-height: 1.5; color: var(--dsw-alias-label-tertiary, #6b7280); margin: 0; white-space: nowrap; }
-.wl-status[data-state="running"] { color: var(--dsw-static-deepseek-500, #4d6bfe); }
+.wl-status[data-state="running"], .wl-status[data-state="first-fold"] { color: var(--dsw-static-deepseek-500, #4d6bfe); }
+/* 后台增量刷新：不打扰，只给一个灰点 + 小字（不抢「正在计算中」的注意力） */
+.wl-status[data-state="background"]::before {
+  content: ""; display: inline-block; width: 5px; height: 5px; border-radius: 50%; margin-right: 5px;
+  vertical-align: middle; background: var(--dsw-alias-label-tertiary, #9ca3af);
+}
 .wl-status[data-tone="error"] { color: var(--dsw-alias-label-error, #f25a5a); max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .wl-dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
 .wl-table-scroll { overflow-x: auto; }
