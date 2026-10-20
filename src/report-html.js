@@ -295,13 +295,11 @@ function workspaceBars(items, palette, metric, rangeDays = 0) {
   </div>
   <div class="ws-metrics">
     <div class="ws-metric">
-      <div class="m-label">我的付出</div>
       <div class="m-value">${escapeHtml(formatHours(item.activeMs))}<span class="m-share">${escapeHtml(formatPercent(item.activeShare ?? 0))}</span></div>
       <div class="bar-track"><div class="bar-fill" style="width:${activePct.toFixed(2)}%"></div></div>
       <div class="m-sub">活跃 ${formatInt(item.activeDays ?? 0)}/${formatInt(rangeDays)} 天 · ${formatInt(item.turns)} 轮 · ${formatInt(item.steps)} 步</div>
     </div>
     <div class="ws-metric">
-      <div class="m-label">Token 消耗</div>
       <div class="m-value">${escapeHtml(formatTokens(item.tokensTotal))}<span class="m-share">${escapeHtml(formatPercent(item.tokenShare ?? 0))}</span></div>
       <div class="bar-track"><div class="bar-fill is-tokens" style="width:${tokenPct.toFixed(2)}%"></div></div>
       <div class="m-sub">输出 ${escapeHtml(formatTokens(item.tokens.output))} · 缓存读取 ${escapeHtml(formatTokens(item.tokens.cacheRead))}</div>

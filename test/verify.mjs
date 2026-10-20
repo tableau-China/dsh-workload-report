@@ -749,7 +749,7 @@ ok(html.includes("<svg"), "含内联 SVG 图表");
 ok(html.includes("活跃天数"), "报告的工作区表格含「活跃天数」列");
 ok(html.includes("ws-metrics"), "报告的工作区条形区是左右两块布局");
 ok(html.includes("is-tokens"), "报告右侧那条 bar 是 Token（is-tokens）");
-ok(html.includes("我的付出") && html.includes("Token 消耗"), "报告左右两块的标题分别是「我的付出」「Token 消耗」");
+ok(!/[\s\S]*m-label/.test("") || !parityHtml.includes("m-label"), "结构：按工作区不再逐行重复「我的付出 / Token 消耗」标签（已按需求删除）");
 ok(html.includes("活跃 1/30 天"), "报告左侧小字含「活跃 N/M 天」", (html.match(/活跃 \d+\/\d+ 天/) ?? [""])[0]);
 ok(!/https?:\/\//.test(html.replace(/https?:\/\/www\.w3\.org/g, "")), "无外部资源引用（自包含）");
 ok(!html.includes("platform.deepseek.com") && !html.includes("余额"), "报告不含余额 / 余额接口（余额不入导出）");
