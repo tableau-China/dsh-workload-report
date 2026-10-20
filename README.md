@@ -39,8 +39,8 @@ Uninstall: `dsh plugin --profile web remove dsh-workload-report`.
 
 - **Official interfaces only.** Session identity comes from `sessionQuery.listSessions()`; statistics come from the official projections (`sessionProjections`, `sessionProjectionCache`) and, when needed, the official `sessionQuery.observeSession()` cold read. Model and hourly-token dimensions use the official `sessionQuery.readSession()` event log.
 - **No storage-format parsing.** The plugin never opens `*.jsonl.zstd`, never parses zstd/JSONL, and never reads the harness's internal projection-cache files. Formats can change between releases; the official seams are the contract.
-- **Zero outbound requests by default.** All statistics stay on your machine. The plugin exposes read-only HTTP routes only, and writes only its own local index at `<DSH_HOME>/workload-report/index-v7.json` plus, when the AI profile is enabled, its profile cache in the same directory (both safe to delete; they rebuild).
-- **Two opt-in exceptions** are the optional balance chip (`balance.enabled: true`, off by default), where the **host** calls the official `deepseekAccount` service, and the optional **AI user profile** (`aiProfile.enabled: true`, off by default), which calls the configured model provider with aggregate statistics only. See [Privacy](#privacy).
+- **Zero outbound requests by default.** All statistics stay on your machine. The plugin exposes read-only HTTP routes only, and writes only its own local index at `<DSH_HOME>/workload-report/index-v7.json` plus the AI-profile cache in the same directory (both safe to delete; they rebuild). The AI profile calls a model only after you click Generate.
+- **Outbound-network cases**: the optional balance chip (`balance.enabled: true`, off by default), where the **host** calls the official `deepseekAccount` service, and the **AI user profile** (included by default, but only a manual click calls the model; aggregate statistics only). See [Privacy](#privacy).
 - **No invented numbers.** Unreadable legacy sessions are excluded and counted in the UI; models without an official price show **—** instead of a made-up cost.
 
 ## Features (0.7.0)
@@ -54,7 +54,7 @@ Uninstall: `dsh plugin --profile web remove dsh-workload-report`.
 - **Top sessions and daily detail**: ratio bars in the main numeric columns (sessions: turns / steps / active / output; daily detail: conversations / turns / active / tokens) and sortable headers on the sessions table; the daily detail table covers the last 31 days.
 - **Export a self-contained HTML report**: one file with inline CSS and inline SVG, **no scripts and no external assets**; light/dark themes, custom title/note, optional `anonymize=1` to hide workspace names and session titles. The report mirrors the dashboard: 8 KPIs, calendar + bars, hourly density dots + turns mini-chart, ratio bars, and the same definitions. Only official pricing pages are linked.
 - **Theme and locale aware**: all colours use host theme tokens (`--dsw-*`), so the dashboard follows the harness light/dark theme; all UI strings are aligned between Chinese and English.
-- **AI user profile (optional, off by default)**: a card on the by-date tab that generates a 3–5 trait profile + 1 suggestion from **aggregate statistics only** — never conversations, titles, or paths. The same statistics fingerprint reuses the disk cache; any failure falls back to deterministic local rules. See [AI user profile](#ai-user-profile).
+- **AI user profile (included by default, manual trigger)**: an independent card to the right of the top-sessions table (sessions ≈ 2fr, profile ≈ 1fr; stacks below 1080px; tinted surface). It shows a three-line notice first and calls the model only after you click Generate. It generates a headline + 4–6 numeric dimensions + 2–3 advice items + risk from **aggregate statistics only** (window = max(current range, 30 days)) — never conversations, titles, or paths. The same statistics fingerprint reuses the disk cache; any failure falls back to deterministic local rules. See [AI user profile](#ai-user-profile).
 
 ## Screenshots
 
@@ -135,11 +135,12 @@ Override any of these in the profile's `cordis.patch.yml` (all optional):
     balance:                       # optional balance chip — OFF by default
       enabled: false               # true = host calls platform.deepseek.com (see Privacy)
       refreshMs: 300000            # balance cache TTL (ms)
-    aiProfile:                     # optional AI user profile — OFF by default
-      enabled: false               # true = on-demand model call with aggregate stats only
+    aiProfile:                     # AI user profile — included by default, manual trigger only
+      enabled: true                # set false to hide the entry; opening the panel never calls a model
       provider: ""                 # empty = host agentDefaultModel selection
       model: ""                    # use together with provider
       timeoutMs: 60000             # AbortSignal.timeout(timeoutMs)
+      minDays: 30                  # aggregate window floor (days): a 7-day board still profiles 30 days
       # deliberately no maxTokens: an output cap truncates the JSON; the plugin repairs it instead
       cacheTtlMs: 86400000         # fingerprint cache TTL (ms); 0 = no disk cache
 ```
@@ -148,9 +149,11 @@ The default model prices are built in and offline; `pricing.overrides`, `pricing
 
 ## AI user profile
 
-**Off by default and generated on demand.** Enable it only if you want a short “how you work” card. It follows the top-sessions table on the **Top sessions** tab and uses a subtle tinted surface.
+**Included by default, but only generated by a manual click; opening the panel never calls a model.** The **Top sessions** tab is a two-column layout: the sessions table on the left (≈ 2fr) and the profile card on the right (≈ 1fr, tinted surface). At `<=1080px` it stacks: sessions on top, profile below.
 
-- **Trigger**: opening the panel only runs a `probe` (no model call). The model is called when you click **Generate profile / Regenerate**; the button is disabled while generating.
+- **First-open notice**: before any result, a three-line panel explains that only the last N days of aggregates are sent (no conversation text / titles / paths), which provider/model will be used (host default when unknown), and that the model is called — and costs may apply — only after clicking **Generate profile**. The notice disappears once a result exists; the result card offers **Regenerate**.
+- **Trigger**: opening the panel only runs a `probe` (no model call; `llm.prepareCall` stays at 0). The model is called when you click **Generate profile / Regenerate**; the button is disabled while generating.
+- **Aggregate window**: the request always uses `max(current range, aiProfile.minDays)`; `minDays` defaults to **30**, so a 7-day board still produces a `days >= 30` payload. The result card says “Based on the last N days”, where N is the actual window.
 - **What is sent**: a strict whitelist of 56 aggregate fields — range, net active / wait time, sessions and turns, the four token components and their shares, cache-hit rate, average session / turns / steps, four session-duration buckets, 24 hourly token buckets, five time bands (active + token shares), top 5 workspaces, top 5 models, workspace count / switches, model count / multi-model, weekend / night share, and a last-7-days vs previous-7-days trend. **Never** conversation content, session titles, cwd, paths, session ids, or event logs. The host asserts the key set is exactly the whitelist and recursively rejects private keys and path-like strings.
 - **Prompt**: senior productivity analyst; every insight **must cite a number**, and generic advice is forbidden. The reply must be strict JSON (`headline / dimensions / advice / risk`), `temperature: 0.35`; **no `maxTokens`** is sent.
 - **Parsing / truncation rescue**: clean JSON → code fence → lenient first-`{`-to-last-`}` extraction. When `finish.kind=length` or the text is clearly unfinished, the plugin closes unclosed strings / arrays / objects and parses again; success is marked `truncated: true` (card footer says “Output truncated; repaired and used”). Only an unrepairable result falls back, with the first 300 characters in `diagnostic.excerpt`.
@@ -169,7 +172,7 @@ Full details: [docs/ai-profile.md](./docs/ai-profile.md).
 | `GET {apiPath}/snapshot?days=30&tz=Asia/Shanghai&scope=all` | Aggregated snapshot JSON (totals / byDay / byWorkspace / byHour / bySession / calendar / byModel / modelDaily / diagnostics) |
 | `GET {apiPath}/export.json?...` | Same payload with a `content-disposition` header |
 | `GET {apiPath}/report.html?days=90&theme=dark&anonymize=1&title=...` | Self-contained HTML report |
-| `GET {apiPath}/profile?days=30&tz=...&lang=zh&probe=1` | AI user profile: `probe=1` only reports enabled/signed-in; otherwise generates on demand; `force=1` bypasses the fingerprint cache |
+| `GET {apiPath}/profile?days=30&tz=...&lang=zh&probe=1` | AI user profile: `probe=1` only reports enabled / signed-in / model, never calls one; otherwise generates on demand; `days` is floored at `aiProfile.minDays` (30); `force=1` bypasses the fingerprint cache |
 | `GET {apiPath}/profile?...&provider=...&model=...` | **Debug entry**: override the route for this request only (only when enabled; no config write, no cache write) |
 | `GET {apiPath}/health` | Index diagnostics (sessions, checkpoint hits, cold reads, read failures, duration); `diagnostics.aiProfile` has the latest profile code / stage / error / route |
 | `GET {apiPath}/balance` | Cached balance state for the toolbar chip; never touches the index |
@@ -201,7 +204,7 @@ All statistics stay on your machine. The plugin registers **read-only** HTTP rou
 
 **Optional balance chip — off by default.** Only when you set `balance.enabled: true` does the host call the official `deepseekAccount` service: `getBalance()` makes the **host** request `https://platform.deepseek.com/api/v0/users/get_user_summary` (the account balance endpoint). It is opt-in and cached for `balance.refreshMs`. The top-up/usage links come from the service's local `getState()` and need no network. A failed or timed-out query shows an em dash with a top-up link — never an error dialog. The balance is rendered only in your own toolbar chip and is **never written into the exported HTML report**.
 
-**Optional AI user profile — off by default.** Only when you set `aiProfile.enabled: true` and click **Generate profile** does the plugin call the `llm` service (and your configured model provider) with the aggregate whitelist described in [AI user profile](#ai-user-profile). No conversation text, titles, paths, session ids, or event logs are sent. The response is cached on disk in the plugin's own directory; the static HTML report never contains it. If the service is missing, you are not signed in, the call times out, or parsing fails, the card falls back to local rules and shows the reason — no error dialog.
+**AI user profile — included by default, manual trigger only.** Opening the panel / `probe` only reads enabled, sign-in state, and provider/model; it **never calls a model**. Only after you click **Generate profile** does the plugin call the `llm` service (and your configured model provider) with the aggregate whitelist described in [AI user profile](#ai-user-profile), always using a window of at least 30 days. No conversation text, titles, paths, session ids, or event logs are sent. The response is cached on disk in the plugin's own directory; the static HTML report never contains it. If the service is missing, you are not signed in, the call times out, or parsing fails, the card falls back to local rules and shows the reason — no error dialog. This side call is not included in the plugin's token / cost report. Set `aiProfile.enabled: false` to hide the entry and guarantee zero model calls.
 
 ## Development
 
@@ -209,7 +212,7 @@ All statistics stay on your machine. The plugin registers **read-only** HTTP rou
 | --- | --- |
 | `pnpm add -D esbuild puppeteer-core` | Install build and browser-test dependencies (or point `ESBUILD_PATH` / `WL_PUPPETEER_DIR` at existing installs) |
 | `node build.mjs` | Bundle `src/client/` into `lib/client.js` (ModuleLoader factory format) with esbuild |
-| `node test/verify.mjs` | **595 offline assertions**: aggregation semantics, time zones, turn-based hour bucketing and conservation, hourly tokens by message time, human-message density, wait exclusion (all three rules + long-task exemption + `excludeWait:false` regression), index/read fallbacks, report structure parity, i18n key alignment, and balance states |
+| `node test/verify.mjs` | **996 offline assertions**: aggregation semantics, time zones, turn-based hour bucketing and conservation, hourly tokens by message time, human-message density, wait exclusion (all three rules + long-task exemption + `excludeWait:false` regression), index/read fallbacks, report structure parity, two-column layout, the 30-day profile window, zero model calls on first open, i18n key alignment, and balance states |
 | `./test/e2e-boot.sh 3299` | Boot an **isolated instance** (own DSH_HOME and port) without touching your running GUI |
 | `node test/e2e-ui.mjs` | Real-browser E2E: calendar/bar switching, geometry, donuts, report export, time-of-day card |
 

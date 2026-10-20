@@ -1,5 +1,36 @@
 # CHANGELOG — dsh-workload-report
 
+## 未发布（2026-10-20）— 画像卡右列 + 首开提示 + 30 天窗口
+
+### 问题
+
+- 画像卡与主要会话表在同一列纵向排列，宽屏下右半屏空着；用户不容易把它当成"主要会话"的补充视角。
+- 首次打开就直接显示「生成画像」按钮，缺少"只发聚合统计 / 用哪个模型 / 点击才计费"的说明。
+- 看板选 7 天时画像也只汇总 7 天，画像样本太薄；且功能默认关闭，多数用户看不到。
+
+### 变更
+
+- **两列布局**：主要会话页改为 `wl-session-layout` grid —— 会话表左约 2fr、画像卡右约 1fr，
+  两者是同一行的兄弟；画像卡顶部对齐、保持特别底色；`<=1080px` 回落为上下堆叠（会话在上、画像在下）。
+  画像关闭（ProfileCard 返回 null）时 `:has` 不命中，会话表自动占满整行。布局参数集中在 `SESSION_LAYOUT`。
+- **首开提示面板**：尚无结果时显示三行提示（只发近 N 天聚合统计 / provider+model（未知显示宿主默认）/
+  点击后才调用模型并产生费用）+「生成画像」主按钮；打开面板只做 probe，`llm.prepareCall` 保持 0；
+  生成后提示面板消失、显示结果，右上「重新生成」。
+- **汇总窗口下限**：新增 `aiProfile.minDays`（默认 30）；`/profile` 的 `days` 抬到
+  `max(days, minDays)`，`all` / `from` / `to` 压小窗口时再校正一次；响应新增 `summaryDays`，
+  结果卡标注「基于近 N 天汇总」。
+- **默认包含**：`AI_PROFILE_DEFAULTS.enabled` 改为 `true`（只有显式 `false` 才隐藏入口），
+  但仍保持"只有点击才调用模型"；`minDays` 可配置覆盖。
+- **文档**：README 中英、`docs/ai-profile.md`、`docs/ui-conventions.md`、`docs/report-parity.md` 同步
+  「默认包含 / 手动触发 / 只发聚合统计 / 窗口至少 30 天 / 旁路调用不计入 Token 报表」。
+
+### 测试
+
+- 离线断言 **996 项**（连跑 2 次 exit 0）：两列几何（画像左边界 > 会话右边界、宽度比 2:1、窄屏堆叠）、
+  首开 `prepareCall` = 0 / 点击后 = 1、提示面板三行与 provider/model 占位、生成后提示消失、
+  `days=7` 时 payload `>= 30`、`minDays` 覆盖、默认 `enabled=true`、显式 false 隐藏、i18n 逐键对齐无死键。
+- 真机截图 `.tmp/shots/profile-layout-notice.png` / `profile-layout-result.png`。
+
 ## v0.7.1（2026-10-20）— 画像卡移到会话表之后 + 截断抢救（去掉 maxTokens）
 
 ### 问题

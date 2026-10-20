@@ -14,9 +14,12 @@ import {
   profileFingerprint, repairProfileJson,
 } from "../src/ai-profile.js";
 import { profileSections } from "../src/profile-view.js";
-import { AI_PROFILE_DEFAULTS, TRUNCATION_FINISH_KINDS, systemPrompt } from "../src/profile-service.js";
+import {
+  AI_PROFILE_DEFAULTS, TRUNCATION_FINISH_KINDS, normalizeAiProfile, profileWindowDays, profileWindowQuery, systemPrompt,
+} from "../src/profile-service.js";
 import { hourTokensNote } from "../src/client/hour-status.js";
-import { SESSION_PAGE_SECTIONS } from "../src/client/session-layout.js";
+import { SESSION_LAYOUT, SESSION_PAGE_SECTIONS, sessionLayoutGeometry } from "../src/client/session-layout.js";
+import { profileCardPhase, profileRouteInfo, profileSummaryDays } from "../src/client/profile-state.js";
 import { translate } from "../src/client/locales.js";
 import {
   DEFAULT_PRICING, DEFAULT_WAIT_TOOLS, allocateLlmMs, cacheHitRate, costOf, emptyModelBucket, foldSessionModels,
@@ -1470,18 +1473,109 @@ console.log("\n—— AI 用户画像（payload 白名单 / 指纹 / 本地规�
   const stylesSource = await readFile(new URL("../src/client/styles.js", import.meta.url), "utf8");
   const localesSource = await readFile(new URL("../src/client/locales.js", import.meta.url), "utf8");
   ok(cardSource.includes("<CardHead"), "画像卡复用 CardHead（标题 + 右侧 hint + 右上按钮）");
-  ok(/status === "probing" \|\| status === "disabled"\) return null/.test(cardSource), "未启用 / probe 中整卡不渲染（不显示入口）");
+  ok(cardSource.includes("profileCardPhase(status, profile)") && cardSource.includes('phase === "hidden"'), "未启用 / probe 中整卡不渲染（不显示入口）");
   ok(cardSource.includes("disabled={generating}") && cardSource.includes("profile.generating"), "生成中按钮禁用并显示「生成中…」");
+  // 首开状态机：尚无结果 → notice（提示面板）；未点击绝不进入 generating。
+  eq(profileCardPhase("ready", null), "notice", "首开：尚无结果 → 提示面板（notice）");
+  eq(profileCardPhase("generating", null), "generating", "点击后：无结果且生成中 → generating");
+  eq(profileCardPhase("ready", { headline: "x" }), "result", "生成后：有结果 → result（提示面板消失）");
+  eq(profileCardPhase("disabled", null), "hidden", "显式关闭：整卡 hidden");
+  eq(profileCardPhase("probing", null), "hidden", "probe 中：整卡隐藏（不闪空卡）");
+  const routeKnown = profileRouteInfo({ provider: "deepseek-official", model: "deepseek-flash" });
+  ok(routeKnown.known && routeKnown.provider === "deepseek-official" && routeKnown.model === "deepseek-flash", "提示面板：provider/model 来自 probe");
+  ok(profileRouteInfo({}).known === false, "提示面板：未知路由回落宿主默认");
+  eq(profileSummaryDays({ summaryDays: 45 }, { summaryDays: 30 }, 7), 45, "窗口小字：优先使用响应的 summaryDays");
+  eq(profileSummaryDays(null, { summaryDays: 30 }, 7), 30, "窗口小字：无结果时用 probe 的 summaryDays");
+  ok(
+    cardSource.includes('data-kind="profile-notice"') &&
+      cardSource.includes('t("profile.notice.data", { days: formatInt(summaryDays) })') &&
+      cardSource.includes('t("profile.notice.model", { provider: route.provider, model: route.model })') &&
+      cardSource.includes('t("profile.notice.modelDefault")') &&
+      cardSource.includes('t("profile.notice.cost")'),
+    "提示面板：三行文案（聚合数据 / provider+model 占位 / 点击才计费）",
+  );
+  eq(
+    (cardSource.match(/data-kind="profile-notice-(?:data|model|cost)"/g) ?? []).length,
+    3,
+    "提示面板：恰好三行说明（数据 / 模型 / 费用）",
+  );
+  ok(
+    cardSource.includes('data-action="profile-generate"') && cardSource.includes('t("profile.generate")'),
+    "提示面板：包含「生成画像」主按钮",
+  );
+  const mountEffect = cardSource.slice(cardSource.indexOf("useEffect"), cardSource.indexOf("const generate"));
+  ok(
+    mountEffect.includes("queryOf(true)") && !mountEffect.includes("queryOf(false)"),
+    "首开零调用：挂载时只发 probe（probe=1），不请求生成",
+  );
+  ok(
+    /phase === "notice" \|\| phase === "generating" \? \(/.test(cardSource) && /phase === "result" \? \(/.test(cardSource),
+    "两态互斥：提示面板只在 notice/generating，结果只在 result",
+  );
+  ok(cardSource.includes('data-action="profile-regenerate"') && cardSource.includes('t("profile.regenerate")'), "结果态：提供「重新生成」");
+  ok(
+    cardSource.includes('t("profile.window", { days: formatInt(summaryDays) })') && cardSource.includes('data-kind="profile-window"'),
+    "结果态：卡片标注「基于近 N 天汇总」",
+  );
+  ok(localesSource.includes('"profile.notice.data": "只发送近 {days} 天聚合统计（不含对话正文 / 标题 / 路径）"'), "提示面板中文文案：只发聚合统计");
+  ok(
+    localesSource.includes('"profile.notice.model": "模型：{provider} / {model}"') &&
+      localesSource.includes('"profile.notice.model": "Model: {provider} / {model}"'),
+    "提示面板：provider/model 占位 zh/en 对齐",
+  );
+  ok(
+    localesSource.includes('"profile.notice.modelDefault"') &&
+      localesSource.includes('"profile.notice.cost"') &&
+      localesSource.includes('"profile.window"'),
+    "提示面板 / 窗口小字：zh/en 新键齐全",
+  );
+  ok(!localesSource.includes('"profile.intro"') && !cardSource.includes("profile.intro"), "旧 intro 文案已随提示面板升级删除（无死键）");
   ok(clientIndexSource.includes('import { ProfileCard }') && clientIndexSource.includes("<ProfileCard"), "ProfileCard 已接入主要会话页（画像卡）");
-  // 布局：会话表在前、画像卡紧随其后（区块顺序数组 = 渲染顺序，两者同构）。
+  // 布局：会话表在左、画像卡在右，是同一个 grid 行的兄弟；窄屏由样式回落为上下堆叠。
   eq(SESSION_PAGE_SECTIONS.join(">"), "sessions>profile", "布局：主要会话页区块顺序 = 会话表 → 画像卡");
   const sessionBlockSource = clientIndexSource.slice(
     clientIndexSource.indexOf("function BySessionView"),
     clientIndexSource.indexOf("function Overlay"),
   );
-  const sessionTableEnd = sessionBlockSource.indexOf("</table>");
+  const layoutAt = sessionBlockSource.indexOf('className="wl-session-layout"');
+  const layoutData = sessionBlockSource.indexOf('data-layout="sessions-profile"');
+  const sessionsAt = sessionBlockSource.indexOf('data-section="sessions"');
   const profileCardAt = sessionBlockSource.indexOf("<ProfileCard");
-  ok(sessionTableEnd > 0 && profileCardAt > sessionTableEnd, "布局：画像卡 DOM 顺序在会话表之后（紧跟 <table>）");
+  ok(
+    layoutAt > 0 && layoutData > layoutAt && sessionsAt > layoutData && profileCardAt > sessionsAt,
+    "布局：会话表与画像卡是同一 grid 行的兄弟（画像卡直接作为第二列子节点）",
+  );
+  ok(
+    sessionBlockSource.slice(sessionsAt, profileCardAt).includes("</table>") && !sessionBlockSource.includes("wl-session-profile"),
+    "布局：画像卡不在会话表内部（表结束后才进入右列；不额外包容器）",
+  );
+  // 几何：2fr / 1fr，画像卡左边界 > 会话表右边界；窄屏回落堆叠（同一左边界、画像在下）。
+  const wideGeometry = sessionLayoutGeometry(1200, { sessionsHeight: 420 });
+  ok(!wideGeometry.stacked, "布局几何：1200px 为左右两列");
+  ok(wideGeometry.profile.left > wideGeometry.sessions.right, "布局几何：画像卡左边界 > 会话表右边界");
+  ok(Math.abs(wideGeometry.sessions.width / wideGeometry.profile.width - 2) < 0.01, "布局几何：左右宽度比约 2:1");
+  ok(wideGeometry.profile.top === wideGeometry.sessions.top, "布局几何：画像卡与会话表顶部对齐");
+  const narrowGeometry = sessionLayoutGeometry(1080, { sessionsHeight: 420 });
+  ok(narrowGeometry.stacked, "布局几何：<=1080px 回落为上下堆叠");
+  ok(
+    narrowGeometry.profile.left === narrowGeometry.sessions.left && narrowGeometry.profile.top > narrowGeometry.sessions.bottom,
+    "布局几何：窄屏画像卡位于会话表正下方（同一左边界）",
+  );
+  eq(SESSION_LAYOUT.stackBreakpoint, 1080, "布局：窄屏断点固定 1080px");
+  ok(
+    stylesSource.includes("grid-template-columns: minmax(0, ${SESSION_LAYOUT.sessionsFr}fr) minmax(${SESSION_LAYOUT.profileMinWidth}px, ${SESSION_LAYOUT.profileFr}fr)") &&
+      stylesSource.includes(".wl-session-layout:has(> .wl-profile-card)"),
+    "布局样式：只有画像卡渲染时才两列，比例取自 SESSION_LAYOUT（2fr / 1fr）",
+  );
+  const narrowCss = stylesSource.slice(stylesSource.indexOf("@media (max-width: ${SESSION_LAYOUT.stackBreakpoint}px)"));
+  ok(
+    narrowCss.includes(".wl-session-layout") && narrowCss.includes("grid-template-columns: minmax(0, 1fr)"),
+    "布局样式：窄屏断点内回落为单列（会话在上、画像在下）",
+  );
+  ok(
+    stylesSource.includes(".wl-session-layout > .wl-profile-card { min-width: 0; align-self: start; }"),
+    "布局样式：画像卡右列顶部对齐、可收缩；关闭时 ProfileCard 返回 null → 单列",
+  );
   eq(translate("zh", "profile.title"), "AI 用户画像", "标题：中文为「AI 用户画像」");
   eq(translate("en", "profile.title"), "AI user profile", "标题：英文同步为 AI user profile");
   ok(localesSource.includes('"profile.title": "AI 用户画像"') && localesSource.includes('"profile.title": "AI user profile"'), "标题：zh/en 同步替换，不保留旧键");
@@ -2149,7 +2243,8 @@ function bootProfile({ aiProfile = {}, llm, defaultSelection } = {}) {
   };
   const config = {
     indexPath: "/tmp/wl-verify-profile-" + process.pid + "-" + (bootProfile.seq++) + ".json",
-    aiProfile: { enabled: true, ...aiProfile },
+    // 默认不写 enabled：走插件默认值（应为 true）；显式传 { enabled: false } 才关闭。
+    aiProfile,
   };
   const index = apply(pCtx, config);
   return { routeList, indexPath: config.indexPath, profile: index.profile, getSpy };
@@ -2164,7 +2259,34 @@ async function cleanupProfile(host, body) {
   }
 }
 
-// 1) 默认关闭：路由返回 enabled:false，零服务调用（连 ctx.get 都不发生）
+// 0) 默认包含（无配置）：enabled=true，但首开 probe 仍然零模型调用
+{
+  eq(AI_PROFILE_DEFAULTS.enabled, true, "默认配置：aiProfile.enabled=true（默认包含）");
+  eq(AI_PROFILE_DEFAULTS.minDays, 30, "默认配置：aiProfile.minDays=30");
+  eq(normalizeAiProfile({}).enabled, true, "配置归一化：未写 enabled 时默认 true");
+  eq(normalizeAiProfile({ enabled: false }).enabled, false, "配置归一化：显式 false 才关闭");
+  eq(normalizeAiProfile({ minDays: 45 }).minDays, 45, "配置归一化：minDays 可覆盖");
+  eq(profileWindowDays(7, 30), 30, "窗口下限：days=7 → 30");
+  eq(profileWindowDays(90, 30), 90, "窗口下限：days=90 保持 90");
+  eq(profileWindowDays(7, 45), 45, "窗口下限：minDays=45 时 → 45");
+  eq(profileWindowQuery({ days: 7, all: true }, 30).days, 30, "查询窗口：all 也先把 days 抬到 30");
+
+  const llm = makeLlm({ text: aiHostText() });
+  const host = bootProfile({ llm: llm.service, defaultSelection: { provider: "p", model: "m" } });
+  await waitHealth(host.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "默认包含实例索引完成");
+  eq(host.profile.config.enabled, true, "默认包含：宿主配置 enabled=true");
+  const probe = await routeJson(host.routeList, "/workload-report/v1/profile?probe=1&days=7&tz=UTC");
+  eq(probe.body.enabled, true, "默认包含：probe.enabled=true（入口可见）");
+  eq(probe.body.summaryDays, 30, "默认包含：probe 提示窗口至少 30 天");
+  eq(llm.spy.prepare, 0, "首开零调用：probe 后 llm.prepareCall 次数 = 0");
+  const res = await routeJson(host.routeList, "/workload-report/v1/profile?days=7&tz=UTC&lang=zh");
+  eq(res.body.enabled, true, "默认包含：点击生成后 enabled=true");
+  ok(res.body.summaryDays >= 30, "默认请求：响应 summaryDays >= 30", String(res.body.summaryDays));
+  eq(llm.spy.prepare, 1, "点击生成：llm.prepareCall 次数 = 1");
+  await cleanupProfile(host, res.body);
+}
+
+// 1) 显式关闭：路由返回 enabled:false，零服务调用（连 ctx.get 都不发生）
 {
   const llm = makeLlm();
   const host = bootProfile({ aiProfile: { enabled: false }, llm: llm.service });
@@ -2349,6 +2471,39 @@ async function cleanupProfile(host, body) {
   eq(forced.body.cached, false, "force=1：跳过缓存重新生成");
   eq(llm.spy.prepare, 2, "force=1：模型调用次数 +1");
   await cleanupProfile(host, first.body);
+}
+
+// 6b) 汇总窗口至少 minDays：day=7 仍按 30 天聚合，payload/查询窗口 days >= 30
+{
+  const llm = makeLlm({ text: aiHostText() });
+  const host = bootProfile({ llm: llm.service, aiProfile: { provider: "p", model: "m" } });
+  await waitHealth(host.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "窗口下限实例索引完成");
+  const res = await routeJson(host.routeList, "/workload-report/v1/profile?days=7&tz=UTC&lang=zh");
+  const sent = JSON.parse(llm.spy.payload.messages[0].content[0].text);
+  ok(sent.range.days >= 30, "payload：看板选 7 天时实际发送窗口 days >= 30", String(sent.range.days));
+  eq(res.body.summaryDays, sent.range.days, "响应 summaryDays 与 payload.range.days 同源");
+  eq(llm.spy.prepare, 1, "窗口下限：模型仍只调用一次");
+  await cleanupProfile(host, res.body);
+}
+{
+  const llm = makeLlm({ text: aiHostText() });
+  const host = bootProfile({ llm: llm.service, aiProfile: { provider: "p", model: "m", minDays: 45 } });
+  await waitHealth(host.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "minDays=45 实例索引完成");
+  const res = await routeJson(host.routeList, "/workload-report/v1/profile?days=7&tz=UTC&lang=zh");
+  const sent = JSON.parse(llm.spy.payload.messages[0].content[0].text);
+  eq(sent.range.days, 45, "minDays 可配置：days=7 + minDays=45 → payload 45 天");
+  eq(res.body.summaryDays, 45, "minDays 可配置：响应 summaryDays=45");
+  await cleanupProfile(host, res.body);
+}
+{
+  const llm = makeLlm({ text: aiHostText() });
+  const host = bootProfile({ llm: llm.service, aiProfile: { provider: "p", model: "m" } });
+  await waitHealth(host.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "大窗口实例索引完成");
+  const res = await routeJson(host.routeList, "/workload-report/v1/profile?days=90&tz=UTC&lang=zh");
+  const sent = JSON.parse(llm.spy.payload.messages[0].content[0].text);
+  eq(sent.range.days, 90, "窗口上限：看板选 90 天时仍用 90 天（max(当前区间, minDays)）");
+  eq(res.body.summaryDays, 90, "窗口上限：响应 summaryDays=90");
+  await cleanupProfile(host, res.body);
 }
 
 // 7) 未配置 provider/model：回落到宿主默认模型

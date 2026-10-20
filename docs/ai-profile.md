@@ -1,11 +1,14 @@
-# AI 用户画像（可选，默认关闭）
+# AI 用户画像（默认包含，手动触发）
 
 > **铁律**：只发送聚合统计白名单，**绝不发送对话正文、会话标题、文件路径原文**；
-> 默认关闭，按需点击生成；任何失败都降级为本地规则版，不向 UI 抛错；旁路调用不计入本插件 Token 报表。
+> 默认包含但**只有点击「生成画像」才调用模型**，打开面板 / probe 零调用；
+> 汇总窗口至少 30 天；任何失败都降级为本地规则版，不向 UI 抛错；旁路调用不计入本插件 Token 报表。
 
 ## 1. 开关与配置
 
-默认 `aiProfile.enabled = false`。关闭时 `GET /profile` 直接返回 `{ enabled: false, code: "AI_PROFILE_DISABLED" }`，
+默认 `aiProfile.enabled = true`：入口默认显示，但**打开面板只做 probe（不调用模型）**，
+只有点击「生成画像 / 重新生成」才请求 `/profile`。显式设置 `enabled: false` 时
+`GET /profile` 直接返回 `{ enabled: false, code: "AI_PROFILE_DISABLED" }`，
 **不调用任何 llm 服务**（连 `ctx.get("llm")` 都不发生），前端不渲染画像卡片。
 
 ```yaml
@@ -13,10 +16,11 @@
   name: dsh-workload-report
   config:
     aiProfile:
-      enabled: false        # 默认关闭；true 才会按需调用模型
+      enabled: true         # 默认包含；显式 false 才隐藏入口
       provider: ""          # 空 = 使用宿主 agentDefaultModel.currentSelection()
       model: ""             # 与 provider 成对出现
       timeoutMs: 60000      # AbortSignal.timeout(timeoutMs)
+      minDays: 30           # 汇总窗口下限（天）；看板选 7 天时仍按 30 天统计
       cacheTtlMs: 86400000  # 指纹缓存 24h；0 = 不落盘
 ```
 
@@ -30,6 +34,11 @@
 **调试入口**：`GET /profile?...&provider=<id>&model=<id>` 只覆盖本次请求的路由，
 仅在 `aiProfile.enabled=true` 时生效；不写配置、不需要重启，也**不读 / 不写指纹缓存**。
 `origin` 会标记为 `query`，正常路径仍是 `config` / `agentDefaultModel`。
+
+**汇总窗口**：`/profile` 的 `days` 会先抬到 `max(days, aiProfile.minDays)`；若 `all=1` 或
+显式 `from/to` 仍把区间压到 `minDays` 以下，服务端会再取一次 `days=minDays` 的聚合快照。
+因此 `payload.range.days` 与响应 `summaryDays` 始终 `>= minDays`（默认 30），
+卡片用 `summaryDays` 标注 **「基于近 N 天汇总」**。
 
 ## 2. 发送的数据（白名单，56 个键）
 
@@ -110,8 +119,11 @@
 
 ## 6. 触发与缓存
 
-- 前端挂载时先 `GET /profile?probe=1`：只回答 `enabled / available / signedIn`，**不生成、不调用模型**。
-- 点击「生成画像」才 `GET /profile?...`；再次点击是「重新生成」，带 `force=1`。
+- 前端挂载时先 `GET /profile?probe=1`：只回答 `enabled / available / signedIn / provider / model / summaryDays`，
+  **不生成、不调用模型**（`llm.prepareCall` 次数为 0）。
+- 首开（尚无结果）显示提示面板，三行以内：只发送近 N 天聚合统计（不含对话正文 / 标题 / 路径）、
+  使用的 provider/model（未知显示宿主默认）、点击后才调用模型并产生费用；面板内是「生成画像」主按钮。
+- 点击「生成画像」才 `GET /profile?...`；生成后提示面板隐藏、显示结果；再次点击是「重新生成」，带 `force=1`。
 - 指纹：白名单对象**稳定 JSON（键排序）**的 SHA-256 前 16 位；新增字段自动参与指纹。
 - 缓存文件：与索引同目录，`<索引基名>-ai-<lang>-<指纹>.json`（`PROFILE_CACHE_VERSION = 4`）；
   先写 `.tmp` 再 `rename` 原子替换。
@@ -210,9 +222,11 @@ curl -s 'http://127.0.0.1:3080/workload-report/v1/health'
 
 | 状态 | 表现 |
 | --- | --- |
-| 未启用 | 整卡不渲染（probe 到 `enabled:false`） |
-| 未登录 | 卡片可见，显示「未登录：请在 DeepSeek 账号中登录（当前使用本地规则版）」，**不做跳转** |
+| 未启用（显式 `enabled:false`） | 整卡不渲染（probe 到 `enabled:false`） |
+| 首开 / 尚无结果 | 提示面板：三行说明 + 「生成画像」主按钮；**不调用模型** |
+| 未登录 | probe 阶段模型显示「宿主默认」；生成后显示「未登录：请在 DeepSeek 账号中登录（当前使用本地规则版）」，**不做跳转** |
 | 生成中 | 按钮禁用，显示「生成中…」 |
+| 已生成 | 提示面板消失；顶部显示「基于近 N 天汇总」，右上「重新生成」 |
 | AI 生成 | 徽标「AI 生成」+ headline / dimensions / advice / risk + usage / 时间 |
 | 本地规则版 | 徽标「本地规则版」+ 对应 code 原因 + 同样的结构 + 时间 |
 | 输出被截断但已修复 | AI 结果正常展示；卡片底部小字「输出被截断，已修复采用」 |
@@ -248,6 +262,10 @@ curl -s 'http://127.0.0.1:3080/workload-report/v1/health'
 - 截断抢救：缺右括号的 JSON 修复成功 → `source=llm` + `truncated=true` + `diagnostic.repaired=true`；
   修不好 → `AI_NOT_STOPPED` + `diagnostic.finish.kind / textLength / excerpt`；
 - 前端渲染结构（headline / dimensions / evidence / advice / risk / 来源徽标 / usage / 重生成 / 截断小字）与样式；
-- 布局：画像卡在主要会话表之后；标题「AI 用户画像」；特别底色只用宿主 token；
-- 默认关闭零服务调用、指纹缓存、`force=1`、五种失败降级、诊断脱敏与 `/health.aiProfile`；
+- 布局：画像卡与主要会话表为同一 grid 行的兄弟（会话左 2fr / 画像右 1fr，画像左边界 > 会话右边界）；
+  `<=1080px` 回落为上下堆叠；标题「AI 用户画像」；特别底色只用宿主 token；
+- 两态：首开提示面板（三行文案 + provider/model 占位 + 主按钮）与结果态互斥；首开 `llm.prepareCall` = 0，
+  点击后 = 1；生成后提示面板消失、卡片标注「基于近 N 天汇总」；
+- 窗口：默认 `days=7` 时 `payload.range.days >= 30`；`minDays` 可配置覆盖；
+- 默认包含 `enabled=true`、显式 `false` 隐藏入口、指纹缓存、`force=1`、五种失败降级、诊断脱敏与 `/health.aiProfile`；
 - i18n zh/en 逐键对齐、无死键。

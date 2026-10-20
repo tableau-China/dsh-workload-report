@@ -2,6 +2,35 @@
 
 日期用 `YYYY-MM-DD`；只记录影响后续决策的事实。
 
+## 2026-10-20 画像卡右列 + 首开提示 + 30 天窗口
+
+### 实现
+
+- 主要会话页改为 `wl-session-layout` grid：会话表左约 2fr、画像卡右约 1fr；画像卡顶部对齐、
+  保持特别底色；`<=1080px` 单列堆叠。布局参数集中在 `SESSION_LAYOUT`，组件 / 样式 / 测试同源。
+- 首开提示面板（三行：只发近 N 天聚合统计 / provider+model 或宿主默认 / 点击才计费）+ 主按钮；
+  probe 零模型调用，生成后提示面板隐藏、结果态右上「重新生成」。
+- `aiProfile.minDays` 默认 30；`/profile` 先把 `days` 抬到下限，`all` / `from` / `to` 压小窗口时再取一次；
+  响应新增 `summaryDays`，卡片标注「基于近 N 天汇总」。
+- `AI_PROFILE_DEFAULTS.enabled` 改为 `true`；显式 `false` 仍隐藏入口、零模型调用。
+
+### 量测（真实浏览器，隔离实例 127.0.0.1:3299）
+
+- 宽屏 1560：会话表 `left=210, right=961, width=751`；画像卡 `left=975, right=1350, width=375`；
+  两者 `top=439`，画像卡左边界 > 会话表右边界，宽度比 2.00:1，列间距 14px。
+- 窄屏 1000：容器宽 898；会话表 `51–949`，画像卡 `51–949` 且 `top=2123 > 会话 bottom=2109`（上下堆叠）。
+- 提示面板：三行文案 + Generate profile；结果态提示消失，显示「Based on the last 30 days」+ Regenerate。
+- 卡片特别底色 computed `color(srgb 0.955 0.968 0.994)`，普通卡片 `rgb(255,255,255)`。
+- 截图：`.tmp/shots/profile-layout-notice.png`、`profile-layout-result.png`、`profile-layout-narrow.png`；
+  原始几何 JSON：`.tmp/shots/profile-layout-measure.json`。
+
+### 验证
+
+- `node build.mjs && node test/verify.mjs` 连跑 2 次：**996 项断言，exit 0**（942 → 996）。
+- spy：首开 / probe 后 `llm.prepareCall=0`，点击生成后 `=1`；`days=7` 时 payload `range.days=30`，
+  `minDays=45` 时 `=45`。
+
+
 ## 2026-10-20 画像卡布局 + 截断抢救（v0.7.1）
 
 ### 事实

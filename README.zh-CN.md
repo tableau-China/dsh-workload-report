@@ -39,8 +39,8 @@ dsh plugin --profile web add link:$PWD
 
 - **只用官方接口。** 会话身份来自 `sessionQuery.listSessions()`；统计来自官方投影（`sessionProjections`、`sessionProjectionCache`），必要时用官方 `sessionQuery.observeSession()` 冷读兜底；模型与小时 Token 维度使用官方 `sessionQuery.readSession()` 事件日志。
 - **不解析存储格式。** 插件从不打开 `*.jsonl.zstd`，不解析 zstd / JSONL，也不读 Harness 内部的投影缓存文件。格式会随版本演进，官方接口才是稳定契约。
-- **默认零外发网络请求。** 统计数据全部留在本机；插件只注册只读 HTTP 路由，只写自己的本地索引 `<DSH_HOME>/workload-report/index-v7.json`；开启 AI 画像后另在同目录写一份画像缓存（两者删掉都会自动重建）。
-- **两个需显式开启的例外**：可选余额 chip（`balance.enabled: true`，默认关闭，由**宿主**调用官方 `deepseekAccount` 服务），以及可选 **AI 用户画像**（`aiProfile.enabled: true`，默认关闭，只把聚合统计发给已配置的模型）。见「隐私」。
+- **默认零外发网络请求。** 统计数据全部留在本机；插件只注册只读 HTTP 路由，只写自己的本地索引 `<DSH_HOME>/workload-report/index-v7.json`；AI 画像只在你点击生成时旁路调用模型，并把缓存写到同目录（两者删掉都会自动重建）。
+- **需要外发网络的场景**：可选余额 chip（`balance.enabled: true`，默认关闭，由**宿主**调用官方 `deepseekAccount` 服务），以及 **AI 用户画像**（默认包含，但只有点击「生成画像」才调用模型；只把聚合统计发给已配置的模型）。见「隐私」。
 - **不编数字。** 读不出的早期会话会被排除并在界面写明数量；没有官方价的模型费用显示 **—**，不猜。
 
 ## 功能清单（0.7.0）
@@ -54,7 +54,7 @@ dsh plugin --profile web add link:$PWD
 - **主要会话与按日期明细**：主要数值列都有比例条（会话：轮次 / 步骤 / 活跃 / 输出；日期明细：对话 / 轮次 / 活跃 / Token）；主要会话表头可排序；日期明细覆盖最近 31 天。
 - **导出自包含 HTML 报告**：单文件、内联 CSS + 内联 SVG，**无脚本、无外部资源**；支持浅 / 深色、自定义标题与备注、`anonymize=1` 匿名化工作区与会话标题。报告与看板同口径：8 张 KPI、日历 + 柱状、小时密度点 + 轮次小图、表格比例条，外链仅官方计费页。
 - **主题与语言自适应**：颜色全部使用宿主主题 token（`--dsw-*`），自动跟随浅 / 深色；中英文文案逐键对齐。
-- **AI 用户画像（可选，默认关闭）**：主要会话页会话表之后的一张卡片（特别底色），只凭**聚合统计**生成「headline + 4–6 个维度（每条结论引用数字 + 证据）+ 2–3 条建议 + 风险提示」，绝不发送对话、标题或路径；新增时段 / 会话 / Token / 趋势结构，同一统计指纹直接复用磁盘缓存；输出被截断时先修复 JSON，修不好才降级为同构的本地规则版。详见 [AI 用户画像](#ai-用户画像)。
+- **AI 用户画像（默认包含，手动触发）**：主要会话页右侧独立卡片（会话表约 2fr、画像卡约 1fr，窄屏回落堆叠；特别底色），只凭**聚合统计**生成「headline + 4–6 个维度（每条结论引用数字 + 证据）+ 2–3 条建议 + 风险提示」，绝不发送对话、标题或路径；首开只显示三行提示，点「生成画像」才调用模型；汇总窗口固定为 **max(当前区间, 30 天)**；同一统计指纹直接复用磁盘缓存；输出被截断时先修复 JSON，修不好才降级为同构的本地规则版。详见 [AI 用户画像](#ai-用户画像)。
 
 ## 界面截图
 
@@ -135,11 +135,12 @@ dsh plugin --profile web add link:$PWD
     balance:                       # 可选余额 chip —— 默认关闭
       enabled: false               # true 时宿主会访问 platform.deepseek.com（见「隐私」）
       refreshMs: 300000            # 余额缓存时长（毫秒）
-    aiProfile:                     # 可选 AI 用户画像 —— 默认关闭
-      enabled: false               # true 时按需调用模型，只发聚合统计
+    aiProfile:                     # AI 用户画像 —— 默认包含，但只手动触发
+      enabled: true                # 显式 false 才隐藏入口；打开面板绝不调用模型
       provider: ""                 # 空 = 使用宿主 agentDefaultModel
       model: ""                    # 与 provider 成对配置
       timeoutMs: 60000             # AbortSignal.timeout(timeoutMs)
+      minDays: 30                  # 汇总窗口下限（天）：看板选 7 天时仍按 30 天统计
       # 刻意不提供 maxTokens：输出上限会截断 JSON，截断时由插件修复括号抢救
       cacheTtlMs: 86400000         # 指纹缓存时长（毫秒）；0 = 不落盘
 ```
@@ -148,9 +149,11 @@ dsh plugin --profile web add link:$PWD
 
 ## AI 用户画像
 
-**默认关闭、按需点击生成。** 开启后，主要会话页会在会话表之后多一张「AI 用户画像」卡片（特别底色，与普通卡片区分）：
+**默认包含，但只手动触发；打开面板不调用模型。** 主要会话页为两列布局：会话表在左（约 2fr），「AI 用户画像」卡在右（约 1fr，特别底色，与普通卡片可辨）；`<=1080px` 自动回落为上下堆叠（会话在上、画像在下）。
 
-- **触发**：打开面板只做 `probe`（不调用模型）；点「生成画像 / 重新生成」才真正请求，生成中按钮禁用。
+- **首开提示**：尚无结果时显示三行提示——只发送近 N 天聚合统计（不含对话正文 / 标题 / 路径）、使用哪个 provider/model（未知显示宿主默认）、点击后才调用模型并产生费用；面板内是「生成画像」主按钮。生成后提示面板消失，显示结果，右上提供「重新生成」。
+- **触发**：打开面板只做 `probe`（不调用模型，`llm.prepareCall` 次数为 0）；点「生成画像 / 重新生成」才真正请求，生成中按钮禁用。
+- **汇总窗口**：固定使用 `max(当前区间, aiProfile.minDays)` 的聚合数据，`minDays` 默认 **30**；即使看板选近 7 天，画像请求的 `days` 也 `>= 30`。结果卡片标注「基于近 N 天汇总」，N 来自实际聚合窗口。
 - **发送什么**：严格白名单的 56 个聚合字段——区间、净活跃 / 等待、会话与轮次、Token 四分量与占比、
   缓存命中率、平均会话 / 轮次 / 步骤、会话时长四桶、24 小时 Token 桶、5 个时段（活跃 + Token 占比）、
   工作区前 5、模型前 5、工作区数 / 切换次数、模型数 / 多模型、周末 / 夜间占比、近 7 天 vs 前 7 天趋势。
@@ -184,7 +187,7 @@ dsh plugin --profile web add link:$PWD
 | `GET {apiPath}/snapshot?days=30&tz=Asia/Shanghai&scope=all` | 聚合快照 JSON（totals / byDay / byWorkspace / byHour / bySession / calendar / byModel / modelDaily / diagnostics） |
 | `GET {apiPath}/export.json?...` | 同上，带 `content-disposition` 下载 |
 | `GET {apiPath}/report.html?days=90&theme=dark&anonymize=1&title=...` | 自包含 HTML 报告 |
-| `GET {apiPath}/profile?days=30&tz=...&lang=zh&probe=1` | AI 用户画像：`probe=1` 只查 enabled / 登录状态；否则按需生成；`force=1` 跳过指纹缓存 |
+| `GET {apiPath}/profile?days=30&tz=...&lang=zh&probe=1` | AI 用户画像：`probe=1` 只查 enabled / 登录状态 / 模型，不调用模型；否则按需生成；`days` 下限为 `aiProfile.minDays`（默认 30）；`force=1` 跳过指纹缓存 |
 | `GET {apiPath}/profile?...&provider=...&model=...` | **调试入口**：临时覆盖本次调用的路由（仅 enabled 生效、不写配置、不写缓存） |
 | `GET {apiPath}/health` | 索引诊断（会话数、检查点命中、冷读、读取失败、耗时）；`diagnostics.aiProfile` 含最近一次画像的 code / stage / error / route |
 | `GET {apiPath}/balance` | 顶部工具栏 chip 用的余额状态；不触发索引 |
@@ -216,7 +219,7 @@ dsh plugin --profile web add link:$PWD
 
 **可选余额 chip —— 默认关闭。** 只有显式设置 `balance.enabled: true` 后，宿主才会调用官方 `deepseekAccount` 服务：`getBalance()` 会让**宿主**请求 `https://platform.deepseek.com/api/v0/users/get_user_summary`（账户余额接口）。默认关闭、按 `balance.refreshMs` 缓存；充值 / 用量链接来自服务的本地 `getState()`，不需要网络。查询失败或超时只在 chip 上显示「—」+ 充值链接，不弹错误。余额只渲染在你本机的工具栏 chip 里，**绝不写入**导出的 HTML 报告。
 
-**可选 AI 用户画像 —— 默认关闭。** 只有显式设置 `aiProfile.enabled: true` 并点击「生成画像」后，插件才会调用 `llm` 服务（以及你配置的模型）并发送 [AI 用户画像](#ai-用户画像) 中列出的聚合白名单；不发送对话正文、标题、路径、会话 id 或事件日志。结果缓存在插件自己的目录；静态 HTML 报告不包含画像。llm 缺失、未登录、超时或解析失败时，卡片降级为本地规则版并显示原因，不弹错误框。
+**AI 用户画像 —— 默认包含，但只手动触发。** 打开面板 / `probe` 只读取 enabled、登录状态与 provider/model，**不调用模型**；只有点击「生成画像」后，插件才会调用 `llm` 服务（以及你配置的模型），发送 [AI 用户画像](#ai-用户画像) 中列出的聚合白名单（汇总窗口至少 30 天），不发送对话正文、标题、路径、会话 id 或事件日志。结果缓存在插件自己的目录；静态 HTML 报告不包含画像。llm 缺失、未登录、超时或解析失败时，卡片降级为本地规则版并显示原因，不弹错误框。这次旁路调用不计入本插件的 Token / 费用报表。显式设置 `aiProfile.enabled: false` 时入口隐藏、零模型调用。
 
 ## 开发
 
@@ -224,7 +227,7 @@ dsh plugin --profile web add link:$PWD
 | --- | --- |
 | `pnpm add -D esbuild puppeteer-core` | 安装构建与浏览器测试依赖（也可用 `ESBUILD_PATH` / `WL_PUPPETEER_DIR` 指向已有安装） |
 | `node build.mjs` | 用 esbuild 把 `src/client/` 打成 `lib/client.js`（ModuleLoader 工厂格式） |
-| `node test/verify.mjs` | **595 项离线断言**：聚合口径、时区、轮次落桶与守恒、按消息时间的小时 Token、人类消息密度、等待剔除（三层判定 + 长任务豁免 + `excludeWait:false` 回归）、索引 / 冷读兜底、报告结构对齐、i18n 逐键对齐、余额状态 |
+| `node test/verify.mjs` | **996 项离线断言**：聚合口径、时区、轮次落桶与守恒、按消息时间的小时 Token、人类消息密度、等待剔除（三层判定 + 长任务豁免 + `excludeWait:false` 回归）、索引 / 冷读兜底、报告结构对齐、两列布局与 30 天窗口、首开零模型调用、i18n 逐键对齐、余额状态 |
 | `./test/e2e-boot.sh 3299` | 起一个**隔离实例**（独立 DSH_HOME + 端口），不影响正在用的 GUI |
 | `node test/e2e-ui.mjs` | 真实浏览器 E2E：日历 / 柱状切换、几何校验、环形图、报告导出、时刻卡 |
 
