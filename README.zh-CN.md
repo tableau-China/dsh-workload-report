@@ -1,7 +1,7 @@
 # TimeMirror for DSH · 工作量报告
 
 > **把「我的付出」和「Token 消耗」放在同一张图上**——按**日期**与**工作区**看清时间投入到哪、Token 花在哪：日历热力图、时刻分析、工作区占比、模型用量，以及一键导出**可直接发给客户的自包含 HTML 报告**。
-> DeepSeek Harness（DSH）插件。当前版本：**1.0.0**。
+> DeepSeek Harness（DSH）插件。当前版本：**1.0.1**。
 
 > **TimeMirror** 是我在 Mac App Store 发布的 macOS 时间分布应用；这个插件把同一件事带到 AI 协作场景。包名 / 仓库名沿用描述式的 `dsh-workload-report`，方便在 DSH 生态里被搜到；品牌仍是 TimeMirror。
 
