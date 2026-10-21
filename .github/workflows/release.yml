@@ -1,10 +1,18 @@
 name: Release
 
-# 为什么不用 OIDC trusted publishing：npm 的设置页（Settings → Trusted Publisher）
-# 当时无法打开，而 npm 现在要求发布必须有交互式 2FA。改为"CI 暂存 + 人工批准"：
-#   CI（token，无需 2FA）:  npm stage publish   → 产出 stage id
-#   你本人（一次 OTP）    :  npm stage approve <stage-id> --otp=<6位码>
-# 直连发布（npm publish）用任何 token 都会被要求交互式 2FA（EOTP），故不采用。
+# 两条发布路径，任选其一（都要求交互式 2FA，token 不能替代）：
+#
+# A. 本地直接发布（当前常用，最简单）：
+#      npm publish --registry=https://registry.npmjs.org/ --otp=<6位码>
+#    注意 ~/.npmrc 默认 registry 是 npmmirror 镜像，**必须显式带 --registry**，否则写操作 401。
+#
+# B. CI 暂存 + 人工批准（本 workflow）：
+#      CI（Granular token，无需 2FA）:  npm stage publish  → 产出 stage id
+#      你本人（一次 OTP）             :  npm stage approve <stage-id> --otp=<6位码>
+#    前置：仓库 Settings → Secrets → Actions 配置 NPM_TOKEN（Permissions: Packages: Read and write）。
+#
+# 为什么不用 OIDC trusted publishing：npm 的 Trusted Publisher 设置页当时打不开，故未启用。
+# 直连发布（npm publish）用任何 token 都会被要求交互式 2FA（EOTP），故 token 只用于「暂存」。
 
 on:
   push:
@@ -63,18 +71,39 @@ jobs:
           fi
 
       - name: 暂存发布（2FA 推迟到人工批准）
+        shell: bash
         run: |
-          npm stage publish --registry=https://registry.npmjs.org/ | tee /tmp/stage.out
-          ID="$(grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' /tmp/stage.out | head -1)"
+          # set -e: 任一命令失败即退出。
+          # set -o pipefail: 没有它的话 `npm ... | tee` 只取 tee 的退出码，
+          #   npm 在 ENEEDAUTH / EPERM 下失败也会被 tee 的 0 覆盖 —— 步骤报绿但什么都没发。
+          # 这正是 v1.0.1 第一次「显示 success、npm 上却查无此版本」的根因。
+          set -euo pipefail
+
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::error::NPM_TOKEN secret 为空 —— 请先在仓库 Settings → Secrets 配置 NPM_TOKEN"
+            exit 1
+          fi
+
+          npm stage publish --registry=https://registry.npmjs.org/ 2>&1 | tee /tmp/stage.out
+
+          # 注意：不要用双引号包住反引号（会被 shell 二次求值成命令，报 `1.0.1: command not found`）。
+          VERSION="$(node -p "require('./package.json').version")"
+          ID="$(grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' /tmp/stage.out | head -1 || true)"
+
+          if [ -z "$ID" ]; then
+            echo "::error::npm stage publish 未返回 stage id，请查看上方日志确认是否真的暂存成功"
+            exit 1
+          fi
+
           {
             echo "### ⏳ 已暂存，等待你批准"
             echo ""
-            echo "版本：`$(node -p "require('./package.json').version")` · stage id：`$ID`"
+            echo "版本：${VERSION} · stage id：${ID}"
             echo ""
             echo "本地执行（一次 OTP）："
             echo ""
             echo '```bash'
-            echo "npm stage approve $ID --registry=https://registry.npmjs.org/ --otp=<6位验证码>"
+            echo "npm stage approve ${ID} --registry=https://registry.npmjs.org/ --otp=<6位验证码>"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
         env:
