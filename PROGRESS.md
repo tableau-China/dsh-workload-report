@@ -851,3 +851,43 @@ E2E（`test/e2e-ui.mjs`，真实实例）全过；离线断言 184 → **215**�
 - `node build.mjs && node test/verify.mjs` 连跑：**993 项断言，exit 0**（清理前后各一次）。
 - 交叉核对：`package.json` / README ×2 / CHANGELOG 对照表版本号一致（1.0.1）。
 - 残留扫描：README / docs 中已无 `两列` / `2fr` / `1080px` / `0.7.0` / `996` 失效描述。
+
+## 2026-10-22 v1.0.2 五处 UI 反馈修正
+
+### 需求（用户提出 5 条，本轮实现）
+
+1. KPI「累计活跃时长」副标题「含等待用户 11.9 h」→「等待 11.9 h」。
+2. 报告「柱状图（当前区间）」→「模型 Token 占比」；**并且不得与日历共用同一卡片容器**（用户追加反馈）。
+3. 「按日期明细（7 天，点击展开）」默认展开；超过 10 天底部加分页，默认每页 10 天。
+4. 「按工作区」页左上角加小标题（与「模型用量」页同构）。
+5. 「AI 用户画像」页签蓝底由直角矩形改为圆角矩形。
+
+### 实现
+
+- **文案**：`kpi.active.waitSub` 中英同步（`等待 {wait}` / `Waiting {wait}`）；报告 KPI 副标题
+  `含等待用户` → `等待`。口径不变（净活跃 + 等待单列）。
+- **报告结构**：新增 `daily-plus-model` 容器承载**两张平级 `.card`**（此前是单卡内两个 `daily-cell`）。
+  环形图实现抽成通用 `sharePie(items, palette, { valueOf, format, ariaLabel, centerLabel, colors })`，
+  工作区图（`activeMs` + `formatHours`）与模型图（`tokensTotal` + `formatTokens`）共用同一几何。
+  删除已成死代码的 `dailyChart()`（约 70 行）与 `workspacePie()`。
+- **明细分页**：`<details open>`；`DETAIL_PAGE_SIZE = 10`；`pageCount = ceil(rows/10)`，
+  `pageCount > 1` 才渲染 `.wl-pager`（上一页 / 第 N/M 页 / 下一页，首末页 disabled）。
+  分页按钮复用 `.wl-btn`，不另造样式。
+- **工作区小标题**：新增 `ws.hint`（中英），`<CardHead title={t("tab.byWorkspace")} hint={t("ws.hint")} />`。
+- **页签圆角**：`.wl-tab[data-align="end"]` 追加独立规则块（放在 `.wl-tab` 基础规则**之后**，
+  避免 padding/margin 被覆盖）：`border-radius: 8px` + `margin-top/bottom` + `border-bottom: none`。
+
+### 验证
+
+- `node build.mjs && node test/verify.mjs` 连跑 2 次：**1014 项断言，exit 0**（1005 → 1014）。
+- 真实浏览器（隔离实例 3299，1560×1000）：页签 `border-radius = 8px/8px`、背景 `rgb(77,107,254)`；
+  明细 `open = true`、标题 `Daily detail (3 days)`（无 "click to expand"）；7 天数据不出现分页。
+- 真实报告 HTML（隔离实例）：`daily-plus-model` 存在、`daily-pair` 无残留、
+  「模型 Token 占比」**不在**每日趋势卡内、「柱状图（当前区间）」0 次、
+  KPI 副标题 `等待 10.6 h`、全文无「含等待用户」。
+- 分页边界纯逻辑校验：7/10 → 1 页（不显示控件）、11 → 2 页、25 → 3 页、31 → 4 页。
+
+### 环境坑
+
+- 正在运行的 3080 实例**不会**自动加载本地 `src/` 改动（它是从 npm 装的），
+  验证新代码必须用 `test/e2e-boot.sh` 起的隔离实例，且**改动后要重启**（模块在启动时加载）。

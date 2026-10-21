@@ -84,7 +84,7 @@ waitMinMs: 60000
   `byWorkspace` 另带 `waitMs` 供工作区视图展示。
 - 守恒：`netActiveMs + waitMs === activeMs`（±1ms）；`sum(byHour) === totals.netActiveMs`
   （未回填行走旧法摊销时同样按 `row.activeMs - row.waitMs` 计算）。
-- 展示：KPI「活跃时长」显示净活跃，副标题追加「含等待用户 {wait}」；工作区视图与报告 footer 单列等待。
+- 展示：KPI「活跃时长」显示净活跃，副标题追加「等待 {wait}」；工作区视图与报告 footer 单列等待。
 
 ## 已知限制
 

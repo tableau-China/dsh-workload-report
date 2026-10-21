@@ -58,6 +58,9 @@ const DETAIL_COLUMNS = [
   { key: "cache", labelKey: "table.cache", text: (day) => formatTokens(day.tokens?.cacheRead ?? 0) },
 ];
 
+/** 「按日期明细」每页行数（超过一页才出现分页控件）。 */
+export const DETAIL_PAGE_SIZE = 10;
+
 /** KPI 卡片顺序（骨架屏与真实卡片共用，卡片数量/顺序不会漂）。 */
 const KPI_KEYS = ["kpi.active", "kpi.tokens", "kpi.modelCost", "kpi.activeDays", "kpi.conversations", "kpi.turns", "kpi.cache", "kpi.topModel"];
 
@@ -1269,6 +1272,14 @@ function ByDayView({ data, t }) {
     () => [...data.byDay].filter((day) => day.sessions > 0).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 31),
     [data.byDay],
   );
+  // 按日期明细分页：默认每页 10 天，超过一页才显示分页控件。
+  const [pageIndex, setPageIndex] = useState(0);
+  const pageCount = Math.max(1, Math.ceil(rows.length / DETAIL_PAGE_SIZE));
+  const safePage = Math.min(pageIndex, pageCount - 1);
+  const pagedRows = useMemo(
+    () => rows.slice(safePage * DETAIL_PAGE_SIZE, (safePage + 1) * DETAIL_PAGE_SIZE),
+    [rows, safePage],
+  );
   // 比例条按「本列最大值」归一：与「主要会话」四列同一套规则，宽度由 MetricBarCell 计算。
   const maxima = useMemo(
     () => Object.fromEntries(
@@ -1350,7 +1361,7 @@ function ByDayView({ data, t }) {
         </div>
       </div>
 
-      <details className="wl-card wl-details">
+      <details className="wl-card wl-details" open>
         <summary>{t("detail.summary", { count: rows.length })}</summary>
         <div className="wl-table-scroll">
           <table className="wl-table">
@@ -1363,7 +1374,7 @@ function ByDayView({ data, t }) {
               {rows.length === 0 ? (
                 <tr><td colSpan={DETAIL_COLUMNS.length} className="wl-state">{t("state.empty")}</td></tr>
               ) : (
-                rows.map((day) => (
+                pagedRows.map((day) => (
                   <tr key={day.date}>
                     {DETAIL_COLUMNS.map((column) => {
                       const value = column.value === undefined ? null : column.value(day);
@@ -1388,6 +1399,28 @@ function ByDayView({ data, t }) {
             </tbody>
           </table>
         </div>
+        {/* 超过一页（默认 10 天）才出现分页；只有一页时不渲染，避免多余控件 */}
+        {pageCount > 1 ? (
+          <nav className="wl-pager" aria-label={t("tab.byDay")}>
+            <button
+              type="button"
+              className="wl-btn"
+              disabled={pageIndex === 0}
+              onClick={() => setPageIndex((value) => Math.max(0, value - 1))}
+            >
+              {t("pager.prev")}
+            </button>
+            <span className="wl-pager-info">{t("pager.info", { page: pageIndex + 1, total: pageCount })}</span>
+            <button
+              type="button"
+              className="wl-btn"
+              disabled={pageIndex >= pageCount - 1}
+              onClick={() => setPageIndex((value) => Math.min(pageCount - 1, value + 1))}
+            >
+              {t("pager.next")}
+            </button>
+          </nav>
+        ) : null}
       </details>
     </>
   );
@@ -1407,6 +1440,8 @@ function ByWorkspaceView({ data, t }) {
   return (
     <>
       <div className="wl-card">
+        {/* 与「模型用量」页同构：卡片头 = 标题 + 紧右侧小字说明（复用 CardHead，不另造样式） */}
+        <CardHead title={t("tab.byWorkspace")} hint={t("ws.hint")} />
         {items.length === 0 ? (
           <p className="wl-state">{t("state.empty")}</p>
         ) : (

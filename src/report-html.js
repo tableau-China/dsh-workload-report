@@ -201,76 +201,6 @@ function calendarHeatmap(calendar, palette) {
 </svg></div>`;
 }
 
-/**
- * 渲染每日「活跃时长柱」SVG —— 与看板「柱状图」模式同构：
- * **单序列、无折线**，柱高＝净活跃时长（day.activeMs，聚合时已剔除等待用户），
- * 周六 / 周日换强调色，峰值柱始终标数值（与看板 peak-label 同视觉）。
- * @param days - byDay 数组。
- * @param palette - 色板。
- * @returns SVG 字符串。
- */
-function dailyChart(days, palette) {
-  const width = 1040;
-  const height = 260;
-  const pad = { top: 20, right: 16, bottom: 30, left: 16 };
-  const innerW = width - pad.left - pad.right;
-  const innerH = height - pad.top - pad.bottom;
-  if (days.length === 0) return `<p class="empty">该区间没有数据</p>`;
-
-  const maxActive = Math.max(1, ...days.map((d) => d.activeMs));
-  const step = innerW / days.length;
-  const barW = Math.max(1.5, Math.min(26, step * 0.62));
-  // 数值标签：至少占 30px 才画（与看板同策略）；峰值柱无论落在哪都标
-  const valueEvery = Math.max(1, Math.ceil(30 / step));
-  const peakIndex = days.reduce((best, day, index) => (day.activeMs > days[best].activeMs ? index : best), 0);
-  const peakDate = days[peakIndex]?.activeMs > 0 ? days[peakIndex].date : null;
-  const labeled = new Set();
-  days.forEach((day, index) => {
-    if (day.activeMs > 0 && index % valueEvery === 0) labeled.add(index);
-  });
-  if (peakDate !== null) {
-    labeled.add(peakIndex);
-    // 峰值标签与邻近的隔点标签会叠字：撤掉峰值 30px 以内的其它标签
-    for (const index of [...labeled]) {
-      if (index !== peakIndex && Math.abs(index - peakIndex) * step < 30) labeled.delete(index);
-    }
-  }
-
-  const bars = days
-    .map((day, index) => {
-      const x = pad.left + step * index + step / 2;
-      const h = (day.activeMs / maxActive) * innerH;
-      const y = pad.top + innerH - h;
-      const weekend = isWeekend(day.date);
-      const fill = weekend ? palette.weekend : palette.input;
-      const title = `${day.date}${weekend ? "（周末）" : ""}\n活跃 ${formatHours(day.activeMs)}\nToken ${formatInt(day.tokensTotal)}\n对话 ${day.conversations} · 轮次 ${day.turns}`;
-      const peak = index === peakIndex && peakDate !== null;
-      const bar = `<rect data-kind="active-bar" data-date="${escapeHtml(day.date)}"${weekend ? ' data-weekend="true"' : ""} x="${(x - barW / 2).toFixed(2)}" y="${y.toFixed(2)}" width="${barW.toFixed(2)}" height="${Math.max(h, 1).toFixed(2)}" rx="2" fill="${fill}"><title>${escapeHtml(title)}</title></rect>`;
-      // 每列一根全高透明命中区：0 值日只有 1px 高也能稳定悬停
-      const hit = `<rect data-kind="active-bar-hit" data-date="${escapeHtml(day.date)}" x="${(x - step / 2).toFixed(2)}" y="${pad.top}" width="${Math.max(step, 1).toFixed(2)}" height="${innerH}" fill="transparent"><title>${escapeHtml(title)}</title></rect>`;
-      const value = labeled.has(index)
-        ? `<text data-kind="${peak ? "peak-label" : "bar-label"}" data-date="${escapeHtml(day.date)}" x="${x.toFixed(1)}" y="${(y - 5).toFixed(1)}" text-anchor="middle" font-size="10" font-weight="${peak ? "650" : "400"}" fill="${peak ? palette.text : palette.muted}">${escapeHtml(formatHours(day.activeMs))}</text>`
-        : "";
-      return `<g>${bar}${hit}${value}</g>`;
-    })
-    .join("");
-
-  const labelEvery = Math.max(1, Math.ceil(days.length / 10));
-  const labels = days
-    .map((day, index) => {
-      if (!(index % labelEvery === 0 || index === days.length - 1)) return "";
-      const weekend = isWeekend(day.date);
-      const title = `${day.date}${weekend ? "（周末）" : ""} · 活跃 ${formatHours(day.activeMs)} · Token ${formatTokens(day.tokensTotal ?? 0)}`;
-      return `<text x="${(pad.left + step * index + step / 2).toFixed(1)}" y="${height - 10}" text-anchor="middle" font-size="11" fill="${palette.muted}">${escapeHtml(day.date.slice(5))}<title>${escapeHtml(title)}</title></text>`;
-    })
-    .join("");
-
-  return `<svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" role="img" aria-label="每日活跃时长">
-  <line x1="${pad.left}" y1="${pad.top + innerH}" x2="${width - pad.right}" y2="${pad.top + innerH}" stroke="${palette.border}" stroke-width="1" />
-  ${bars}
-  ${labels}
-</svg>`;
-}
 
 /**
  * 渲染工作区条形排行。
@@ -393,20 +323,26 @@ ${legend}`;
 }
 
 /**
- * 工作区环形图（Top 6 + others，按活跃时长）。
- * 与看板同构：同样的环形几何（外 74 / 内 50，viewBox 160）+ 主题背景色描边，
+ * 环形图（Top 6 + others）。工作区（按活跃时长）与模型（按 Token）共用这一份几何实现，
+ * 保证两图半径、描边、扇区缝隙完全一致。
+ * 与看板同构：环形几何（外 74 / 内 50，viewBox 160）+ 主题背景色描边，
  * 扇区之间因此有可见缝隙（stroke-dasharray 画的圆描不出两条半径边，故用真实扇区 path）。
- * @param items - byWorkspace 数组。
+ * @param items - 数据数组（byWorkspace / byModel）。
  * @param palette - 色板。
+ * @param options.valueOf - 取每项数值的函数。
+ * @param options.format - 数值格式化函数（时长用 formatHours，Token 用 formatTokens）。
+ * @param options.ariaLabel - 图形 aria-label。
+ * @param options.centerLabel - 圆心下方小字（如「总活跃时长」「总 Token」）。
+ * @param options.colors - 可选扇区色序。
  * @returns HTML 字符串。
  */
-function workspacePie(items, palette) {
-  const active = items.filter((item) => item.activeMs > 0);
+function sharePie(items, palette, { valueOf, format, ariaLabel, centerLabel, colors: customColors }) {
+  const active = items.filter((item) => valueOf(item) > 0);
   if (active.length === 0) return `<p class="empty">该区间没有数据</p>`;
-  const colors = [palette.input, palette.output, palette.accent, "#f59e0b", "#f25a5a", "#a9b8ff", palette.cache];
-  const top = active.slice(0, 6).map((item) => ({ label: item.label, value: item.activeMs, item }));
+  const colors = customColors ?? [palette.input, palette.output, palette.accent, "#f59e0b", "#f25a5a", "#a9b8ff", palette.cache];
+  const top = active.slice(0, 6).map((item) => ({ label: item.label, value: valueOf(item), item }));
   const rest = active.slice(6);
-  if (rest.length > 0) top.push({ label: "others", value: rest.reduce((sum, item) => sum + item.activeMs, 0), item: null });
+  if (rest.length > 0) top.push({ label: "others", value: rest.reduce((sum, item) => sum + valueOf(item), 0), item: null });
   const total = top.reduce((sum, slice) => sum + slice.value, 0) || 1;
   const radius = 62;
   const stroke = 24;
@@ -417,7 +353,7 @@ function workspacePie(items, palette) {
     .map((slice, index) => {
       const share = slice.value / total;
       const sweep = share * Math.PI * 2;
-      const arc = `<path d="${sectorPath(outer, inner, angle, angle + sweep)}" fill="${colors[index % colors.length]}" stroke="${palette.surface}" stroke-width="1.6" stroke-linejoin="round"><title>${escapeHtml(slice.label)}：${escapeHtml(formatHours(slice.value))}（${escapeHtml(formatPercent(share))}）</title></path>`;
+      const arc = `<path d="${sectorPath(outer, inner, angle, angle + sweep)}" fill="${colors[index % colors.length]}" stroke="${palette.surface}" stroke-width="1.6" stroke-linejoin="round"><title>${escapeHtml(slice.label)}：${escapeHtml(format(slice.value))}（${escapeHtml(formatPercent(share))}）</title></path>`;
       angle += sweep;
       return arc;
     })
@@ -425,14 +361,14 @@ function workspacePie(items, palette) {
   const legend = top
     .map((slice, index) => {
       const share = slice.value / total;
-      return `<li><i style="background:${colors[index % colors.length]}"></i><span class="pie-name">${escapeHtml(slice.label)}</span><span class="pie-value">${escapeHtml(formatHours(slice.value))}</span><span class="pie-share">${escapeHtml(formatPercent(share))}</span></li>`;
+      return `<li><i style="background:${colors[index % colors.length]}"></i><span class="pie-name">${escapeHtml(slice.label)}</span><span class="pie-value">${escapeHtml(format(slice.value))}</span><span class="pie-share">${escapeHtml(formatPercent(share))}</span></li>`;
     })
     .join("");
   return `<div class="pie-wrap">
-  <svg viewBox="0 0 160 160" width="160" height="160" role="img" aria-label="工作区占比">
+  <svg viewBox="0 0 160 160" width="160" height="160" role="img" aria-label="${escapeHtml(ariaLabel)}">
     <g transform="translate(80,80) rotate(-90)">${arcs}</g>
-    <text x="80" y="76" text-anchor="middle" font-size="14" font-weight="650" fill="${palette.text}">${escapeHtml(formatHours(total))}</text>
-    <text x="80" y="92" text-anchor="middle" font-size="10" fill="${palette.muted}">总活跃时长</text>
+    <text x="80" y="76" text-anchor="middle" font-size="14" font-weight="650" fill="${palette.text}">${escapeHtml(format(total))}</text>
+    <text x="80" y="92" text-anchor="middle" font-size="10" fill="${palette.muted}">${escapeHtml(centerLabel)}</text>
   </svg>
   <ul class="pie-legend">${legend}</ul>
 </div>`;
@@ -602,7 +538,7 @@ export function renderReport(snapshot, options = {}) {
   const topModel = snapshot.topModel ?? null;
   const topModelMetric = { requests: "请求", tokens: "Token", llmMs: "模型耗时" }[topModel?.metric] ?? "请求";
   const kpis = [
-    ["kpi.active", formatHours(netActiveMs), `模型 ${formatHours(totals.llmMs)} · 工具 ${formatHours(totals.toolMs)} · 含等待用户 ${formatHours(totals.waitMs ?? 0)}`],
+    ["kpi.active", formatHours(netActiveMs), `模型 ${formatHours(totals.llmMs)} · 工具 ${formatHours(totals.toolMs)} · 等待 ${formatHours(totals.waitMs ?? 0)}`],
     ["kpi.tokens", formatInt(totals.tokensTotal), `输入 ${formatTokens(totals.tokens.input)} · 输出 ${formatTokens(totals.tokens.output)} · 缓存 ${formatTokens(totals.tokens.cacheRead)}`],
     ["kpi.modelCost", money(pricing.totalCost), costed.total > 0 ? `${formatInt(costed.covered)}/${formatInt(costed.total)} 个模型有官方价 · as-of ${pricing.asOf ?? "—"}` : "无带官方价的模型"],
     ["kpi.activeDays", `${formatInt(totals.activeDays)} / ${formatInt(range.days)}`, `覆盖 ${formatInt(totals.workspaces)} 个工作区`],
@@ -748,10 +684,12 @@ export function renderReport(snapshot, options = {}) {
   .m-share { font-size: 11px; font-weight: 400; color: ${palette.muted}; margin-left: 7px; }
   .m-sub { font-size: 11px; color: ${palette.muted}; margin-top: 5px; line-height: 1.5; }
   .ws-foot { font-size: 11px; color: ${palette.muted}; margin-top: 9px; padding-top: 7px; border-top: 1px dashed ${palette.border}; }
-    .daily-pair { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 18px; align-items: start; }
-    .daily-pair .daily-cell { min-width: 0; }
-    .daily-pair svg { max-width: 100%; height: auto; }
-    @media (max-width: 760px) { .daily-pair { grid-template-columns: 1fr; } }
+    /* 每日用量趋势（左）与模型 Token 占比（右）是两张独立卡片：各自有卡片头与边框，
+       不共用同一个容器 —— 语义上是两个不同的视角。 */
+    .daily-plus-model { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+    .daily-plus-model > .card { margin: 0; min-width: 0; }
+    .daily-plus-model svg { max-width: 100%; height: auto; }
+    @media (max-width: 760px) { .daily-plus-model { grid-template-columns: 1fr; } }
   .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
     .bars li { display: grid; grid-template-columns: 168px minmax(0, 1fr); column-gap: 14px; row-gap: 4px; align-items: start; }
     .bars li > .ws-head { grid-column: 1; grid-row: 1 / span 2; display: flex; flex-direction: column; gap: 3px; }
@@ -794,23 +732,23 @@ export function renderReport(snapshot, options = {}) {
       .join("")}
   </section>
 
-  <section class="card">
-    ${cardHead("每日用量趋势", "颜色与柱高＝活跃时长")}
-    <div class="daily-pair">
-      <div class="daily-cell">
-        <h3 class="sub-title">活跃日历（全部历史）</h3>
-        ${calendarHeatmap(snapshot.calendar, palette)}
-      </div>
-      <div class="daily-cell">
-        <h3 class="sub-title">柱状图（当前区间）</h3>
-        ${dailyChart(snapshot.byDay, palette)}
-        <div class="legend">
-          <span><i style="background:${palette.input}"></i>工作日</span>
-          <span><i style="background:${palette.weekend}"></i>周末</span>
-        </div>
-      </div>
-    </div>
-  </section>
+  <div class="daily-plus-model">
+    <section class="card">
+      ${cardHead("每日用量趋势", "颜色＝活跃时长")}
+      <h3 class="sub-title">活跃日历（全部历史）</h3>
+      ${calendarHeatmap(snapshot.calendar, palette)}
+    </section>
+    <section class="card">
+      ${cardHead("模型 Token 占比", "环的大小＝各模型 Token 占比")}
+      ${sharePie(snapshot.byModel ?? [], palette, {
+        valueOf: (item) => item.tokensTotal ?? 0,
+        format: formatTokens,
+        ariaLabel: "模型 Token 占比",
+        centerLabel: "总 Token",
+        colors: modelSeries(palette),
+      })}
+    </section>
+  </div>
 
   <div class="two-col">
     <section class="card">
@@ -819,7 +757,12 @@ export function renderReport(snapshot, options = {}) {
     </section>
     <section class="card">
       ${cardHead("工作区占比", "按时长；Token 占比见下表")}
-      ${workspacePie(snapshot.byWorkspace, palette)}
+      ${sharePie(snapshot.byWorkspace, palette, {
+        valueOf: (item) => item.activeMs ?? 0,
+        format: formatHours,
+        ariaLabel: "工作区占比",
+        centerLabel: "总活跃时长",
+      })}
     </section>
   </div>
 

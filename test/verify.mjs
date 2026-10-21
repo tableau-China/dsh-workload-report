@@ -571,12 +571,11 @@ console.log("\n—— 等待用户剔除（0.6.5）——");
 
   // 展示层：报告 KPI / 每日图都用净活跃，副标题与 footer 单列等待
   const waitReport = renderReport(waitSnap, { theme: "light", title: "等待报告" });
-  ok(waitReport.includes("含等待用户 3 h"), "展示：报告 KPI 副标题写明「含等待用户 3 h」");
+  ok(waitReport.includes("等待 3 h"), "展示：报告 KPI 副标题写明「等待 3 h」");
   ok(waitReport.includes("净活跃"), "展示：报告 footer 说明净活跃口径");
   ok(waitReport.includes(">20 m<"), "展示：报告 KPI 活跃时长 = 净活跃 20min（不是 200min）");
-  ok(waitReport.includes("活跃 20 m"), "展示：报告每日柱 tooltip 用净活跃 20min");
-  eq(translate("zh", "kpi.active.waitSub", { wait: "3 h" }), "含等待用户 3 h", "i18n：中文等待副标题");
-  eq(translate("en", "kpi.active.waitSub", { wait: "3 h" }), "incl. waiting 3 h", "i18n：英文等待副标题");
+  eq(translate("zh", "kpi.active.waitSub", { wait: "3 h" }), "等待 3 h", "i18n：中文等待副标题");
+  eq(translate("en", "kpi.active.waitSub", { wait: "3 h" }), "Waiting 3 h", "i18n：英文等待副标题");
 }
 
 console.log("\n—— 「全部」从最早活跃日算起 ——");
@@ -801,6 +800,26 @@ console.log("\n—— 文案（i18n）一致性 ——");
   ok(byDayBlock.includes('<CardHead title={t("pie.model")} hint={t("pie.modelHint")} />'), "「模型 Token 占比」小标题改为 CardHead.hint（与另两张卡同一位置）");
   ok(byDayBlock.includes('<CardHead title={t("pie.title")}>') && !byDayBlock.includes('hint={t("pie.byTime")}'), "「工作区占比」标题下方不再挂口径 hint（口径由右上 chips 表达）");
   ok(!/<p className="wl-hint">\s*<\/p>/.test(clientSource), "没有留下空提示标签");
+  // 「按日期明细」：默认展开 + 超过 10 天分页（每页 10 天）
+  ok(byDayBlock.includes("<details className=\"wl-card wl-details\" open>"), "明细：默认展开（details 带 open）");
+  ok(!byDayBlock.includes("点击展开"), "明细：标题不再写「点击展开」（默认已展开）");
+  ok(byDayBlock.includes("DETAIL_PAGE_SIZE") && clientSource.includes("export const DETAIL_PAGE_SIZE = 10"), "明细分页：每页 10 天");
+  ok(byDayBlock.includes("pageCount > 1 ?") && byDayBlock.includes("pagedRows.map"), "明细分页：只在超过一页时渲染，表格按页切片");
+  ok(byDayBlock.includes("pager.prev") && byDayBlock.includes("pager.next") && byDayBlock.includes("pager.info"), "明细分页：上一页 / 下一页 / 页码文案齐全");
+  ok(byDayBlock.includes("disabled={pageIndex === 0}") && byDayBlock.includes("disabled={pageIndex >= pageCount - 1}"), "明细分页：首末页按钮禁用");
+  // 分页边界（纯逻辑）：<=10 天不出现分页；11 天起每页 10 天
+  {
+    const pageCountOf = (n) => Math.max(1, Math.ceil(n / 10));
+    eq(pageCountOf(7), 1, "分页边界：7 天 → 1 页（不显示分页控件）");
+    eq(pageCountOf(10), 1, "分页边界：10 天 → 1 页（不显示分页控件）");
+    eq(pageCountOf(11), 2, "分页边界：11 天 → 2 页");
+    eq(pageCountOf(25), 3, "分页边界：25 天 → 3 页");
+    eq(pageCountOf(31), 4, "分页边界：31 天 → 4 页（明细上限 31 天）");
+  }
+  // 「按工作区」页要有与「模型用量」同构的小标题
+  const byWorkspaceBlock = clientSource.slice(clientSource.indexOf("function ByWorkspaceView"), clientSource.indexOf("function BySessionView"));
+  ok(byWorkspaceBlock.includes('<CardHead title={t("tab.byWorkspace")} hint={t("ws.hint")} />'), "按工作区：左上角有 CardHead 小标题（与模型用量页同构）");
+  ok(translate("zh", "ws.hint") !== "ws.hint" && translate("en", "ws.hint") !== "ws.hint", "按工作区：小标题说明 zh/en 都有文案");
   // 长文案检查：直接按行取字典里的值长度，避免动态正则转义
   const zhLines = localesSource.slice(zhStart, enStart).split("\n");
   const longKeys = zhKeys.filter((key) => {
@@ -1177,10 +1196,20 @@ ok(reportWithModels.includes("deepseek-v4-flash"), "报告列出模型名");
 ok(reportWithModels.includes(">模型费用<"), "报告 KPI 增加「模型费用」（与看板同标签）");
 ok(reportWithModels.includes("最活跃模型") && reportWithModels.includes("请求占比"), "报告 KPI 增加「最活跃模型」（与看板同口径）");
 ok(reportWithModels.includes("个模型有官方价"), "模型费用 KPI 副标题给出价目覆盖度");
-ok(reportWithModels.includes('aria-label="每日活跃时长"'), "报告每日趋势＝单序列活跃时长（与看板柱状图一致）");
-ok(!reportWithModels.includes("<polyline"), "报告每日趋势去掉了折线");
-ok(reportWithModels.includes("（周末）"), "报告每日趋势周末柱异色（tooltip 标出周末）");
-ok(reportWithModels.includes(">周末<") && reportWithModels.includes("#f59e0b"), "报告图例给出周末色");
+ok(reportWithModels.includes('aria-label="模型 Token 占比"'), "报告右侧＝模型 Token 占比环形图（与看板首页同口径）");
+ok(reportWithModels.includes("模型 Token 占比"), "报告小标题为「模型 Token 占比」");
+ok(!reportWithModels.includes("柱状图（当前区间）"), "报告不再出现「柱状图（当前区间）」");
+ok(!reportWithModels.includes('aria-label="每日活跃时长"'), "报告不再渲染每日柱状图（已由模型环形图取代）");
+ok(reportWithModels.includes('aria-label="工作区占比"'), "工作区环形图仍保留");
+ok(reportWithModels.includes("总活跃时长") && reportWithModels.includes("总 Token"), "两张环形图的圆心小字各自正确");
+// 「模型 Token 占比」必须是独立卡片，不能塞进「每日用量趋势」的容器里
+{
+  const dailyCard = reportWithModels.match(/<section class="card">\s*<div class="card-head">[\s\S]*?每日用量趋势[\s\S]*?<\/section>/);
+  ok(dailyCard !== null, "报告含「每日用量趋势」卡片");
+  ok(!dailyCard[0].includes("模型 Token 占比"), "「模型 Token 占比」不在「每日用量趋势」卡片内");
+  ok(!reportWithModels.includes("daily-pair") && reportWithModels.includes("daily-plus-model"), "两卡并排但各自独立（daily-plus-model 容器内是两张 card）");
+  ok(/\.daily-plus-model > \.card/.test(reportWithModels), "并排容器对两个 .card 直接生效（不是单元格包裹）");
+}
 {
   const hrefs = [...reportWithModels.matchAll(/href="([^"]+)"/g)].map((match) => match[1]);
   ok(
@@ -1551,6 +1580,15 @@ console.log("\n—— AI 用户画像（payload 白名单 / 指纹 / 本地规�
   );
   ok(clientIndexSource.includes('tab === "aiProfile"'), "导航：页签切换到画像视图");
   ok(/\.wl-tab\[data-align="end"\] \{[^}]*margin-left:\s*auto/.test(stylesSource), "导航样式：右对齐用 margin-left:auto");
+  // 蓝底必须圆角：.wl-tab 基础规则之后还有一条 data-align=end 覆盖块，圆角写在那一块里
+  {
+    const endTabBlocks = [...stylesSource.matchAll(/\.wl-tab\[data-align="end"\]\s*\{([^}]*)\}/g)].map((match) => match[1]);
+    ok(endTabBlocks.some((block) => /border-radius:\s*[1-9]\d*px/.test(block)), "导航样式：画像页签蓝底为圆角矩形（border-radius > 0）");
+    ok(
+      endTabBlocks.some((block) => /border-radius:\s*[1-9]/.test(block) && /margin-top:/.test(block)),
+      "导航样式：圆角块同时留了纵向间距（圆角不被导航底边裁切）",
+    );
+  }
   eq(translate("zh", "tab.aiProfile"), "AI 用户画像", "页签文案：中文为「AI 用户画像」");
   eq(translate("en", "tab.aiProfile"), "AI profile", "页签文案：英文为 AI profile");
   eq(translate("zh", "profile.title"), "AI 用户画像", "标题：中文为「AI 用户画像」");
@@ -1607,11 +1645,12 @@ console.log("\n—— 报告结构对齐（看板 → 报告）——");
   ok(!parityHtml.includes('class="hint"') && !/<p class="hint">/.test(parityHtml), "结构：标题下方不再有旧 hint 段落");
   ok(/\.card-hint \{[^}]*font-size: 11px/.test(parityHtml) && /\.card-hint \{[^}]*color: #6b7280/.test(parityHtml), "结构：标题右侧说明 11px + muted（与看板同字号/同色）");
   ok(parityHtml.includes('data-kind="calendar-cell"') && parityHtml.includes('data-kind="weekday-bar"'), "结构：每日趋势含日历热力图 + 周几累计条");
-  ok(parityHtml.includes('data-kind="peak-label"') && parityHtml.includes('data-kind="active-bar-hit"'), "结构：柱状图有峰值标签与全高命中区 tooltip");
+  ok(!parityHtml.includes('data-kind="peak-label"') && !parityHtml.includes('data-kind="active-bar-hit"'), "结构：每日柱状图已移除（右侧改为模型 Token 占比环形图）");
+  ok(parityHtml.includes('aria-label="模型 Token 占比"') && parityHtml.includes('aria-label="工作区占比"'), "结构：两张环形图（模型 Token 占比 / 工作区占比）几何同构");
   ok(parityHtml.includes("data-bar-cell") && /class="bar-cell-fill"[^>]*style="width:[0-9.]+%;background:/.test(parityHtml), "结构：表格比例条与看板同规则（宽度百分比 + 内联背景条）");
   ok(parityHtml.includes("模型占比 · 面积 = Token") && parityHtml.includes("按日模型趋势"), "结构：模型 treemap / 按日趋势都有小标题");
   ok(parityHtml.includes("最活跃模型") && parityHtml.includes("请求占比") && parityHtml.includes("模型费用"), "结构：KPI 含「模型费用」与「最活跃模型」");
-  ok(parityHtml.includes("含等待用户") && parityHtml.includes("净活跃"), "结构：KPI / footer 写清净活跃与含等待用户口径");
+  ok(parityHtml.includes("等待 ") && parityHtml.includes("净活跃"), "结构：KPI / footer 写清净活跃与等待口径");
   ok(!parityHtml.includes("用户画像") && !parityHtml.includes('data-kind="ai-profile"') && !parityHtml.includes("本地规则版"), "结构：报告不展示 AI 画像（有意不同，见 report-parity）");
   {
     const hrefs = [...parityHtml.matchAll(/href="([^"]+)"/g)].map((match) => match[1]);

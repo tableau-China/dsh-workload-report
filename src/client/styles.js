@@ -110,6 +110,13 @@ export const STYLES = `
   color: var(--dsw-alias-label-tertiary, #6b7280); border-bottom: 2px solid transparent; margin-bottom: -1px;
 }
 .wl-tab[data-active="true"] { color: var(--dsw-alias-label-primary, #111); border-bottom-color: var(--dsw-static-deepseek-500, #4d6bfe); font-weight: 600; }
+/* 「AI 用户画像」页签的蓝底：圆角矩形，不用直角。放在 .wl-tab 之后，避免 margin/padding 被基础规则覆盖。 */
+.wl-tab[data-align="end"] {
+  border-radius: 8px;
+  margin-top: 4px;
+  margin-bottom: 3px;
+  border-bottom: none;
+}
 .wl-card { background: var(--dsw-alias-bg-layer-1, #fff); border: 1px solid var(--dsw-alias-border-l2, #eceef1); border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; }
 .wl-card h3 { margin: 0 0 4px; font-size: 13px; font-weight: 600; }
 .wl-hint { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); margin: 0 0 10px; }
@@ -323,6 +330,10 @@ export const STYLES = `
 .wl-details summary::before { content: "▸ "; color: var(--dsw-alias-label-tertiary, #6b7280); }
 .wl-details[open] summary::before { content: "▾ "; }
 .wl-details[open] summary { margin-bottom: 10px; }
+/* 按日期明细分页：只有一页时不渲染（JS 判 pageCount > 1）；按钮复用 .wl-btn，不另造样式 */
+.wl-pager { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 10px; }
+.wl-pager-info { font-size: 12px; color: var(--dsw-alias-label-tertiary, #6b7280); font-variant-numeric: tabular-nums; }
+.wl-pager .wl-btn[disabled] { opacity: 0.45; cursor: not-allowed; }
 @media (max-width: 1080px) { .wl-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } .wl-grid-2 { grid-template-columns: 1fr; } }
 @media (max-width: 720px) { .wl-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .wl-kpi[data-kpi="kpi.tokens"], .wl-kpi[data-kpi="kpi.modelCost"] { grid-column: auto; } .wl-name { max-width: 160px; } .wl-bar-cell { min-width: 44px; } }
 
