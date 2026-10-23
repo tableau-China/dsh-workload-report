@@ -1918,6 +1918,15 @@ await rm(PHASE_INDEX, { force: true }).catch(() => {});
   ok(typeof openDiag.snapshotMs === "number" && openDiag.snapshotMs >= 0, "/health 暴露快照构建耗时（snapshotMs）");
   eq(typeof openDiag.foldRoundMs, "number", "/health 暴露折叠单轮耗时（foldRoundMs）");
   eq(openDiag.foldSessionsRead, 0, "/health 暴露折叠读取会话数（foldSessionsRead，打开后仍为 0）");
+  // SWR：活会话事件只标记过期（保留旧值），命中时立即返回并标 dataStale；fold/index 仍直接清空
+  {
+    const js = await readFile(new URL("../index.js", import.meta.url), "utf8");
+    ok(js.includes("snapshotSwr") && js.includes("snapshotStaleMaxMs"), "配置：新增 snapshotSwr / snapshotStaleMaxMs");
+    ok(js.includes("scheduleSnapshotRebuild"), "实现：新增后台重建 scheduleSnapshotRebuild");
+    ok(/reason !== "live"/.test(js), "实现：只有 live 走 SWR，fold/index 仍直接清空（结构性变化立即生效）");
+    ok(js.includes("dataStale") && js.includes("snapshotStale"), "输出：命中旧值时标 dataStale / diagnostics.snapshotStale");
+    ok(/if \(this\.config\.snapshotSwr === false \|\| reason !== "live"\)/.test(js), "开关：snapshotSwr=false 退回「作废即清空」");
+  }
   const openSnap = JSON.parse((await callOn(phaseRoutes, "/workload-report/v1/snapshot?days=30&tz=UTC")).body);
   const openHealth = (await waitHealth(phaseRoutes, () => true, "缓存指标")).diagnostics;
   eq(openSnap.diagnostics.snapshotCache.hitRate, openHealth.snapshotCache.hitRate, "/snapshot.diagnostics 与 /health 同源暴露缓存指标");

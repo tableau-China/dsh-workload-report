@@ -1,7 +1,7 @@
 # TimeMirror for DSH · Workload Report
 
 > **See your effort and your token spend on the same picture** — by **date** and by **workspace**: a calendar heatmap, time-of-day analysis, workspace share, model usage, and a **one-click self-contained HTML report** you can send straight to a client.
-> A DeepSeek Harness (DSH) plugin. Current version: **1.0.4**.
+> A DeepSeek Harness (DSH) plugin. Current version: **1.0.5**.
 
 > TimeMirror is a macOS time-distribution app I published on the Mac App Store; this plugin brings the same idea to AI-assisted work. The package/repo keeps the descriptive name `dsh-workload-report` so it can be found in the DSH ecosystem; the brand stays TimeMirror.
 
@@ -126,6 +126,8 @@ Override any of these in the profile's `cordis.patch.yml` (all optional):
     modelRetryMs: 1800000          # retry failed rows after 30 min (never changes the status line)
     revalidateMs: 604800000        # index row TTL: re-validate after this long (default 7 days)
     revalidateRecentDays: 30       # only re-validate sessions active in the last N days; 0 = disable the optimization
+    snapshotSwr: true               # after a live event, serve the previous snapshot and rebuild in background (false = old behaviour)
+    snapshotStaleMaxMs: 600000      # max age of a snapshot served by SWR (default 10 min)
     defaultScope: all              # all | main | subagent
     modelUsage: auto               # auto | off (off = do not read event logs for model/hourly data)
     excludeWait: true              # false = keep 0.6.0 behaviour (no wait detection)
@@ -199,6 +201,7 @@ Parameters: `from`/`to` (YYYY-MM-DD, take precedence over `days`), `days`, `all=
 | [docs/ui-conventions.md](./docs/ui-conventions.md) | Shared UI components, card heads, legend/status rules, tooltip rules |
 | [docs/report-parity.md](./docs/report-parity.md) | Dashboard → report parity checklist, intentional differences, structural assertions |
 | [docs/ai-profile.md](./docs/ai-profile.md) | AI user profile: whitelist payload, cache fingerprint, fallback codes, privacy |
+| [docs/preaggregation.md](./docs/preaggregation.md) | Pre-aggregation assessment: measurements, costs, trigger conditions (verdict: not needed yet) |
 | [CHANGELOG.md](./CHANGELOG.md) | Version history and testing notes |
 | [PROGRESS.md](./PROGRESS.md) | Decisions, measurements, environment gotchas and release notes |
 

@@ -95,6 +95,13 @@ const DEFAULTS = {
    * 所以拉长 TTL 不会让界面看到过期事件（见 invalidateSnapshot）。
    */
   snapshotCacheMs: 15000,
+  /**
+   * stale-while-revalidate：缓存被活会话事件作废后，**仍先返回旧值**并后台重建。
+   * 关闭（false）则回到「作废即 miss」的旧行为。
+   */
+  snapshotSwr: true,
+  /** SWR 可返回的旧值最大年龄（毫秒）；超过则同步重建，避免长期显示过期数字。 */
+  snapshotStaleMaxMs: 10 * 60 * 1000,
   /** 「最活跃模型」口径：requests（= step 数）| tokens | activeMs（= llmMs）。 */
   activeModelMetric: "requests",
   /** 同一会话两次模型折叠的最小间隔（续聊后重新折叠）。 */
@@ -682,11 +689,63 @@ class WorkloadIndex {
     return this;
   }
 
-  /** 快照缓存作废（活会话事件 / 索引刷新 / 折叠完成都要调用，保证 15s TTL 不返回旧值）。 */
+  /**
+   * 标记快照缓存失效。
+   *
+   * 按原因区分，因为两类变化的代价完全不同：
+   * - `live`（活会话增量事件）：高频、且只是数字微调 → **保留旧值**，走 stale-while-revalidate，
+   *   命中旧值的请求照常返回（标 dataStale）并触发一次后台重建。
+   *   旧实现直接置空，导致「在会话里打字 → 打开面板」几乎必然 miss。
+   * - `fold` / `index`（模型回填完成、索引重建）：**结构性**变化（新增模型维度 / 整表替换），
+   *   必须立即生效 → 直接清空，下次请求同步重建。
+   *
+   * `snapshotSwr = false` 时全部退回「作废即清空」的旧行为。
+   */
   invalidateSnapshot(reason = "") {
-    this.snapshotCache = undefined;
     this.snapshotInvalidatedAt = Date.now();
     this.snapshotInvalidatedBy = reason;
+    const cached = this.snapshotCache;
+    if (cached === undefined) return;
+    if (this.config.snapshotSwr === false || reason !== "live") {
+      this.snapshotCache = undefined;
+      return;
+    }
+    // 活会话事件：保留旧值但标记为过期（at 推到 TTL 之前一丁点，仍落在 staleMaxMs 窗口内）
+    this.snapshotCache = { ...cached, at: Math.min(cached.at, Date.now() - this.config.snapshotCacheMs - 1) };
+  }
+
+  /**
+   * 后台重建快照缓存（SWR 用）。同一 cacheKey 同时只跑一次，避免请求风暴。
+   * 重建期间旧值继续服务；完成后新值替换缓存。
+   */
+  scheduleSnapshotRebuild(cacheKey, query) {
+    if (this.snapshotRebuilding === cacheKey) return;
+    this.snapshotRebuilding = cacheKey;
+    // 用 setImmediate 让当前请求先返回，避免把重建成本算进本次响应
+    setImmediate(() => {
+      try {
+        const result = present(
+          aggregate([...this.rows.values()], {
+            from: query.from,
+            to: query.to,
+            days: query.days,
+            timeZone: query.timeZone,
+            scope: query.scope,
+            all: query.all === true,
+            aliases: this.config.workspaceAliases,
+            pricing: this.pricingTable(),
+            modelAliases: this.config.modelAliases,
+            activeModelMetric: this.config.activeModelMetric,
+          }),
+        );
+        this.snapshotCache = { key: cacheKey, at: Date.now(), value: result };
+        this.snapshotRebuilds = (this.snapshotRebuilds ?? 0) + 1;
+      } catch (error) {
+        this.diagnostics.lastError = reasonOf(error);
+      } finally {
+        if (this.snapshotRebuilding === cacheKey) this.snapshotRebuilding = null;
+      }
+    });
   }
 
   /** 记录一次快照请求（命中 / 未命中 / 构建耗时），随 /health 与 /snapshot.diagnostics 暴露。 */
@@ -996,18 +1055,33 @@ class WorkloadIndex {
     void this.balance.ensure();
     // 同参数 TTL 复用：面板反复打开时省掉"聚合 + 大 JSON 序列化"
     const cacheKey = JSON.stringify({ from: query.from, to: query.to, days: query.days, tz: query.timeZone, scope: query.scope, all: query.all === true });
+    // stale-while-revalidate：活会话每来一个事件都会作废快照缓存（patchLive），
+    // 于是「在会话里打字 → 打开面板」总是 miss。改为：
+    //   缓存被作废但旧值还在 → 立即返回旧值（dataStale=true），后台重建一次。
+    // 只有**首次**（没有旧值）或 SWR 关闭时才同步重建。
+    // 不新鲜超过 snapshotStaleMaxMs 的旧值不再返回，避免长期显示过期数字。
     const cached = this.snapshotCache;
-    if (cached !== undefined && cached.key === cacheKey && Date.now() - cached.at < this.config.snapshotCacheMs) {
-      this.recordSnapshot(true, Date.now() - started);
-      return {
-        ...cached.value,
-        balance: this.balanceState(),
-        diagnostics: {
-          ...this.diagnosticsFor(),
-          hourSource: cached.value.hourSource ?? null,
-          hourTokensSource: cached.value.hourTokensSource ?? null,
-        },
-      };
+    if (cached !== undefined && cached.key === cacheKey) {
+      const age = Date.now() - cached.at;
+      const fresh = age < this.config.snapshotCacheMs;
+      const swrOn = this.config.snapshotSwr !== false;
+      const staleUsable = swrOn && age < this.config.snapshotStaleMaxMs;
+      if (fresh || staleUsable) {
+        if (!fresh) this.scheduleSnapshotRebuild(cacheKey, query);
+        this.recordSnapshot(true, Date.now() - started);
+        return {
+          ...cached.value,
+          dataStale: !fresh,
+          balance: this.balanceState(),
+          diagnostics: {
+            ...this.diagnosticsFor(),
+            hourSource: cached.value.hourSource ?? null,
+            hourTokensSource: cached.value.hourTokensSource ?? null,
+            snapshotStale: !fresh,
+            snapshotAgeMs: age,
+          },
+        };
+      }
     }
     const rows = [...this.rows.values()];
     const result = present(

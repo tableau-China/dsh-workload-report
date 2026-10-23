@@ -969,3 +969,38 @@ E2E（`test/e2e-ui.mjs`，真实实例）全过；离线断言 184 → **215**�
 - **不要用 `lsof -ti:3080` 杀进程**：macOS 上 Chrome 的 Network Service 也占用该端口，
   第一次误杀了 Chrome 的 `6730`。正确做法：`ps aux | grep "dsh web" | grep -v grep`。
 - 3080 是 link 到本地源码的实例，**改完代码必须重启**才生效；重启方式为 `kill` 后 DSH 自动拉起。
+
+## 2026-10-23 v1.0.5 快照 SWR + 预聚合评估
+
+### SWR（快照缓存命中率）
+
+- 问题：`snapshotCache.hitRate` 仅 23%–44%，`invalidatedBy: live`。
+- 根因：`patchLive()` 每来一个活会话事件就 `invalidateSnapshot("live")` **直接置空**缓存，
+  于是在会话里打字后打开面板几乎必然 miss。
+- 修复：活会话事件只**标记过期、保留旧值**，命中即返回（`dataStale: true`）并 `setImmediate` 后台重建。
+  **只有 `live` 走 SWR**；`fold` / `index` 是结构性变化，仍直接清空同步重建 ——
+  这样「回填后模型区有数据」「活会话事件即时反映」两组既有断言继续成立（这是本次设计的关键点）。
+- 上限 `snapshotStaleMaxMs`（10 分钟）+ 开关 `snapshotSwr`。
+- 验证：隔离实例 **5 个场景全过**（首次构建 / TTL 命中 / 活会话后仍返回旧值 / fold 同步重建 / 关闭开关）。
+
+### 预聚合评估（结论：当前不做）
+
+实测数据（483 会话 / 索引 0.51 MB）：
+
+| 指标 | 值 |
+| --- | --- |
+| `aggregate` 483 会话 | **9.3 ms**（5 次均值） |
+| 会话数 → 耗时斜率 | ~0.015 ms/会话（9660 会话 ≈ 148 ms） |
+| `snapshot` 各区间 | 4–37 ms |
+| `report.html` | 30 ms |
+| 索引 `JSON.parse` | 5.2 ms |
+| `models` 字段占索引 | 22.2% |
+
+**判断**：三级成本里，预聚合只能优化第 2 层（聚合，毫秒级）；
+真正的分钟级成本在第 1 层（读事件日志），已由 v1.0.4 的冷读节流解决。
+预聚合要覆盖 `days / from-to / tz / scope / aliases / pricing / metric` 的组合 + 活会话实时一致性，
+复杂度和「不编数字」风险远大于 10 ms 收益。
+
+**触发条件**（任一满足再重评）：`snapshot` p95 > 200 ms；会话数 > 5000；`buildMs` 再次 > 10 s。
+
+详见 [docs/preaggregation.md](../docs/preaggregation.md)。

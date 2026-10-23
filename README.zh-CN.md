@@ -1,7 +1,7 @@
 # TimeMirror for DSH · 工作量报告
 
 > **把「我的付出」和「Token 消耗」放在同一张图上**——按**日期**与**工作区**看清时间投入到哪、Token 花在哪：日历热力图、时刻分析、工作区占比、模型用量，以及一键导出**可直接发给客户的自包含 HTML 报告**。
-> DeepSeek Harness（DSH）插件。当前版本：**1.0.4**。
+> DeepSeek Harness（DSH）插件。当前版本：**1.0.5**。
 
 > **TimeMirror** 是我在 Mac App Store 发布的 macOS 时间分布应用；这个插件把同一件事带到 AI 协作场景。包名 / 仓库名沿用描述式的 `dsh-workload-report`，方便在 DSH 生态里被搜到；品牌仍是 TimeMirror。
 
@@ -126,6 +126,8 @@ dsh plugin --profile web add link:$PWD
     modelRetryMs: 1800000          # 失败行 30 分钟后低频重试（不改状态行）
     revalidateMs: 604800000        # 索引行有效期：过期后重校验（默认 7 天）
     revalidateRecentDays: 30       # 只重校验近 N 天有活动的会话；0 = 关闭该优化（回到 1.0.3 行为）
+    snapshotSwr: true               # 活会话事件后仍返回旧值并后台重建（false = 旧行为）
+    snapshotStaleMaxMs: 600000      # SWR 可返回的旧值最大年龄（默认 10 分钟）
     defaultScope: all              # all | main | subagent
     modelUsage: auto               # auto | off（off = 不读事件日志，不做模型/小时维度）
     excludeWait: true              # false = 回到 0.6.0 行为（不判定等待）
@@ -214,6 +216,7 @@ dsh plugin --profile web add link:$PWD
 | [docs/ui-conventions.md](./docs/ui-conventions.md) | 共享 UI 组件、卡片头、图例 / 状态、tooltip 约定 |
 | [docs/report-parity.md](./docs/report-parity.md) | 看板 → 报告对齐清单、有意差异、结构断言 |
 | [docs/ai-profile.md](./docs/ai-profile.md) | AI 用户画像：白名单 payload、缓存指纹、降级 code、隐私 |
+| [docs/preaggregation.md](./docs/preaggregation.md) | 预聚合评估：实测数据、代价、触发条件（结论：当前不需要） |
 | [CHANGELOG.md](./CHANGELOG.md) | 版本变更与测试记录 |
 | [PROGRESS.md](./PROGRESS.md) | 决策、量测、环境坑与发布记录 |
 
