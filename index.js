@@ -1200,6 +1200,8 @@ export function apply(ctx, config = {}) {
       }
       if (route === "/report.html") {
         const snapshot = await index.snapshot(query);
+        // 顶部区间筛选器只做视觉呈现：告诉渲染层当前是哪一档，以便高亮。
+        const rangeKey = params.get("all") === "1" ? "all" : String(snapshot.range?.days ?? params.get("days") ?? "7");
         const html = renderReport(snapshot, {
           theme: params.get("theme") === "dark" ? "dark" : "light",
           title: params.get("title") ?? merged.defaultTitle,
@@ -1207,6 +1209,7 @@ export function apply(ctx, config = {}) {
           anonymize: params.get("anonymize") === "1",
           topSessions: Number.parseInt(params.get("sessions") ?? "12", 10),
           generatedAt: Date.now(),
+          rangeKey,
         });
         if (req.method === "HEAD") {
           sendHtml(res, 200, "");

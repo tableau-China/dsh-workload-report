@@ -100,6 +100,33 @@ function cardHead(title, hint = "") {
   </div>`;
 }
 
+/** 顶部区间筛选器的选项（与看板 RANGES 的前三档 + 全部一致）。 */
+const REPORT_RANGES = Object.freeze([
+  { key: "7", label: "近 7 天" },
+  { key: "30", label: "近 30 天" },
+  { key: "90", label: "近 90 天" },
+  { key: "all", label: "全部" },
+]);
+
+/**
+ * 顶部区间筛选器的**静态外观**（打印 / 发客户时保留看板的视觉语汇）。
+ *
+ * 注意：这不是交互控件。报告是自包含静态文件（无脚本、外链仅官方计费页，见
+ * docs/report-parity.md 铁律），因此这里用 `<span>` 而非 `<a>` / `<button>`：
+ * 不伪造可点击性，导出文件不会有失效链接。当前区间以品牌色实底 + 白字突出，
+ * 其余档位为浅底 + 边框（与看板 ChipGroup 同一套视觉）。
+ *
+ * @param rangeKey - 当前区间键（7 / 30 / 90 / all）。
+ * @returns HTML 字符串。
+ */
+function rangeFilter(rangeKey) {
+  const current = String(rangeKey ?? "7");
+  const chips = REPORT_RANGES.map(
+    (range) => `<span class="range-chip"${range.key === current ? ' data-active="true"' : ""}>${escapeHtml(range.label)}</span>`,
+  ).join("");
+  return `<div class="range-filter" aria-label="统计区间（当前高亮）">${chips}</div>`;
+}
+
 /**
  * 表格比例条：与看板 MetricBarCell 同规则（宽度 = 本行 / 本列最大值），报告用内联 div 背景条。
  * @param value - 原始数值。
@@ -513,6 +540,8 @@ export function renderReport(snapshot, options = {}) {
     anonymize = false,
     topSessions = 12,
     generatedAt = Date.now(),
+    // 顶部区间筛选器：只做视觉呈现（报告无脚本、无失效链接）。rangeKey 决定哪一档高亮。
+    rangeKey = "7",
   } = options;
   const palette = PALETTES[theme === "dark" ? "dark" : "light"];
   const totals = snapshot.totals;
@@ -638,10 +667,30 @@ export function renderReport(snapshot, options = {}) {
   h1 { font-size: 28px; margin: 0 0 6px; letter-spacing: -0.01em; }
   .range { margin: 0; color: ${palette.muted}; font-size: 14px; }
   .hero-meta { color: ${palette.muted}; font-size: 12px; text-align: right; line-height: 1.6; }
+  /* 顶部区间筛选器：**纯视觉**，不是交互控件。
+     与看板 ChipGroup 同一套视觉语汇（浅底 + 边框；当前区间品牌色实底 + 白字），
+     但报告是无脚本的静态文件，所以它们是 <span>：不可点、无指针手型、无失效链接。
+     打印时保留（客户 / 打印稿也能看出统计区间）。 */
+  .range-filter { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 20px; }
+  .range-chip {
+    display: inline-flex; align-items: center; height: 26px; padding: 0 12px;
+    border-radius: 8px; border: 1px solid ${palette.border};
+    background: color-mix(in srgb, ${palette.input} 7%, ${palette.surface});
+    color: ${palette.muted}; font-size: 12px; line-height: 1;
+    font-variant-numeric: tabular-nums;
+    -webkit-print-color-adjust: exact; print-color-adjust: exact;
+  }
+  .range-chip[data-active="true"] {
+    background: ${palette.input}; border-color: ${palette.input};
+    color: #ffffff; font-weight: 600;
+  }
   .note { margin: 0 0 24px; padding: 12px 16px; background: ${palette.surface}; border: 1px solid ${palette.border};
     border-radius: 10px; font-size: 13px; color: ${palette.muted}; }
-  .kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 24px; }
-  .kpi { background: ${palette.surface}; border: 1px solid ${palette.border}; border-radius: 12px; padding: 12px 14px; min-width: 0; }
+  .kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 24px; align-items: stretch; }
+  /* KPI 卡等高：同一行某格的值换行（如「最活跃模型」长模型名）会把整行撑高，
+     其它卡要跟着撑满，否则边框高度参差。flex 列 + 副标题吸底即可。 */
+  .kpi { background: ${palette.surface}; border: 1px solid ${palette.border}; border-radius: 12px; padding: 12px 14px; min-width: 0; display: flex; flex-direction: column; }
+  .kpi .sub { margin-top: auto; }
   .kpi[data-kpi="kpi.tokens"], .kpi[data-kpi="kpi.modelCost"] { grid-column: span 2; }
   .kpi .label { font-size: 11px; color: ${palette.muted}; margin-bottom: 6px; }
   .kpi .value { font-size: 20px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -660,7 +709,9 @@ export function renderReport(snapshot, options = {}) {
   .hour-legend .status { margin-left: auto; text-align: right; white-space: nowrap; }
   .status { font-size: 11px; line-height: 1.5; color: ${palette.muted}; }
   .status[data-state="running"] { color: ${palette.input}; }
-  .cal-scroll { overflow-x: auto; overflow-y: hidden; }
+  /* 日历在窄区间（如 7 天只有少数几周）时 SVG 自然宽度小于卡片：
+     居中摆放，右侧不留一大块空白；数据多时仍可横向滚动。 */
+  .cal-scroll { overflow-x: auto; overflow-y: hidden; display: flex; justify-content: center; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 6px; }
   th, td { text-align: right; padding: 8px 10px; border-bottom: 1px solid ${palette.border}; font-variant-numeric: tabular-nums; }
   th:first-child, td:first-child { text-align: left; }
@@ -684,12 +735,18 @@ export function renderReport(snapshot, options = {}) {
   .m-share { font-size: 11px; font-weight: 400; color: ${palette.muted}; margin-left: 7px; }
   .m-sub { font-size: 11px; color: ${palette.muted}; margin-top: 5px; line-height: 1.5; }
   .ws-foot { font-size: 11px; color: ${palette.muted}; margin-top: 9px; padding-top: 7px; border-top: 1px dashed ${palette.border}; }
-    /* 每日用量趋势（左）与模型 Token 占比（右）是两张独立卡片：各自有卡片头与边框，
-       不共用同一个容器 —— 语义上是两个不同的视角。 */
-    .daily-plus-model { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 20px; align-items: start; }
-    .daily-plus-model > .card { margin: 0; min-width: 0; }
+    /* 每日用量趋势（左）与模型 Token 占比（右）是两张独立卡片。
+       列宽与下方 .two-col 完全一致（1fr 1fr），使「每日用量趋势」= 「时刻分析」的宽度、
+       「模型 Token 占比」= 「工作区占比」的宽度，整页左右两列对齐成一条竖线。 */
+    .daily-plus-model { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; align-items: stretch; }
+    .daily-plus-model > .card { margin: 0; min-width: 0; display: flex; flex-direction: column; }
     .daily-plus-model svg { max-width: 100%; height: auto; }
     @media (max-width: 760px) { .daily-plus-model { grid-template-columns: 1fr; } }
+  /* 卡片内容区：四张并排图卡（每日趋势 / 模型占比 / 时刻分析 / 工作区占比）共用同一份上下留白，
+     图卡内容垂直居中，两侧卡片高度差不再导致顶部参差。 */
+  .card-body { display: flex; flex-direction: column; justify-content: center; padding: 14px 4px 18px; min-height: 0; }
+  .two-col > .card { display: flex; flex-direction: column; }
+  .two-col > .card > .card-body { flex: 1 1 auto; }
   .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
     .bars li { display: grid; grid-template-columns: 168px minmax(0, 1fr); column-gap: 14px; row-gap: 4px; align-items: start; }
     .bars li > .ws-head { grid-column: 1; grid-row: 1 / span 2; display: flex; flex-direction: column; gap: 3px; }
@@ -723,6 +780,7 @@ export function renderReport(snapshot, options = {}) {
     </div>
     <div class="hero-meta">DeepSeek Harness<br />生成于 ${escapeHtml(new Date(generatedAt).toLocaleString("zh-CN", { hour12: false }))}</div>
   </header>
+  ${rangeFilter(rangeKey)}
   ${note === "" ? "" : `<p class="note">${escapeHtml(note)}</p>`}
   <section class="kpis">
     ${kpis
@@ -735,34 +793,40 @@ export function renderReport(snapshot, options = {}) {
   <div class="daily-plus-model">
     <section class="card">
       ${cardHead("每日用量趋势", "颜色＝活跃时长")}
-      <h3 class="sub-title">活跃日历（全部历史）</h3>
-      ${calendarHeatmap(snapshot.calendar, palette)}
+      <div class="card-body">
+        <h3 class="sub-title">活跃日历（全部历史）</h3>
+        ${calendarHeatmap(snapshot.calendar, palette)}
+      </div>
     </section>
     <section class="card">
       ${cardHead("模型 Token 占比", "环的大小＝各模型 Token 占比")}
-      ${sharePie(snapshot.byModel ?? [], palette, {
-        valueOf: (item) => item.tokensTotal ?? 0,
-        format: formatTokens,
-        ariaLabel: "模型 Token 占比",
-        centerLabel: "总 Token",
-        colors: modelSeries(palette),
-      })}
+      <div class="card-body">
+        ${sharePie(snapshot.byModel ?? [], palette, {
+          valueOf: (item) => item.tokensTotal ?? 0,
+          format: formatTokens,
+          ariaLabel: "模型 Token 占比",
+          centerLabel: "总 Token",
+          colors: modelSeries(palette),
+        })}
+      </div>
     </section>
   </div>
 
   <div class="two-col">
     <section class="card">
       ${cardHead("时刻分析", "Tokens 口径 · 柱＝Token 产出 · 点＝人类消息密度")}
-      ${hourChart(snapshot.byHour, palette, hourStatus)}
+      <div class="card-body">${hourChart(snapshot.byHour, palette, hourStatus)}</div>
     </section>
     <section class="card">
       ${cardHead("工作区占比", "按时长；Token 占比见下表")}
-      ${sharePie(snapshot.byWorkspace, palette, {
-        valueOf: (item) => item.activeMs ?? 0,
-        format: formatHours,
-        ariaLabel: "工作区占比",
-        centerLabel: "总活跃时长",
-      })}
+      <div class="card-body">
+        ${sharePie(snapshot.byWorkspace, palette, {
+          valueOf: (item) => item.activeMs ?? 0,
+          format: formatHours,
+          ariaLabel: "工作区占比",
+          centerLabel: "总活跃时长",
+        })}
+      </div>
     </section>
   </div>
 

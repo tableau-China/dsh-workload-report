@@ -1647,6 +1647,16 @@ console.log("\n—— 报告结构对齐（看板 → 报告）——");
   ok(parityHtml.includes('data-kind="calendar-cell"') && parityHtml.includes('data-kind="weekday-bar"'), "结构：每日趋势含日历热力图 + 周几累计条");
   ok(!parityHtml.includes('data-kind="peak-label"') && !parityHtml.includes('data-kind="active-bar-hit"'), "结构：每日柱状图已移除（右侧改为模型 Token 占比环形图）");
   ok(parityHtml.includes('aria-label="模型 Token 占比"') && parityHtml.includes('aria-label="工作区占比"'), "结构：两张环形图（模型 Token 占比 / 工作区占比）几何同构");
+  // 顶部区间筛选器：只做视觉呈现（不是交互控件、不产生链接）
+  ok(parityHtml.includes('class="range-filter"'), "结构：报告顶部有区间筛选器样式");
+  ok(["近 7 天", "近 30 天", "近 90 天", "全部"].every((label) => parityHtml.includes(`>${label}</span>`)), "结构：筛选器四档文案齐全");
+  ok((parityHtml.match(/class="range-chip" data-active="true"/g) ?? []).length === 1, "结构：恰好一档为当前区间（实底高亮）");
+  {
+    const filterBlock = parityHtml.slice(parityHtml.indexOf('class="range-filter"'), parityHtml.indexOf('class="range-filter"') + 600);
+    ok(!filterBlock.includes("<a ") && !filterBlock.includes("<button"), "结构：筛选器是纯 <span>（报告无脚本、不伪造可点击）");
+    ok(!filterBlock.includes("cursor: pointer"), "结构：筛选器无指针手型（视觉标签而非按钮）");
+  }
+  eq(renderReport(modelSnap, { rangeKey: "all" }).includes('data-active="true">全部'), true, "结构：rangeKey=all 时「全部」高亮");
   ok(parityHtml.includes("data-bar-cell") && /class="bar-cell-fill"[^>]*style="width:[0-9.]+%;background:/.test(parityHtml), "结构：表格比例条与看板同规则（宽度百分比 + 内联背景条）");
   ok(parityHtml.includes("模型占比 · 面积 = Token") && parityHtml.includes("按日模型趋势"), "结构：模型 treemap / 按日趋势都有小标题");
   ok(parityHtml.includes("最活跃模型") && parityHtml.includes("请求占比") && parityHtml.includes("模型费用"), "结构：KPI 含「模型费用」与「最活跃模型」");
