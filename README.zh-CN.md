@@ -1,7 +1,7 @@
 # TimeMirror for DSH · 工作量报告
 
 > **把「我的付出」和「Token 消耗」放在同一张图上**——按**日期**与**工作区**看清时间投入到哪、Token 花在哪：日历热力图、时刻分析、工作区占比、模型用量，以及一键导出**可直接发给客户的自包含 HTML 报告**。
-> DeepSeek Harness（DSH）插件。当前版本：**1.0.3**。
+> DeepSeek Harness（DSH）插件。当前版本：**1.0.4**。
 
 > **TimeMirror** 是我在 Mac App Store 发布的 macOS 时间分布应用；这个插件把同一件事带到 AI 协作场景。包名 / 仓库名沿用描述式的 `dsh-workload-report`，方便在 DSH 生态里被搜到；品牌仍是 TimeMirror。
 
@@ -124,6 +124,8 @@ dsh plugin --profile web add link:$PWD
     modelFoldIntervalMs: 720000    # 例行折叠维护（12 分钟）
     modelFoldIdleMs: 600000        # 活会话空闲 10 分钟才重折
     modelRetryMs: 1800000          # 失败行 30 分钟后低频重试（不改状态行）
+    revalidateMs: 604800000        # 索引行有效期：过期后重校验（默认 7 天）
+    revalidateRecentDays: 30       # 只重校验近 N 天有活动的会话；0 = 关闭该优化（回到 1.0.3 行为）
     defaultScope: all              # all | main | subagent
     modelUsage: auto               # auto | off（off = 不读事件日志，不做模型/小时维度）
     excludeWait: true              # false = 回到 0.6.0 行为（不判定等待）

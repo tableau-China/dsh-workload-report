@@ -1,7 +1,7 @@
 # TimeMirror for DSH · Workload Report
 
 > **See your effort and your token spend on the same picture** — by **date** and by **workspace**: a calendar heatmap, time-of-day analysis, workspace share, model usage, and a **one-click self-contained HTML report** you can send straight to a client.
-> A DeepSeek Harness (DSH) plugin. Current version: **1.0.3**.
+> A DeepSeek Harness (DSH) plugin. Current version: **1.0.4**.
 
 > TimeMirror is a macOS time-distribution app I published on the Mac App Store; this plugin brings the same idea to AI-assisted work. The package/repo keeps the descriptive name `dsh-workload-report` so it can be found in the DSH ecosystem; the brand stays TimeMirror.
 
@@ -124,6 +124,8 @@ Override any of these in the profile's `cordis.patch.yml` (all optional):
     modelFoldIntervalMs: 720000    # periodic fold maintenance (12 min)
     modelFoldIdleMs: 600000        # only refold a live session after 10 min without events
     modelRetryMs: 1800000          # retry failed rows after 30 min (never changes the status line)
+    revalidateMs: 604800000        # index row TTL: re-validate after this long (default 7 days)
+    revalidateRecentDays: 30       # only re-validate sessions active in the last N days; 0 = disable the optimization
     defaultScope: all              # all | main | subagent
     modelUsage: auto               # auto | off (off = do not read event logs for model/hourly data)
     excludeWait: true              # false = keep 0.6.0 behaviour (no wait detection)

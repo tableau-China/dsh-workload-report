@@ -52,8 +52,20 @@ const DEFAULTS = {
   defaultTitle: "工作量报告",
   /** 冷读并发度（几百个会话同时折叠会压住服务器）。 */
   indexConcurrency: 8,
-  /** 本地索引行的有效期：过期后重新冷读校验（续聊过的会话靠它纠正）。 */
-  revalidateMs: 12 * 3600 * 1000,
+  /**
+   * 本地索引行的有效期：过期后重新冷读校验（续聊过的会话靠它纠正）。
+   *
+   * 1.0.4 起由 12 小时放宽到 **7 天**：历史会话几乎不会再变，12 小时会让几百个旧会话
+   * 每次启动全部重读事件日志（实测 480 个会话里 125 个过期、构建耗时 242 秒）。
+   * 真正需要及时纠偏的只有**近期还有活动**的会话，见 revalidateRecentDays。
+   */
+  revalidateMs: 7 * 24 * 3600 * 1000,
+  /**
+   * 「定期重校验」只针对最近 N 天内有活动的会话（默认 30）。
+   * 更老的会话一旦成功入索引就不再因时间过期而重读；只有投影查不到时才冷读。
+   * 设为 0 表示关闭该限制（回到「所有过期行都重校验」的旧行为）。
+   */
+  revalidateRecentDays: 30,
   /** 索引文件路径；缺省 <DSH_HOME>/workload-report/index-v<版本>.json。 */
   indexPath: "",
   /** 模型维度：auto | off。off 时完全不读事件日志（行为与不含该功能一致）。 */
@@ -477,6 +489,30 @@ class WorkloadIndex {
     }
   }
 
+  /**
+   * 过期行是否仍需要重新冷读。
+   *
+   * 只对「最近 revalidateRecentDays 天内还有活动」的会话重校验：
+   * 更老的会话内容不会再变，复用索引里的旧值即可（省下大量 readSession）。
+   * `revalidateRecentDays = 0` 时关闭该优化，回到「只要过期就重读」的旧行为。
+   *
+   * @param header - 官方会话头（可能带 updatedAt / lastEventAt）。
+   * @param now - 当前时间戳（sync 开始时取一次，保证同一轮判定一致）。
+   * @param stored - 索引里已有的行（提供 lastPromptAt / createdAt 兜底）。
+   * @returns 是否需要冷读。
+   */
+  needsRevalidate(header, now, stored) {
+    const days = Number(this.config.revalidateRecentDays);
+    if (!Number.isFinite(days) || days <= 0) return true;
+    // 会话最后一次活动时间：官方头字段 → 索引行记录的最后提问时间 → 创建时间。
+    // 三者都读不到时保守地重校验一次（宁可慢，不可显示错数据）。
+    const lastActive = Number(
+      header?.updatedAt ?? header?.lastEventAt ?? stored?.lastPromptAt ?? header?.createdAt ?? stored?.createdAt ?? 0,
+    );
+    if (!Number.isFinite(lastActive) || lastActive <= 0) return true;
+    return now - lastActive < days * 24 * 3600 * 1000;
+  }
+
   /** 零 I/O 读投影检查点（命中返回行，未命中返回 undefined）。 */
   cachedRow(header) {
     try {
@@ -557,6 +593,8 @@ class WorkloadIndex {
       nextSavedAt.set(id, savedAt);
     };
     const revalidateMs = this.config.revalidateMs;
+    // 判定「近期是否还有活动」用同一个时间基准，避免循环里反复取时钟
+    const now = started;
     let coldPerformed = 0;
 
     await mapLimit(records, concurrency, async (record) => {
@@ -584,6 +622,16 @@ class WorkloadIndex {
       if (stored !== undefined && Date.now() - storedAt < revalidateMs) {
         settle(id, stored, storedAt);
         diagnostics.reused += 1;
+        return;
+      }
+      // 3b) 已过期，但会话已经「老到不会再变」：不再为了时间过期而重读事件日志。
+      //     判据用会话最后一次活动时间（header.updatedAt / createdAt），而不是索引写入时间——
+      //     否则每次重启都会把同一批老会话再读一遍。
+      //     这条是性能关键路径：480 个会话里仅 54 个真正过期时会省下几十秒到几分钟。
+      if (stored !== undefined && !this.needsRevalidate(record.header, now, stored)) {
+        settle(id, stored, storedAt);
+        diagnostics.reused += 1;
+        diagnostics.staleKept = (diagnostics.staleKept ?? 0) + 1;
         return;
       }
       // 4) 冷读（首次全量、或本地值过期后的重新校验）

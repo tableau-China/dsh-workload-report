@@ -1,6 +1,7 @@
 // 离线验证：不依赖 DSH 实例，直接验证聚合口径、报告渲染与宿主路由行为。
 // 用法：node test/verify.mjs
 
+import { readFileSync } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
 
 import { aggregate, dateKey, present, resolveRange, rowFromSession, workspaceLabel } from "../src/aggregate.js";
@@ -1657,6 +1658,24 @@ console.log("\n—— 报告结构对齐（看板 → 报告）——");
     ok(!filterBlock.includes("cursor: pointer"), "结构：筛选器无指针手型（视觉标签而非按钮）");
   }
   eq(renderReport(modelSnap, { rangeKey: "all" }).includes('data-active="true">全部'), true, "结构：rangeKey=all 时「全部」高亮");
+  // 防回归：线上曾出现 {"error":"rangeFilter is not defined"}（进程热重载到只写了一半的文件）。
+  // 这里直接断言「模板里引用的每个本地函数都真的被定义过」，避免同类残缺再次上线。
+  {
+    const source = readFileSync(new URL("../src/report-html.js", import.meta.url), "utf8");
+    const called = new Set([...source.matchAll(/\$\{(\w+)\(/g)].map((match) => match[1]));
+    const defined = new Set([
+      ...[...source.matchAll(/function\s+(\w+)\s*\(/g)].map((match) => match[1]),
+      ...[...source.matchAll(/const\s+(\w+)\s*=\s*(?:function|\(|\w+\s*=>)/g)].map((match) => match[1]),
+    ]);
+    // 内置全局 + 从其它模块 import 的符号不算「本文件缺定义」
+    const external = new Set([
+      "escapeHtml", "formatHours", "formatInt", "formatTokens", "formatPercent", "translate",
+      "sectorPath", "String",
+    ]);
+    const missing = [...called].filter((name) => !defined.has(name) && !external.has(name));
+    eq(missing.length, 0, "结构：模板调用的辅助函数都有定义（防 rangeFilter is not defined 回归）", missing.join(", "));
+    ok(defined.has("rangeFilter") && defined.has("sharePie") && defined.has("cardHead"), "结构：rangeFilter / sharePie / cardHead 均已定义");
+  }
   ok(parityHtml.includes("data-bar-cell") && /class="bar-cell-fill"[^>]*style="width:[0-9.]+%;background:/.test(parityHtml), "结构：表格比例条与看板同规则（宽度百分比 + 内联背景条）");
   ok(parityHtml.includes("模型占比 · 面积 = Token") && parityHtml.includes("按日模型趋势"), "结构：模型 treemap / 按日趋势都有小标题");
   ok(parityHtml.includes("最活跃模型") && parityHtml.includes("请求占比") && parityHtml.includes("模型费用"), "结构：KPI 含「模型费用」与「最活跃模型」");
@@ -1822,6 +1841,31 @@ ok(
   String(restartSnap.diagnostics.modelFold.lastError),
 );
 await rm(LIFECYCLE_INDEX, { force: true }).catch(() => {});
+
+// ---------------------------------------------------------------- 冷读节流（revalidateRecentDays）
+console.log("\n—— 冷读节流：老会话不再因时间过期而重读 ——");
+{
+  const DAY = 24 * 3600 * 1000;
+  const now = Date.parse("2026-10-23T12:00:00Z");
+  const js = await readFile(new URL("../index.js", import.meta.url), "utf8");
+  ok(js.includes("revalidateRecentDays"), "配置：新增 revalidateRecentDays");
+  ok(/revalidateMs:\s*7 \* 24 \* 3600 \* 1000/.test(js), "配置：revalidateMs 默认由 12h 放宽到 7 天");
+  ok(js.includes("needsRevalidate"), "实现：新增 needsRevalidate 判定");
+  ok(js.includes("staleKept"), "诊断：暴露 staleKept（复用过期旧值的行数）");
+  ok(
+    /needsRevalidate\(header, now, stored\)/.test(js) && /lastPromptAt/.test(js),
+    "实现：最后活动时间取 header.updatedAt → lastPromptAt → createdAt",
+  );
+  const shouldRevalidate = (lastActive, days = 30) => {
+    if (!Number.isFinite(lastActive) || lastActive <= 0) return true;
+    return now - lastActive < days * DAY;
+  };
+  eq(shouldRevalidate(now - 1 * DAY), true, "判定：1 天前有活动的会话仍重校验");
+  eq(shouldRevalidate(now - 29 * DAY), true, "判定：29 天前有活动的会话仍重校验");
+  eq(shouldRevalidate(now - 31 * DAY), false, "判定：31 天前的会话不再重校验（复用索引）");
+  eq(shouldRevalidate(now - 400 * DAY), false, "判定：400 天前的老会话不重读");
+  eq(shouldRevalidate(0), true, "判定：拿不到活动时间时保守重校验");
+}
 
 // ---------------------------------------------------------------- 打开零折叠 / 三态 / 缓存 / 指标
 console.log("\n—— 打开零折叠 / 三态 / 缓存 / 指标 ——");
