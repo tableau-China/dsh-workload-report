@@ -24,9 +24,11 @@ export const STYLES = `
   width: min(1180px, 100%);
   /* 高度固定＝视口 92vh：四个页签（按日期 / 模型用量 / 按工作区 / 主要会话）内容长短不同，
      若让面板随内容收缩，切页签时外框会跳（内容不足一屏的页签尤其明显）。
-     固定后每个页签的初始高度一致，内容超出时只在面板内部滚动。 */
-  height: 92vh;
-  max-height: 92vh;
+     固定后每个页签的初始高度一致，内容超出时只在面板内部滚动。
+     用 min() 兜底：超短视口（< ~460px 高）或 200% 浏览器缩放时，叠加 overlay 的 4vh 内边距
+     也不会把页头顶出屏幕（关闭按钮必须始终可点）。 */
+  height: min(92vh, calc(100vh - 8vh - 24px));
+  max-height: min(92vh, calc(100vh - 8vh - 24px));
   display: flex;
   flex-direction: column;
   background: var(--dsw-alias-bg-layer-1, #ffffff);
@@ -401,9 +403,11 @@ export const STYLES = `
 .wl-sync-meta { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; font-size: 12px; }
 .wl-sync-meta dt { color: var(--dsw-alias-label-tertiary, #6b7280); }
 .wl-sync-meta dd { margin: 0; color: var(--dsw-alias-label-primary, #111); }
-.wl-sync [data-kind="sync-ok"] { color: var(--dsw-static-green-600, #059669); }
-.wl-sync [data-kind="sync-fail"], .wl-sync [data-kind="sync-error"] { color: var(--dsw-static-red-600, #dc2626); }
-.wl-sync [data-kind="stale"] { color: var(--dsw-static-amber-600, #b45309); }
+[data-kind="sync-ok"] { color: var(--dsw-static-green-600, #059669); }
+[data-kind="sync-fail"], [data-kind="sync-error"] { color: var(--dsw-static-red-600, #dc2626); }
+[data-kind="stale"] { color: var(--dsw-static-amber-600, #b45309); }
+/* 凭据表单的两个执行按钮（保存 / 清除）：与其它 .wl-btn 同一套样式，只补间距 */
+.wl-cred-buttons { display: inline-flex; align-items: center; gap: 8px; }
 .wl-chip[data-stale="true"] { border-style: dashed; }
 /* 「设备同步」入口（设备筛选行右侧的主按钮）：当前页时用强调色 hover 态，与页签选中态同口径 */
 .wl-btn[data-kind="primary"][data-active="true"] { background: var(--dsw-alias-bg-accent-hover, #2f4bd8); }

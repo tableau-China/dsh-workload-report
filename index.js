@@ -196,6 +196,80 @@ function sendJson(res, status, body) {
   res.end(json);
 }
 
+/** 同步设置 / 凭据两个写路由的请求体上限：正常请求只有几百字节。 */
+const MAX_SYNC_BODY_BYTES = 64 * 1024;
+
+/**
+ * 读取 JSON 请求体（只给两个写路由用）。
+ *
+ * 安全边界：任意本机进程都能 POST 这两个路由，所以必须先按 `content-length`
+ * 与累计字节数设上限，绝不把整段超大 body 缓冲进内存；类型不对一律 400。
+ *
+ * @param req - Node Request。
+ * @param res - Node Response（失败时直接写响应）。
+ * @returns 解析后的对象，或 undefined（表示已经写过响应，调用方直接 return）。
+ */
+async function readJsonBody(req, res) {
+  const contentType = String(req.headers?.["content-type"] ?? "");
+  if (!contentType.includes("application/json")) {
+    sendJson(res, 415, { error: "请求体必须是 application/json" });
+    return undefined;
+  }
+  const declared = Number(req.headers?.["content-length"]);
+  if (Number.isFinite(declared) && declared > MAX_SYNC_BODY_BYTES) {
+    sendJson(res, 413, { error: `请求体过大（上限 ${MAX_SYNC_BODY_BYTES / 1024} KB）` });
+    return undefined;
+  }
+  const chunks = [];
+  let total = 0;
+  try {
+    for await (const chunk of req) {
+      total += chunk.length;
+      if (total > MAX_SYNC_BODY_BYTES) {
+        sendJson(res, 413, { error: `请求体过大（上限 ${MAX_SYNC_BODY_BYTES / 1024} KB）` });
+        return undefined;
+      }
+      chunks.push(chunk);
+    }
+  } catch {
+    sendJson(res, 400, { error: "读取请求体失败" });
+    return undefined;
+  }
+  const text = Buffer.concat(chunks).toString("utf8");
+  if (text.trim().length === 0) return {};
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      sendJson(res, 400, { error: "请求体必须是 JSON 对象" });
+      return undefined;
+    }
+    return parsed;
+  } catch {
+    sendJson(res, 400, { error: "请求体不是合法 JSON" });
+    return undefined;
+  }
+}
+
+/**
+ * 能否从界面保存同步设置。
+ *
+ * 与 `saveViaConfigEditor()` 的判定保持**同一条标准**（服务存在且 `edit` 是函数），
+ * 否则界面会显示「可保存」、点下去却 400。
+ *
+ * @param ctx - Cordis ctx。
+ * @returns 布尔。
+ */
+function canSaveSettings(ctx) {
+  try {
+    if (typeof ctx?.get !== "function") return false;
+    const editor = ctx.get("configEditor");
+    return typeof editor?.edit === "function" && ctx?.fiber?.entry !== undefined;
+  } catch {
+    return false;
+  }
+}
+
+
 /** 写 HTML 响应。 */
 function sendHtml(res, status, html) {
   res.writeHead(status, {
@@ -1285,19 +1359,27 @@ export function apply(ctx, config = {}) {
    * 索引就绪后先拉一次（拿到别的设备的历史数据），之后按 pullEveryMs / pushEveryMs 周期执行。
    * 定时器 unref：不阻止进程退出。
    */
-  if (index.deviceSync?.enabled === true) {
-    ctx.effect(() => {
-      const pullMs = Math.max(60 * 1000, Number(merged.sync.pullEveryMs) || DEFAULTS.sync.pullEveryMs);
-      const pushMs = Math.max(60 * 1000, Number(merged.sync.pushEveryMs) || DEFAULTS.sync.pushEveryMs);
+  /**
+   * 定时器跟着**运行时配置**走：`/sync/settings` 保存后可能开关同步或改周期，
+   * 因此这里不按启动时的 enabled 一刀切，而是提供 start/stop，由设置路由调用 syncTimers.refresh()。
+   * （仍受 `ctx.effect` 管理：插件卸载时一定会 clear。）
+   */
+  const syncTimers = {
+    stop: null,
+    start() {
+      if (this.stop !== null) return;
+      const pullMs = Math.max(60 * 1000, Number(index.deviceSync.config.pullEveryMs) || DEFAULTS.sync.pullEveryMs);
+      const pushMs = Math.max(60 * 1000, Number(index.deviceSync.config.pushEveryMs) || DEFAULTS.sync.pushEveryMs);
       let cancelled = false;
       const runPull = () => {
-        if (cancelled) return;
+        if (cancelled || index.deviceSync.enabled !== true) return;
         void index.deviceSync.pull().then((result) => {
+          // 即使只是「跳过」也要判断是否有来源变化：成功即作废快照
           if (result?.ok === true) index.invalidateSnapshot("sync-pull");
         });
       };
       const runPush = () => {
-        if (cancelled) return;
+        if (cancelled || index.deviceSync.enabled !== true) return;
         void index.deviceSync.push(index.rows);
       };
       const pullTimer = setInterval(runPull, pullMs);
@@ -1310,21 +1392,28 @@ export function apply(ctx, config = {}) {
         runPull();
       }).catch(() => {});
       ctx.logger.info(
-        `[workload-report] 多设备同步已启用：${merged.sync.transport} · 推送 ${Math.round(pushMs / 60000)} 分钟 · 拉取 ${Math.round(pullMs / 60000)} 分钟`,
+        `[workload-report] 多设备同步已启用：${index.deviceSync.config.transport} · 推送 ${Math.round(pushMs / 60000)} 分钟 · 拉取 ${Math.round(pullMs / 60000)} 分钟`,
       );
-      return () => {
+      this.stop = () => {
         cancelled = true;
         clearInterval(pullTimer);
         clearInterval(pushTimer);
+        this.stop = null;
       };
-    }, "workload-report: device sync timers");
-  }
+    },
+    refresh() {
+      if (index.deviceSync.enabled === true) this.start();
+      else this.stop?.();
+    },
+  };
+  syncTimers.refresh();
+  ctx.effect(() => () => syncTimers.stop?.(), "workload-report: device sync timers");
 
   const handle = async (req, res) => {
     try {
       const url = new URL(req.url ?? "/", "http://workload-report.invalid");
       const route = url.pathname.slice(apiPath.length) || "/";
-      // 唯一允许写的路由：保存/清除同步凭据（DSH 加密凭据库）。其余全部只读。
+      // 唯一允许写的路由：保存同步设置与凭据（DSH 凭据存储：0600 + 文件锁）。其余全部只读。
       const isWriteRoute = req.method === "POST" && (route === "/sync/credentials" || route === "/sync/settings");
       if (req.method !== "GET" && req.method !== "HEAD" && !isWriteRoute) {
         sendJson(res, 405, { error: "只支持 GET / HEAD（保存设置用 POST /sync/settings，保存凭据用 POST /sync/credentials）" });
@@ -1362,27 +1451,21 @@ export function apply(ctx, config = {}) {
       }
       if (route === "/sync/settings") {
         // 同步设置：GET 返回可编辑视图（不含机密）+ 候选项；POST 写入 profile 并热应用。
-        const currentSync = merged.sync ?? DEFAULTS.sync;
+        // GET 一律读**运行中**的配置（index.deviceSync.config）：它才是热应用后的唯一真相，
+        // 用 apply() 时的闭包快照会让表单在保存后「自己退回去」。
         if (req.method === "GET" || req.method === "HEAD") {
           sendJson(res, 200, {
-            view: editableView(currentSync),
+            view: editableView(index.deviceSync.config),
             transports: Object.entries(TRANSPORT_META).map(([id, meta]) => ({ id, ...meta })),
             presets: PLATFORM_PRESETS,
             cosRegions: COS_REGIONS,
-            canSave: typeof ctx?.get === "function" && ctx.get("configEditor") !== undefined && ctx?.fiber?.entry !== undefined,
+            // 与 saveViaConfigEditor 同一判定：服务存在且 edit 是函数才算能存
+            canSave: canSaveSettings(ctx),
           });
           return;
         }
-        let body = {};
-        try {
-          const chunks = [];
-          for await (const chunk of req) chunks.push(chunk);
-          const text = Buffer.concat(chunks).toString("utf8");
-          body = text.length > 0 ? JSON.parse(text) : {};
-        } catch {
-          sendJson(res, 400, { error: "请求体不是合法 JSON" });
-          return;
-        }
+        const body = await readJsonBody(req, res);
+        if (body === undefined) return;
         // 用 configEditor 回调里的**磁盘现值**作为基准，避免用内存快照覆盖掉别处的改动
         let nextSync = null;
         let validationError = null;
@@ -1403,38 +1486,38 @@ export function apply(ctx, config = {}) {
           sendJson(res, saved.status === "unavailable" ? 501 : 400, { error: saved.message ?? "保存失败", status: saved.status });
           return;
         }
-        // 保存后热应用：把新配置直接喂给运行中的 SyncService，界面立刻可用
+        // 保存后热应用：把新配置喂给运行中的 SyncService（嵌套段深合并，避免整段替换丢字段），
+        // 并让定时器跟随新的 enabled / 周期重建 —— 否则「保存即生效」名不副实。
         try {
-          index.deviceSync.config = { ...index.deviceSync.config, ...nextSync };
+          index.deviceSync.applyConfig(nextSync ?? {});
+          index.deviceSync.identity = null; // machineName 可能变了，下次 push/pull 重新取
+          syncTimers.refresh();
         } catch {
           /* 配置已落盘，热应用失败不影响下次重启 */
         }
-        sendJson(res, 200, { ok: true, view: editableView(nextSync ?? currentSync), status: index.deviceSync.diagnostics() });
+        sendJson(res, 200, { ok: true, view: editableView(index.deviceSync.config), status: index.deviceSync.diagnostics() });
         return;
       }
       if (route === "/sync/credentials") {
-        // 凭据读写：GET 只返回「是否已配置」，POST 保存到 DSH 加密凭据库。
+        // 凭据读写：GET 只返回「是否已配置」，POST 写入 DSH 凭据存储。
         // 值永远不出现在响应里，也不写日志。
         if (index.deviceSync?.enabled !== true) {
+          // 关闭态一律只读：POST 也拒绝，避免「用户以为同步没开」时仍能写入机密
+          if (req.method === "POST") {
+            sendJson(res, 409, { error: "同步未启用：请先在「同步设置」里开启同步，再保存凭据" });
+            return;
+          }
           sendJson(res, 200, { enabled: false, vault: false, fields: [] });
           return;
         }
         if (req.method === "GET" || req.method === "HEAD") {
           const fields = await index.deviceSync.credentialStatus();
-          sendJson(res, 200, { enabled: true, vault: index.deviceSync.vault.available, transport: merged.sync.transport, fields });
+          sendJson(res, 200, { enabled: true, vault: index.deviceSync.vault.available, transport: index.deviceSync.config.transport, fields });
           return;
         }
-        // POST：body 是 JSON；delete=1 表示清空
-        let body = {};
-        try {
-          const chunks = [];
-          for await (const chunk of req) chunks.push(chunk);
-          const text = Buffer.concat(chunks).toString("utf8");
-          body = text.length > 0 ? JSON.parse(text) : {};
-        } catch {
-          sendJson(res, 400, { error: "请求体不是合法 JSON" });
-          return;
-        }
+        // POST：body 是 JSON；delete=1 表示清空（带上限，避免超大 body 缓冲进内存）
+        const body = await readJsonBody(req, res);
+        if (body === undefined) return;
         try {
           const result = body.delete === true
             ? await index.deviceSync.clearCredentials()

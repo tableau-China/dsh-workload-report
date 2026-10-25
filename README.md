@@ -24,10 +24,10 @@ DSH shows stats for the **current session**. This plugin adds the cross-session,
 # npm (published package)
 dsh plugin add dsh-workload-report
 
-# or straight from GitHub
-dsh plugin --profile web add github:tableau-China/dsh-workload-report#main
+# or straight from GitHub (pin a release tag)
+dsh plugin --profile web add github:tableau-China/dsh-workload-report#v2.0.0
 
-# or link a local checkout
+# or link a local checkout (development)
 dsh plugin --profile web add link:$PWD
 ```
 
@@ -43,7 +43,7 @@ Uninstall: `dsh plugin --profile web remove dsh-workload-report`.
 - **Outbound-network cases**: the optional balance chip (`balance.enabled: true`, off by default), where the **host** calls the official `deepseekAccount` service, and the **AI user profile** (included by default, but only a manual click calls the model; aggregate statistics only). See [Privacy](#privacy).
 - **No invented numbers.** Unreadable legacy sessions are excluded and counted in the UI; models without an official price show **—** instead of a made-up cost.
 
-## Features (1.0.0)
+## Features (2.0.0)
 
 - **Eight KPIs**: cumulative active time (**net active**, waiting shown on a second line), total tokens (full integer you can verify), model cost, active days, conversations, turns / steps, cache-read share, and the most active model.
 - **Daily usage trend**: calendar heatmap (Mon–Sun × Year-Week, colour and bar height = active time) or a bar chart; weekends use a different colour, the peak bar is always labelled, and every calendar cell, bar, weekday total and axis label has its own tooltip.
@@ -165,6 +165,19 @@ The default model prices are built in and offline; `pricing.overrides`, `pricing
 
 Running DSH on several machines? Merge their usage into one report. **Disabled by default** — with no `sync` config the plugin behaves exactly as before and makes zero outbound requests.
 
+**No YAML needed.** Open the dashboard → **Device sync**. Everything is in the UI:
+
+1. **Sync settings** — pick a storage backend (COS / GitHub / Gitea / shared folder), fill in what that backend needs
+   (COS: bucket + region; GitHub/Gitea: repo + branch + API base; shared folder: a directory), then **Save settings**.
+   It applies immediately (and the background push/pull timers follow the new intervals).
+2. **Credentials** — paste SecretId / SecretKey (or a token) and click **Save & test** to get an immediate connection result.
+   They go to the **DSH credential store**: the host writes `<DSH_HOME>/.credentials.yaml` with **0600 permissions and a file lock**.
+   This is *not* application-level encryption — at-rest protection comes from full-disk encryption (FileVault / BitLocker).
+   Values never enter the profile config, git, or the browser, and the UI only ever shows "configured".
+3. **Devices** — see when other machines last synced, and push/pull on demand.
+
+Prefer a config file (servers / CI)? That works too — see section 4 of [docs/sync.md](./docs/sync.md).
+
 ```yaml
 - id: workload-report
   name: dsh-workload-report
@@ -270,7 +283,7 @@ All statistics stay on your machine. The plugin registers **read-only** HTTP rou
 | --- | --- |
 | `pnpm add -D esbuild puppeteer-core` | Install build and browser-test dependencies (or point `ESBUILD_PATH` / `WL_PUPPETEER_DIR` at existing installs) |
 | `node build.mjs` | Bundle `src/client/` into `lib/client.js` (ModuleLoader factory format) with esbuild |
-| `node test/verify.mjs` | **1254 offline assertions**: aggregation semantics with one shared range rule, time zones, turn-based hour bucketing and conservation, hourly tokens by message time, human-message density, wait exclusion (all three rules + long-task exemption + `excludeWait:false` regression), index/read fallbacks, report structure parity, the AI-profile tab as a right-aligned navigation entry, the 30-day profile window, multi-device sync (payload / merge / credentials / settings / device filter), zero model calls on first open, i18n key alignment, and balance states |
+| `node test/verify.mjs` | **1283 offline assertions**: aggregation semantics with one shared range rule, time zones, turn-based hour bucketing and conservation, hourly tokens by message time, human-message density, wait exclusion (all three rules + long-task exemption + `excludeWait:false` regression), index/read fallbacks, report structure parity, the AI-profile tab as a right-aligned navigation entry, the 30-day profile window, multi-device sync (payload / merge / credentials / settings / device filter), zero model calls on first open, i18n key alignment, and balance states |
 | `./test/e2e-boot.sh 3299` | Boot an **isolated instance** (own DSH_HOME and port) without touching your running GUI |
 | `node test/e2e-ui.mjs` | Real-browser E2E: calendar/bar switching, geometry, donuts, report export, time-of-day card |
 

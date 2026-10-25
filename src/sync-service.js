@@ -183,7 +183,7 @@ export class CosTransport {
   }
 
   /**
-   * 取 COS 凭据：加密凭据库 > 文件 > 环境变量 > 内联。
+   * 取 COS 凭据：DSH 凭据存储 > 文件 > 环境变量 > 内联。
    * @returns {Promise<{ secretId, secretKey, sources } | null>} 缺任一项返回 null。
    */
   async credentials() {
@@ -319,7 +319,7 @@ export class ContentsTransport {
     return /api\.github\.com$/.test(origin) ? origin : `${origin}/api/v1`;
   }
 
-  /** 取 access token：加密凭据库 > 文件 > 环境变量 > 内联。 */
+  /** 取 access token：DSH 凭据存储 > 文件 > 环境变量 > 内联。 */
   async credentials() {
     const field = await resolveField({
       vault: this.vault,
@@ -381,8 +381,9 @@ export class ContentsTransport {
 
   async list(prefix) {
     const branch = this.config.branch || "main";
-    // Contents API 只能列目录，不能按前缀过滤 → prefix 取末级目录
-    const dir = (prefix ?? "").replace(/\/[^/]*$/, "").replace(/\/+$/, "");
+    // Contents API 只能列目录、不能按前缀过滤：入参已是目录前缀（prefixOf 保证），
+    // 这里只做首尾斜杠归一化，不再截末级目录（否则多段模板会列错目录）。
+    const dir = (prefix ?? "").replace(/^\/+/, "").replace(/\/+$/, "");
     const url = dir
       ? `/repos/${this.config.repo}/contents/${dir}?ref=${encodeURIComponent(branch)}`
       : `/repos/${this.config.repo}/contents/?ref=${encodeURIComponent(branch)}`;
@@ -437,7 +438,7 @@ export class LocalTransport {
   }
 
   async list(prefix) {
-    const dirPrefix = (prefix ?? "").replace(/\/[^/]*$/, "");
+    const dirPrefix = (prefix ?? "").replace(/^\/+/, "").replace(/\/+$/, "");
     const dir = this.resolve(dirPrefix);
     try {
       const entries = await readdir(dir, { withFileTypes: true });
@@ -473,6 +474,25 @@ export function createTransport(config, { vault = null } = {}) {
 }
 
 // —— 载荷 ————————————————————————————————————————————————
+
+/**
+ * 由 key 模板推导「目录前缀」，**带尾斜杠**。
+ *
+ * 约定：`list()` 收的是目录前缀，各传输只负责列出这个目录下的文件，
+ * 不再各自按末级目录二次截断（否则多段模板 `dsh/machines/{machineId}.json`
+ * 会列到上一级目录，出现「能推不能拉」）。
+ *
+ * @param path - key 模板，如 `machines/{machineId}.json` / `dsh/machines/{machineName}.json`。
+ * @returns 目录前缀，如 `machines/` / `dsh/machines/`；模板无目录段时返回 ""。
+ */
+export function prefixOf(path) {
+  const template = typeof path === "string" && path.trim().length > 0 ? path.trim() : SYNC_DEFAULTS.path;
+  const withoutPlaceholders = template.replace(/\{machineId\}/g, "_").replace(/\{machineName\}/g, "_");
+  const cut = withoutPlaceholders.lastIndexOf("/");
+  if (cut < 0) return "";
+  const directory = withoutPlaceholders.slice(0, cut + 1).replace(/^\/+/, "");
+  return directory;
+}
 
 /** cwd 抹权：能配别名就显示别名，否则用「目录名#短哈希」（不可逆，不暴露完整路径）。 */
 function redactCwd(cwd, aliases) {
@@ -528,13 +548,141 @@ export function buildPayload(rows, machine, { redactPaths = false, aliases = {} 
   };
 }
 
-/** 校验载荷；不合法抛错，调用方据此跳过该来源。 */
+/** 单个载荷文件的行数上限（防御远端写超大文件拖死合并）。 */
+export const MAX_PAYLOAD_ROWS = 5000;
+/** 载荷正文字节上限（拉取时先看长度，避免 JSON.parse 吃掉一个超大对象）。 */
+export const MAX_PAYLOAD_BYTES = 8 * 1024 * 1024;
+/** 「本机」与「全部设备」是设备筛选的保留字，远端来源不得占用。 */
+const RESERVED_MACHINE_IDS = new Set(["local", "all"]);
+
+/** 收敛成非负有限数（远端字段一律过一遍，避免 NaN/Infinity/字符串混进聚合）。 */
+function safeCount(value, max = Number.MAX_SAFE_INTEGER) {
+  const number = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(number) || number <= 0) return 0;
+  return Math.min(number, max);
+}
+
+/** 时间戳：必须是有限正数且在合理区间（1970..now+1 天），否则丢弃该行。 */
+function safeTimestamp(value, now) {
+  const number = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(number) || number <= 0) return null;
+  if (number > now + 24 * 3600 * 1000) return null;
+  return Math.floor(number);
+}
+
+/** 固定长度 24 的数组才收（小时桶）；元素逐项收敛成非负数，长度不对返回 null。 */
+function safeHourArray(value, length = 24) {
+  if (!Array.isArray(value) || value.length !== length) return null;
+  return value.map((item) => safeCount(item));
+}
+
+/**
+ * 把一行远端数据收敛成与本地索引行同构的安全形状。
+ *
+ * **远端数据一律不信任**：id 必须是非空字符串、createdAt 必须落在合理区间，
+ * 所有计数字段过非负收敛，数组字段必须长度 24。
+ * 不合法（如 id/createdAt 缺失）返回 null，由调用方整行丢弃。
+ *
+ * @param row - 远端原始行。
+ * @param now - 当前时间戳（用于 createdAt 上界与 updatedAt 兜底）。
+ * @returns 归一化后的行，或 null。
+ */
+function normalizeRemoteRow(row, now) {
+  if (row === null || typeof row !== "object" || Array.isArray(row)) return null;
+  const id = typeof row.id === "string" ? row.id.trim() : "";
+  if (id.length === 0 || id.length > 200) return null;
+  const createdAt = safeTimestamp(row.createdAt, now);
+  if (createdAt === null) return null;
+  const tokens = row.tokens !== null && typeof row.tokens === "object" && !Array.isArray(row.tokens) ? row.tokens : {};
+  return {
+    id,
+    // 路径只当展示用：非字符串一律降级成空串（workspaceLabel 会安全处理）
+    cwd: typeof row.cwd === "string" ? row.cwd.slice(0, 1024) : "",
+    createdAt,
+    isSubagent: row.isSubagent === true,
+    isSeeded: row.isSeeded === true,
+    agentPreset: typeof row.agentPreset === "string" ? row.agentPreset.slice(0, 120) : null,
+    title: typeof row.title === "string" ? row.title.slice(0, 500) : "",
+    turns: safeCount(row.turns, 1e6),
+    steps: safeCount(row.steps, 1e7),
+    llmMs: safeCount(row.llmMs, 1e12),
+    toolMs: safeCount(row.toolMs, 1e12),
+    waitMs: safeCount(row.waitMs, 1e12),
+    decodeTokens: safeCount(row.decodeTokens, 1e15),
+    tokens: {
+      input: safeCount(tokens.input, 1e15),
+      output: safeCount(tokens.output, 1e15),
+      cacheRead: safeCount(tokens.cacheRead, 1e15),
+      cacheWrite: safeCount(tokens.cacheWrite, 1e15),
+    },
+    lastPromptAt: typeof row.lastPromptAt === "number" && Number.isFinite(row.lastPromptAt) ? row.lastPromptAt : null,
+    asOfSeq: typeof row.asOfSeq === "number" && Number.isFinite(row.asOfSeq) ? row.asOfSeq : null,
+    // 模型维度：只接受「对象 → 对象」的形状，值由聚合层再过一遍非负收敛
+    models: row.models !== null && typeof row.models === "object" && !Array.isArray(row.models) ? row.models : null,
+    hours: safeHourArray(row.hours),
+    hoursSource: typeof row.hoursSource === "string" ? row.hoursSource.slice(0, 40) : null,
+    hourTokens: safeHourArray(row.hourTokens),
+    hourTokensSource: typeof row.hourTokensSource === "string" ? row.hourTokensSource.slice(0, 40) : null,
+    hourHumanMsgs: safeHourArray(row.hourHumanMsgs),
+    updatedAt: safeCount(row.updatedAt, now + 24 * 3600 * 1000) || now,
+  };
+}
+
+/**
+ * 校验并归一化载荷；不合法抛错，调用方据此跳过该来源。
+ *
+ * 除了顶层 schema/kind/rows，还会**逐行**收敛（见 normalizeRemoteRow）：
+ * 一份损坏或恶意构造的远端文件不能把聚合层打挂，也不能让非法字段进入看板。
+ *
+ * @param payload - 远端 JSON。
+ * @param source - 来源 key（用于错误信息）。
+ * @returns 归一化后的载荷（rows 已过滤/收敛，totals 重新计算）。
+ */
 export function validatePayload(payload, source) {
   if (payload?.schema !== PAYLOAD_SCHEMA || payload?.kind !== PAYLOAD_KIND || !Array.isArray(payload.rows)) {
     throw new Error(`${source}: 载荷格式不符（schema/kind/rows）`);
   }
-  if (!payload.machine?.id) throw new Error(`${source}: 缺少 machine.id`);
-  return payload;
+  const machineId = typeof payload.machine?.id === "string" ? payload.machine.id.trim() : "";
+  if (machineId.length === 0) throw new Error(`${source}: 缺少 machine.id`);
+  if (RESERVED_MACHINE_IDS.has(machineId.toLowerCase())) {
+    // 「本机 / 全部设备」是保留字，远端不得冒用（否则设备筛选会被绕过）
+    throw new Error(`${source}: machine.id 不能使用保留字 ${machineId}`);
+  }
+  if (payload.rows.length > MAX_PAYLOAD_ROWS) {
+    throw new Error(`${source}: 行数超过上限（${payload.rows.length} > ${MAX_PAYLOAD_ROWS}）`);
+  }
+  const now = Date.now();
+  const rows = [];
+  let invalid = 0;
+  for (const raw of payload.rows) {
+    const row = normalizeRemoteRow(raw, now);
+    if (row === null) invalid += 1;
+    else rows.push(row);
+  }
+  if (rows.length === 0 && payload.rows.length > 0) {
+    throw new Error(`${source}: 没有可用行（${invalid} 行不合法）`);
+  }
+  const machineName = typeof payload.machine?.name === "string" ? payload.machine.name.trim().slice(0, 80) : "";
+  if (RESERVED_MACHINE_IDS.has(machineName.toLowerCase())) {
+    throw new Error(`${source}: machine.name 不能使用保留字 ${machineName}`);
+  }
+  return {
+    schema: payload.schema,
+    kind: payload.kind,
+    generatedAt: typeof payload.generatedAt === "number" ? payload.generatedAt : null,
+    machine: {
+      id: machineId,
+      name: machineName || machineId,
+      plugin: typeof payload.machine?.plugin === "string" ? payload.machine.plugin : null,
+    },
+    totals: {
+      sessions: rows.length,
+      activeMs: rows.reduce((sum, row) => sum + row.llmMs + row.toolMs, 0),
+    },
+    rows,
+    // 诊断用：被丢弃的坏行数量（不进入业务数据）
+    invalidRows: invalid,
+  };
 }
 
 // —— 同步服务 ————————————————————————————————————————————
@@ -574,6 +722,28 @@ export class SyncService {
     this.pullingPromise = null;
   }
 
+  /**
+   * 热应用一份新配置（`/sync/settings` 保存后调用）。
+   *
+   * 与构造函数的归一化**同一套规则**：顶层浅合并 + `github/cos/local` 三段深合并。
+   * 不能直接 `{...this.config, ...patch}` —— 那样传入的瘦身配置会把整段 `cos` 替换掉，
+   * 丢掉 `secretIdFile` 等没有出现在 patch 里的字段。
+   *
+   * @param patch - 新配置片段（可只含变化项）。
+   * @returns 合并后的完整配置。
+   */
+  applyConfig(patch = {}) {
+    const next = { ...this.config, ...(patch ?? {}) };
+    for (const key of ["github", "cos", "local"]) {
+      if (next[key] !== undefined && next[key] !== null) {
+        next[key] = { ...SYNC_DEFAULTS[key], ...(this.config[key] ?? {}), ...(patch?.[key] ?? {}) };
+      }
+    }
+    this.config = next;
+    this.config.keyPrefix = prefixOf(this.config.path);
+    return this.config;
+  }
+
   get enabled() {
     return this.config.enabled === true;
   }
@@ -603,7 +773,7 @@ export class SyncService {
   }
 
   /**
-   * 保存凭据到加密凭据库。值只在此函数内出现，绝不进日志或响应。
+   * 保存凭据到 DSH 凭据存储。值只在此函数内出现，绝不进日志或响应。
    * @param values - { 'secret-id': '…', 'secret-key': '…' } 或 { token: '…' }。
    */
   async saveCredentials(values) {
@@ -619,7 +789,7 @@ export class SyncService {
       saved.push(id);
     }
     if (saved.length === 0) throw new Error("没有可保存的凭据字段");
-    this.ctx?.logger?.info?.(`[workload-report] 已保存 ${saved.length} 项同步凭据到加密凭据库（不记录内容）`);
+    this.ctx?.logger?.info?.(`[workload-report] 已保存 ${saved.length} 项同步凭据到 DSH 凭据存储（不记录内容）`);
     return { saved };
   }
 
@@ -646,7 +816,7 @@ export class SyncService {
       arch: process.arch,
       plugin: this.pluginVersion,
     };
-    this.config.keyPrefix = (this.config.path ?? "machines/{machineId}.json").replace(/\{machineId\}/g, "").replace(/\/[^/]*$/, "");
+    this.config.keyPrefix = prefixOf(this.config.path);
     return this.identity;
   }
 
@@ -698,11 +868,20 @@ export class SyncService {
       try {
         const self = await this.identify();
         const transport = this.transport();
-        const prefix = (this.config.path ?? "").replace(/\{machineId\}/g, "").replace(/\/[^/]*$/, "");
+        // 目录前缀统一由 prefixOf 推导（带尾斜杠）：各传输的 list() 只负责列这个目录，
+        // 不再各自按末级目录二次截断——否则 "dsh/machines/{machineId}.json" 这类
+        // 多段模板会「能推不能拉」（列到的是上一级目录）。
+        const prefix = prefixOf(this.config.path);
         const keys = (await transport.list(prefix)).filter((key) => key.endsWith(".json"));
         const seen = new Set();
         let fetched = 0;
+        let skipped = 0;
         for (const key of keys) {
+          // 纵深防御：key 必须落在自己的模板前缀下，且不允许路径穿越
+          if (!key.startsWith(prefix) || key.includes("..")) {
+            skipped += 1;
+            continue;
+          }
           let text = null;
           try {
             text = await transport.read(key);
@@ -711,6 +890,12 @@ export class SyncService {
             continue;
           }
           if (text === null) continue;
+          // 体积上限：远端对象可能是任意大小，先按字节拦一道，避免 JSON.parse 吃爆内存
+          if (Buffer.byteLength(text, "utf8") > MAX_PAYLOAD_BYTES) {
+            this.ctx?.logger?.warn?.(`[workload-report] 跳过 ${key}: 超过 ${Math.round(MAX_PAYLOAD_BYTES / 1024 / 1024)}MB 上限`);
+            skipped += 1;
+            continue;
+          }
           let payload;
           try {
             payload = validatePayload(JSON.parse(text), key);
@@ -729,9 +914,10 @@ export class SyncService {
         }
         this.stats.lastPullAt = Date.now();
         this.stats.lastPullFetched = fetched;
+        this.stats.lastPullSkipped = skipped;
         this.stats.lastPullError = null;
-        this.ctx?.logger?.info?.(`[workload-report] 拉到 ${fetched} 个其他设备（共 ${this.sources.size} 个来源）`);
-        return { ok: true, fetched, total: this.sources.size };
+        this.ctx?.logger?.info?.(`[workload-report] 拉到 ${fetched} 个其他设备（共 ${this.sources.size} 个来源${skipped > 0 ? `，跳过 ${skipped} 个` : ""}）`);
+        return { ok: true, fetched, total: this.sources.size, skipped };
       } catch (error) {
         this.stats.lastPullError = reasonOf(error);
         this.ctx?.logger?.warn?.(`[workload-report] 同步拉取失败: ${this.stats.lastPullError}`);

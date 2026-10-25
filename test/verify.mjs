@@ -2,7 +2,7 @@
 // 用法：node test/verify.mjs
 
 import { readFileSync } from "node:fs";
-import { readFile, readdir, rm } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { aggregate, dateKey, present, resolveRange, rowFromSession, workspaceLabel } from "../src/aggregate.js";
@@ -11,7 +11,7 @@ import { barPercent } from "../src/client/bar-width.js";
 import { renderReport } from "../src/report-html.js";
 import {
   CosTransport, ContentsTransport, LocalTransport, PAYLOAD_KIND, PAYLOAD_SCHEMA, SYNC_DEFAULTS, SyncService, TRANSPORTS,
-  buildPayload, createTransport, validatePayload,
+  buildPayload, createTransport, prefixOf, validatePayload,
 } from "../src/sync-service.js";
 import { cosSign, cosUrlEncode } from "../src/cos-sign.js";
 import { CREDENTIAL_OWNER, CredentialVault, fieldsOf, resolveField } from "../src/credential-vault.js";
@@ -802,7 +802,11 @@ console.log("\n—— 布局：面板高度 / 报告页宽 ——");
   const stylesSource = await readFile(new URL("../src/client/styles.js", import.meta.url), "utf8");
   const reportSource = await readFile(new URL("../src/report-html.js", import.meta.url), "utf8");
   const panelRule = (stylesSource.match(/\.wl-panel \{[^}]*\}/s) ?? [""])[0];
-  ok(/height: 92vh/.test(panelRule) && /max-height: 92vh/.test(panelRule), "看板面板高度固定 92vh（四个页签初始高度一致）", panelRule.slice(0, 120));
+  ok(
+    /height: min\(92vh, calc\(100vh - 8vh - 24px\)\)/.test(panelRule) && /max-height: min\(92vh, calc\(100vh - 8vh - 24px\)\)/.test(panelRule),
+    "看板面板高度固定 92vh（四个页签初始高度一致，且短视口有兜底）",
+    panelRule.slice(0, 200),
+  );
   ok(/\.wl-body \{[^}]*flex: 1 1 auto[^}]*min-height: 0/s.test(stylesSource), "内容区填满面板并在内部滚动（flex + min-height:0）");
   const pageRule = (reportSource.match(/\.page \{[^}]*\}/s) ?? [""])[0];
   ok(/width: 100%/.test(pageRule) && /max-width: 1600px/.test(pageRule), "报告页宽自适应视口（宽屏最多 1600px）", pageRule.slice(0, 140));
@@ -2201,6 +2205,38 @@ async function routeJson(routeList, url) {
   return { status: response.status, body: JSON.parse(response.body) };
 }
 
+/** POST 一个 JSON 请求体（可指定 content-type），返回 {status, body}。 */
+function postJson(routeList, url, payload, { contentType = "application/json", rawBody = null } = {}) {
+  const text = rawBody === null ? JSON.stringify(payload) : rawBody;
+  const req = {
+    method: "POST",
+    url,
+    headers: { "content-type": contentType, "content-length": String(Buffer.byteLength(text)) },
+    async *[Symbol.asyncIterator]() {
+      yield Buffer.from(text, "utf8");
+    },
+  };
+  return new Promise((resolve) => {
+    const res = {
+      statusCode: 0,
+      headers: {},
+      body: "",
+      writeHead(status, headers) { this.statusCode = status; this.headers = headers; },
+      end(chunk) {
+        if (chunk) this.body += chunk;
+        let body = null;
+        try { body = JSON.parse(this.body); } catch { body = null; }
+        resolve({ status: this.statusCode, body });
+      },
+    };
+    try {
+      routeList[0].handler(req, res);
+    } catch (error) {
+      resolve({ status: 500, body: { error: String(error?.message ?? error) } });
+    }
+  });
+}
+
 // 1) 默认关闭：服务在场也一次都不调用（spy = 0）
 {
   const spy = walletService({ balance: { status: "ready", value: [{ currency: "CNY", balance: "12.34" }], bonusWallets: [] } });
@@ -2960,14 +2996,74 @@ bootSync.seq = 1;
   ok(!hashOnly.rows[0].cwd.includes("/Users/"), "载荷：redactPaths 且无别名时不暴露绝对路径", hashOnly.rows[0].cwd);
   ok(/#[0-9a-f]{6}$/.test(hashOnly.rows[0].cwd), "载荷：redactPaths 用「名字#短哈希」", hashOnly.rows[0].cwd);
 
-  // 12.6 载荷校验：坏载荷必须被拒
-  ok(validatePayload(payload, "ok") === payload, "载荷校验：合法载荷通过");
+  // 12.6 载荷校验：坏载荷必须被拒；合法载荷被**归一化**后返回（远端数据一律不信任）
+  const checked = validatePayload(payload, "ok");
+  ok(checked !== payload && checked.rows.length === payload.rows.length, "载荷校验：合法载荷归一化通过（返回新对象）");
+  eq(checked.rows[0].id, payload.rows[0].id, "载荷校验：id 保留");
+  eq(checked.rows[0].createdAt, payload.rows[0].createdAt, "载荷校验：createdAt 保留");
+  ok(checked.rows[0].cwd === payload.rows[0].cwd, "载荷校验：cwd 保留（字符串原样）");
   let rejected = 0;
   for (const bad of [null, {}, { schema: 9, kind: PAYLOAD_KIND, rows: [] }, { schema: 1, kind: "x", rows: [] },
     { schema: 1, kind: PAYLOAD_KIND }, { schema: 1, kind: PAYLOAD_KIND, rows: [], machine: {} }]) {
     try { validatePayload(bad, "bad"); } catch { rejected += 1; }
   }
   eq(rejected, 6, "载荷校验：6 种坏载荷全部被拒");
+
+  // 12.6b 恶意/损坏载荷不能把聚合层打挂（这些行以前会一路进 aggregate 并抛错）
+  const hostile = validatePayload({
+    schema: PAYLOAD_SCHEMA, kind: PAYLOAD_KIND, machine: { id: "evil", name: "evil" },
+    rows: [
+      { id: "ok-1", cwd: "/Users/x/p", createdAt: base, llmMs: 1000, tokens: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 } },
+      { id: "bad-time", cwd: {}, createdAt: 1e18 },          // 非法时间 + 非法 cwd → 整行丢弃
+      { id: "", createdAt: base },                            // 空 id → 丢弃
+      { id: "bad-fields", cwd: { a: 1 }, createdAt: base, turns: "NaN", llmMs: Infinity, hours: [1, 2] }, // 字段收敛，保留
+      "not-an-object",                                        // 非对象 → 丢弃
+      null,
+    ],
+  }, "hostile");
+  eq(hostile.rows.length, 2, "载荷归一化：坏行被丢弃（只剩 2 行可用）", JSON.stringify(hostile.rows.map((r) => r.id)));
+  ok(hostile.invalidRows === 4, "载荷归一化：坏行计数正确（4）", String(hostile.invalidRows));
+  eq(hostile.rows.find((r) => r.id === "bad-fields").turns, 0, "载荷归一化：非数字计数字段收敛为 0");
+  eq(hostile.rows.find((r) => r.id === "bad-fields").llmMs, 0, "载荷归一化：Infinity 收敛为 0");
+  ok(hostile.rows.find((r) => r.id === "bad-fields").hours === null, "载荷归一化：长度不合法的小时桶置 null");
+  eq(hostile.rows.find((r) => r.id === "bad-fields").cwd, "", "载荷归一化：非字符串 cwd 降级为空串");
+  // 归一化后的行必须能被聚合层安全消费（这里就是旧实现的 500 路径）
+  let aggregateThrew = null;
+  try {
+    present(aggregate(hostile.rows, { days: 30, timeZone: "UTC" }));
+  } catch (error) {
+    aggregateThrew = String(error?.message ?? error);
+  }
+  eq(aggregateThrew, null, "载荷归一化：归一化后的远端行不会让 aggregate 抛错");
+
+  // 12.6c 保留字 / 上限
+  const reserved = (machine) => {
+    try { validatePayload({ schema: PAYLOAD_SCHEMA, kind: PAYLOAD_KIND, machine, rows: [] }, "r"); return false; } catch { return true; }
+  };
+  ok(reserved({ id: "local", name: "x" }), "载荷校验：拒绝 machine.id=local（保留字，防伪造本机）");
+  ok(reserved({ id: "ALL", name: "x" }), "载荷校验：拒绝 machine.id=all（大小写不敏感）");
+  ok(reserved({ id: "m1", name: "local" }), "载荷校验：拒绝 machine.name=local（防设备筛选绕过）");
+  let tooMany = false;
+  try {
+    validatePayload({ schema: PAYLOAD_SCHEMA, kind: PAYLOAD_KIND, machine: { id: "m" }, rows: Array.from({ length: 5001 }, () => ({ id: "x", createdAt: base })) }, "big");
+  } catch { tooMany = true; }
+  ok(tooMany, "载荷校验：行数超过上限被拒（防超大文件）");
+
+  // 12.6d 前缀推导：多段模板必须能「推也能拉」
+  eq(prefixOf("machines/{machineId}.json"), "machines/", "prefixOf：单段模板");
+  eq(prefixOf("dsh/machines/{machineId}.json"), "dsh/machines/", "prefixOf：多段模板带尾斜杠");
+  eq(prefixOf("{machineId}.json"), "", "prefixOf：根目录模板");
+  eq(prefixOf("a/b/c-{machineName}.json"), "a/b/", "prefixOf：machineName 模板");
+  eq(prefixOf(undefined), "machines/", "prefixOf：缺省用默认模板");
+  {
+    const dir = "/tmp/wl-verify-prefix-" + process.pid;
+    const seg = "dsh/machines";
+    await mkdir(dir + "/" + seg, { recursive: true });
+    await writeFile(dir + "/" + seg + "/other.json", "{}");
+    const transport = new LocalTransport({ dir });
+    const listed = await transport.list(prefixOf("dsh/machines/{machineId}.json"));
+    ok(listed.includes("dsh/machines/other.json"), "拉取：多段模板能列出同目录文件", JSON.stringify(listed));
+  }
 
   // 12.7 合并语义：按 row.id 去重、updatedAt 大者胜、活跃天数不重复计天
   const syncConfig = { enabled: true, transport: "local", local: { dir: "/tmp/wl-verify-sync-" + process.pid } };
@@ -3077,6 +3173,32 @@ bootSync.seq = 1;
     eq(status.body.status.devices[0].local, true, "路由：设备清单第一项是本机");
     await rm(dir, { recursive: true, force: true }).catch(() => {});
     await rm(host.indexPath, { force: true }).catch(() => {});
+  }
+
+  // 12.14 写路由的安全边界：类型 / 体积 / 关闭态
+  {
+    const closed = bootSync({});
+    await waitHealth(closed.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "关同步实例索引完成");
+    // 关闭态下不允许写凭据（否则「以为没开」时仍能写入机密）
+    const credClosed = await postJson(closed.routeList, "/workload-report/v1/sync/credentials", { values: { token: "x" } });
+    eq(credClosed.status, 409, "安全：同步关闭时 POST /sync/credentials 返回 409");
+    const credGet = await postJson(closed.routeList, "/workload-report/v1/sync/credentials", {});
+    eq(credGet.status, 409, "安全：关闭态的读也走同一分支（POST 一律拒）");
+    // 非 JSON content-type 直接拒绝
+    const wrongType = await postJson(closed.routeList, "/workload-report/v1/sync/settings", { values: {} }, { contentType: "text/plain" });
+    eq(wrongType.status, 415, "安全：content-type 不是 JSON → 415");
+    // 超大体拒绝（64 KB 上限）
+    const huge = await postJson(closed.routeList, "/workload-report/v1/sync/settings", null, { rawBody: JSON.stringify({ values: { machineName: "x".repeat(200 * 1024) } }) });
+    eq(huge.status, 413, "安全：请求体超过 64 KB → 413（不会把整段缓冲进内存）");
+    // 非法 JSON 拒绝
+    const broken = await postJson(closed.routeList, "/workload-report/v1/sync/settings", null, { rawBody: "{not json" });
+    eq(broken.status, 400, "安全：非法 JSON → 400");
+    // 设置路由永远不返回任何机密字段
+    const view = await routeJson(closed.routeList, "/workload-report/v1/sync/settings");
+    ok(view.status === 200 && view.body.view !== undefined, "设置：GET 返回可编辑视图", String(view.status));
+    ok(!JSON.stringify(view.body).match(/secretKey|secretId|token/i), "设置：GET 响应不含任何凭据字段");
+    ok(view.body.canSave === false, "设置：没有 configEditor 的裸实例 canSave=false（与保存路径同一判定）");
+    await rm(closed.indexPath, { force: true }).catch(() => {});
   }
 }
 
@@ -3320,6 +3442,7 @@ bootSync.seq = 1;
   ok(syncView.includes('type="password"'), "UI：凭据输入框是 password（不露字）");
   ok(syncView.includes("setDraft({})"), "UI：提交后清空输入框（值不留在界面）");
   ok(syncView.includes("/sync/credentials"), "UI：凭据走 /sync/credentials 接口");
+  ok(syncView.includes("wl-cred-buttons") && /className="wl-btn"[^>]*disabled=\{busy\}[^>]*onClick=\{\(\) => void submit\(false\)\}/s.test(syncView), "UI：凭据「保存 / 清除」是执行按钮（.wl-btn），不是切换控件 Chip");
   ok(!/value=\{[^}]*configured[^}]*\}/.test(syncView), "UI：已配置字段不回填值");
   // 复用统一组件（不另造样式）
   ok(syncView.includes('from "./chips.jsx"'), "UI：设备筛选复用 ChipGroup/Chip");

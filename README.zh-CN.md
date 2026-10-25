@@ -21,17 +21,19 @@ DSH 自己只提供**当前会话**的统计行。这个插件补上跨会话、
 ## 安装与入口
 
 ```bash
-# npm（已发布）
+# npm
 dsh plugin add dsh-workload-report
 
-# 或从 GitHub 直接装
-dsh plugin --profile web add github:tableau-China/dsh-workload-report#main
+# 或从 GitHub 直接装（可指定版本 tag）
+dsh plugin --profile web add github:tableau-China/dsh-workload-report#v2.0.0
 
-# 或链接本地源码
+# 或链接本地源码（开发用）
 dsh plugin --profile web add link:$PWD
 ```
 
 装完重启 Web profile，入口在**侧边栏底部**：**工作量报告**（英文界面为 **Workload report**）。构建产物 `lib/client.js` 已入库，从 GitHub / npm 安装**不需要本地构建**。
+
+> **2.0.0 新增**：多设备用量同步（可选，默认关闭）与一轮样式 / 布局调整，详见下文「多设备同步」与「样式与布局调整」。
 
 卸载：`dsh plugin --profile web remove dsh-workload-report`。
 
@@ -43,7 +45,7 @@ dsh plugin --profile web add link:$PWD
 - **需要外发网络的场景**：可选余额 chip（`balance.enabled: true`，默认关闭，由**宿主**调用官方 `deepseekAccount` 服务），以及 **AI 用户画像**（默认包含，但只有点击「生成画像」才调用模型；只把聚合统计发给已配置的模型）。见「隐私」。
 - **不编数字。** 读不出的早期会话会被排除并在界面写明数量；没有官方价的模型费用显示 **—**，不猜。
 
-## 功能清单（1.0.0）
+## 功能清单（2.0.0）
 
 - **8 张 KPI**：累计活跃时长（**净活跃**，等待用户单列）、总 Token（完整整数，可核对）、模型费用、活跃天数、对话次数、轮次 / 步骤、缓存读取占比、最活跃模型。
 - **每日用量趋势**：日历热力图（纵轴周一～周日、横轴 Year-Week，颜色与柱高＝活跃时长）或柱状图；周末异色，峰值柱始终标数值，日历格 / 每日柱 / 周几累计条 / 坐标轴都有各自的 tooltip。
@@ -57,6 +59,7 @@ dsh plugin --profile web add link:$PWD
 - **主题与语言自适应**：颜色全部使用宿主主题 token（`--dsw-*`），自动跟随浅 / 深色；中英文文案逐键对齐。
 - **AI 用户画像（默认包含，手动触发）**：导航**最右侧的独立顶层页签**（蓝色底强调，与其它页签可辨）；「主要会话」页只保留会话表。首开只显示三行提示，点「生成画像」才调用模型；只凭**聚合统计**生成「headline + 4–6 个维度（每条结论引用数字 + 证据）+ 2–3 条建议 + 风险提示」，绝不发送对话、标题或路径；汇总窗口固定为 **max(当前区间, 30 天)**；同一统计指纹直接复用磁盘缓存；输出被截断时先修复 JSON，修不好才降级为同构的本地规则版。详见 [AI 用户画像](#ai-用户画像)。
 - **打开即快**：打开面板**零次**读事件日志（`readSession`），冷开 25 ms、热开约 1 ms（隔离实例实测）；模型折叠完全由后台定时器驱动，不因打开面板而触发。
+- **多设备同步（2.0.0，默认关闭）**：多台机器的用量合成一份报告。COS / GitHub / Gitea / 共享目录四种存储任选，设置与凭据都在界面里填、保存即热应用；看板顶部设备 chips 可按设备筛选，按逐会话行合并，活跃天数不重复计天。见[多设备同步](#多设备同步200)。
 
 ## 界面截图
 
@@ -168,9 +171,10 @@ dsh plugin --profile web add link:$PWD
 **不需要改 YAML。** 打开看板 →「设备同步」，三块配置都在界面里：
 
 1. **同步设置**：选存储方式（COS / GitHub / Gitea / 共享目录），填该方式需要的参数
-   （COS 填桶名+地域；GitHub/Gitea 填仓库+分支+服务地址；共享目录填路径），点「保存设置」——立即生效，不用重启。
+   （COS 填桶名+地域；GitHub/Gitea 填仓库+分支+服务地址；共享目录填路径），点「保存设置」——
+   热应用：配置、设备名与后台推送/拉取周期都立刻跟随，不用重启。
 2. **凭据**：粘贴 SecretId / SecretKey（或 Token），点「保存并测试」，立刻告诉你连没连上。
-   存在 **DSH 加密凭据库**里，不进配置文件、不进 git、界面不回显。
+   存在 **DSH 凭据存储**里（宿主以 0600 权限 + 文件锁写入 `<DSH_HOME>/.credentials.yaml`，不是应用层加密，静态加密依赖 FileVault 等磁盘加密），不进 profile 配置、不进 git、界面不回显。
 3. **设备**：看其它设备上次同步时间，随时手动推送/拉取。
 
 想用配置文件的场景（服务器 / CI）也支持，见 [docs/sync.md](./docs/sync.md) 第四节。
@@ -286,7 +290,7 @@ dsh plugin --profile web add link:$PWD
 | --- | --- |
 | `pnpm add -D esbuild puppeteer-core` | 安装构建与浏览器测试依赖（也可用 `ESBUILD_PATH` / `WL_PUPPETEER_DIR` 指向已有安装） |
 | `node build.mjs` | 用 esbuild 把 `src/client/` 打成 `lib/client.js`（ModuleLoader 工厂格式） |
-| `node test/verify.mjs` | **1254 项离线断言**：聚合口径与四档区间同源、时区、轮次落桶与守恒、按消息时间的小时 Token、人类消息密度、等待剔除（三层判定 + 长任务豁免 + `excludeWait:false` 回归）、索引 / 冷读兜底、报告结构对齐、画像独立页签右对齐与 30 天窗口、多设备同步（载荷 / 合并 / 凭据 / 设置 / 设备筛选）、首开零模型调用、i18n 逐键对齐、余额状态 |
+| `node test/verify.mjs` | **1283 项离线断言**：聚合口径与四档区间同源、时区、轮次落桶与守恒、按消息时间的小时 Token、人类消息密度、等待剔除（三层判定 + 长任务豁免 + `excludeWait:false` 回归）、索引 / 冷读兜底、报告结构对齐、画像独立页签右对齐与 30 天窗口、多设备同步（载荷 / 合并 / 凭据 / 设置 / 设备筛选）、首开零模型调用、i18n 逐键对齐、余额状态 |
 | `./test/e2e-boot.sh 3299` | 起一个**隔离实例**（独立 DSH_HOME + 端口），不影响正在用的 GUI |
 | `node test/e2e-ui.mjs` | 真实浏览器 E2E：日历 / 柱状切换、几何校验、环形图、报告导出、时刻卡 |
 

@@ -9,7 +9,7 @@
  *   · 换机器、清缓存、卸载插件都不会把明文留在 profile 或 localStorage 里。
  *
  * 回退顺序（从高到低）：
- *   1. 加密凭据库（用户在 GUI 里填的）
+ *   1. DSH 凭据存储（用户在 GUI 里填的；宿主以 0600 + 文件锁写入，非应用层加密）
  *   2. 凭据文件（0600，高级用户 / 无 GUI 场景）
  *   3. 环境变量（CI / 脚本）
  *   4. 配置内联（不推荐，仅兼容旧配置）
@@ -58,7 +58,7 @@ export class CredentialVault {
     }
   }
 
-  /** 加密凭据库是否可用（GUI 表单据此决定是否渲染）。 */
+  /** DSH 凭据存储是否可用（GUI 表单据此决定是否渲染）。 */
   get available() {
     return typeof this.service()?.describeRecord === "function";
   }

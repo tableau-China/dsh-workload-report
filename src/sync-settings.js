@@ -9,7 +9,7 @@
  *
  * 安全边界：
  *   · 这里**只处理非机密项**（bucket / region / repo / branch / path / machineName / 周期）；
- *   · 凭据（SecretId / SecretKey / Token）走 credential-vault.js，存 DSH 加密凭据库；
+ *   · 凭据（SecretId / SecretKey / Token）走 credential-vault.js，存 DSH 凭据存储（0600 + 文件锁）；
  *   · 任何机密字段都不会进入本模块的写入路径。
  */
 

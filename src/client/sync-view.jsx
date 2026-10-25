@@ -76,9 +76,20 @@ export function DeviceFilter({ devices, value, onChange, t, syncOpen = false, on
   if (!hasChips && entry === null) return null;
   const selected = new Set(value ?? []);
   const allActive = selected.size === 0;
+  /**
+   * 点「本机」= 互斥单选（只看本机）：后端语义里 local 是「包含本机」的开关，
+   * 与其它 chip 叠加时不会缩小范围，多选呈现会让用户以为「只看本机却看到全部」。
+   * 因此这里做成：点本机 → 只留 local；再点一次 → 回到全部设备。
+   */
+  const toggleLocal = () => {
+    const localOnly = selected.size === 1 && selected.has("local");
+    onChange(localOnly ? [] : ["local"]);
+  };
   const toggle = (key) => {
+    // 远端设备之间仍是多选；从「只看本机」切到某台远端时自动退出本机模式
     const next = new Set(selected);
-    if (next.has(key)) next.delete(key);
+    next.delete("local");
+    if (selected.has(key) && !selected.has("local")) next.delete(key);
     else next.add(key);
     onChange([...next]);
   };
@@ -93,7 +104,8 @@ export function DeviceFilter({ devices, value, onChange, t, syncOpen = false, on
               active={!allActive && selected.has(device.key)}
               data-device={device.key}
               data-stale={device.stale === true ? "true" : undefined}
-              onClick={() => toggle(device.key)}
+              title={device.stale === true ? t("devices.stale") : undefined}
+              onClick={() => (device.local === true ? toggleLocal() : toggle(device.key))}
             >
               {device.local === true ? t("devices.local") : device.name}
             </Chip>
@@ -111,7 +123,7 @@ export function DeviceFilter({ devices, value, onChange, t, syncOpen = false, on
  */
 
 /**
- * 凭据表单：只在加密凭据库可用时渲染。
+ * 凭据表单：只在 DSH 凭据存储可用时渲染。
  *
  * 安全约定：
  *   · 提交后立刻清空输入框，值只存在于 POST 请求体里；
@@ -209,10 +221,12 @@ export function CredentialForm({ t, transport, onSaved }) {
         })}
       </div>
       <div className="wl-cred-actions">
-        <ChipGroup label={t("cred.title")}>
-          <Chip active={false} disabled={busy} onClick={() => void submit(false)}>{busy ? t("cred.saving") : t("cred.save")}</Chip>
-          <Chip active={false} disabled={busy} onClick={() => void submit(true)}>{t("cred.clear")}</Chip>
-        </ChipGroup>
+        <div className="wl-cred-buttons">
+          <button type="button" className="wl-btn" data-kind="primary" disabled={busy} onClick={() => void submit(false)}>
+            {busy ? t("cred.saving") : t("cred.save")}
+          </button>
+          <button type="button" className="wl-btn" disabled={busy} onClick={() => void submit(true)}>{t("cred.clear")}</button>
+        </div>
         {message === null ? null : <span className="wl-hint" data-kind={`sync-${message.kind}`}>{message.text}</span>}
       </div>
       <p className="wl-note">{t("cred.why")}</p>
