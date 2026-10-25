@@ -764,8 +764,8 @@ export class SyncService {
    * 各凭据字段的状态（不含值），供 GUI 渲染表单与「已配置」标记。
    * @returns {Promise<Array<{ id, label, secret, configured, writable, source }>>}
    */
-  async credentialStatus() {
-    const transport = this.config.transport;
+  async credentialStatus(transportOverride = null) {
+    const transport = transportOverride ?? this.config.transport;
     const files = transport === "cos"
       ? { "secret-id": (await readSecretFile(this.config.cos?.secretIdFile)) !== null, "secret-key": (await readSecretFile(this.config.cos?.secretKeyFile)) !== null }
       : { token: (await readSecretFile(this.config.github?.tokenFile)) !== null };
@@ -776,8 +776,8 @@ export class SyncService {
    * 保存凭据到 DSH 凭据存储。值只在此函数内出现，绝不进日志或响应。
    * @param values - { 'secret-id': '…', 'secret-key': '…' } 或 { token: '…' }。
    */
-  async saveCredentials(values) {
-    const transport = this.config.transport;
+  async saveCredentials(values, transportOverride = null) {
+    const transport = transportOverride ?? this.config.transport;
     if (transport === "local") throw new Error("共享目录传输不需要凭据");
     const allowed = new Set(fieldsOf(transport).map((field) => field.id));
     const saved = [];
@@ -794,8 +794,8 @@ export class SyncService {
   }
 
   /** 清空本插件的同步凭据（加密库中的记录）。 */
-  async clearCredentials() {
-    const transport = this.config.transport;
+  async clearCredentials(transportOverride = null) {
+    const transport = transportOverride ?? this.config.transport;
     if (transport === "local") return { cleared: [] };
     const cleared = [];
     for (const field of fieldsOf(transport)) {

@@ -10,13 +10,21 @@
  *
  * 回退顺序（从高到低）：
  *   1. DSH 凭据存储（用户在 GUI 里填的；宿主以 0600 + 文件锁写入，非应用层加密）
- *   2. 凭据文件（0600，高级用户 / 无 GUI 场景）
- *   3. 环境变量（CI / 脚本）
- *   4. 配置内联（不推荐，仅兼容旧配置）
+ *   2. 插件自管的 0600 凭据文件 `<DSH_HOME>/workload-report/credentials.json`
+ *      ——**新版 DSH 没有 credentials 服务时的兜底**，让 GUI 仍然能填凭据；
+ *   3. 用户自己指定的凭据文件（`cos.secretIdFile` 等）
+ *   4. 环境变量（CI / 脚本）
+ *   5. 配置内联（不推荐，仅兼容旧配置）
  *
  * 插件不在 cordis 的 `inject` 里声明 credentials（老版 DSH 没有该服务会让插件挂起），
- * 而是用 `ctx.get("credentials")` 可选获取；服务不存在时自动退回文件 / 环境变量。
+ * 而是用 `ctx.get("credentials")` 可选获取；服务不存在时自动退回自管文件 / 环境变量。
  */
+
+import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+
+import { defaultHome } from "./sync-service.js";
 
 /** 本插件在凭据库里的所有者标识（`<owner>/<id>` 的前半段）。 */
 export const CREDENTIAL_OWNER = "dsh-workload-report";
@@ -58,9 +66,49 @@ export class CredentialVault {
     }
   }
 
-  /** DSH 凭据存储是否可用（GUI 表单据此决定是否渲染）。 */
-  get available() {
+  /** 是否有 DSH 官方凭据服务（有则优先用它；没有则退化为自管 0600 文件）。 */
+  get hasService() {
     return typeof this.service()?.describeRecord === "function";
+  }
+
+  /**
+   * GUI 是否应该渲染凭据表单。
+   *
+   * 2.0.0 起**恒为 true**：没有官方凭据服务时退化为插件自管的 0600 文件，
+   * 用户不必再手改配置文件（旧版这里返回 false，新环境会只显示一句「改用文件」）。
+   */
+  get available() {
+    return true;
+  }
+
+  /** 自管凭据文件路径（无官方服务时使用）；与索引文件同一个 DSH_HOME 解析规则。 */
+  get fallbackPath() {
+    const home = typeof this.ctx?.dshHome === "string" && this.ctx.dshHome.trim().length > 0
+      ? this.ctx.dshHome.trim()
+      : defaultHome();
+    return join(home, "workload-report", "credentials.json");
+  }
+
+  /** 读自管凭据文件（不存在/损坏都返回 {}）。 */
+  async readFallback() {
+    try {
+      const text = await readFile(this.fallbackPath, "utf8");
+      const parsed = JSON.parse(text);
+      return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  /** 写自管凭据文件（0600 + 原子替换；只允许字符串值）。 */
+  async writeFallback(map) {
+    const path = this.fallbackPath;
+    await mkdir(dirname(path), { recursive: true });
+    const temp = `${path}.${process.pid}.tmp`;
+    await writeFile(temp, JSON.stringify(map, null, 2), { mode: 0o600 });
+    await chmod(temp, 0o600);
+    await rename(temp, path);
+    await chmod(path, 0o600);
   }
 
   /** 记录 key：`dsh-workload-report/<transport>-<id>`。 */
@@ -71,15 +119,20 @@ export class CredentialVault {
   /** 读一个字段的值；不存在返回 null。值只在调用方内部使用，绝不进响应体。 */
   async read(transport, id) {
     const service = this.service();
-    if (typeof service?.readRecord !== "function") return null;
-    try {
-      const record = await service.readRecord(this.keyOf(transport, id));
-      if (record?.kind !== "api-key") return null;
-      const value = typeof record.key === "string" ? record.key.trim() : "";
-      return value.length > 0 ? value : null;
-    } catch {
-      return null;
+    if (typeof service?.readRecord === "function") {
+      try {
+        const record = await service.readRecord(this.keyOf(transport, id));
+        if (record?.kind === "api-key") {
+          const value = typeof record.key === "string" ? record.key.trim() : "";
+          if (value.length > 0) return value;
+        }
+      } catch {
+        /* 服务异常：继续看自管文件 */
+      }
     }
+    const map = await this.readFallback();
+    const value = map[`${transport}/${id}`];
+    return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
   }
 
   /**
@@ -88,32 +141,48 @@ export class CredentialVault {
    */
   async write(transport, id, value) {
     const service = this.service();
-    if (typeof service?.modifyRecord !== "function") {
-      throw new Error("当前 DSH 版本没有加密凭据存储，无法在界面中保存凭据。请改用凭据文件或环境变量。");
-    }
-    const key = this.keyOf(transport, id);
-    if (value === null) {
-      await service.deleteRecord(key);
-      return { deleted: true };
-    }
-    const text = String(value).trim();
+    const hasService = typeof service?.modifyRecord === "function";
+    const text = value === null ? null : String(value).trim();
     // 空字符串既不写入也不删除：避免用户误提交空表单把已存凭据清掉。
     // 删除请显式传 null（GUI 的「清除凭据」按钮走这条路）。
-    if (text.length === 0) return { skipped: true };
-    await service.modifyRecord(key, async () => ({ kind: "api-key", key: text }));
-    return { saved: true };
+    if (text !== null && text.length === 0) return { skipped: true };
+
+    if (hasService) {
+      const key = this.keyOf(transport, id);
+      if (text === null) {
+        await service.deleteRecord(key);
+        return { deleted: true };
+      }
+      await service.modifyRecord(key, async () => ({ kind: "api-key", key: text }));
+      return { saved: true };
+    }
+
+    // 没有官方凭据服务：退化为插件自管 0600 文件，界面仍然可用
+    const map = await this.readFallback();
+    const slot = `${transport}/${id}`;
+    if (text === null) {
+      if (!(slot in map)) return { deleted: false };
+      delete map[slot];
+      await this.writeFallback(map);
+      return { deleted: true };
+    }
+    map[slot] = text;
+    await this.writeFallback(map);
+    return { saved: true, storage: "file" };
   }
 
   /** 删除一个字段的记录（不存在时无操作）。 */
   async delete(transport, id) {
     const service = this.service();
-    if (typeof service?.deleteRecord !== "function") return { deleted: false };
-    try {
-      await service.deleteRecord(this.keyOf(transport, id));
-      return { deleted: true };
-    } catch {
-      return { deleted: false };
+    if (typeof service?.deleteRecord === "function") {
+      try {
+        await service.deleteRecord(this.keyOf(transport, id));
+        return { deleted: true };
+      } catch {
+        /* 继续尝试自管文件 */
+      }
     }
+    return this.write(transport, id, null);
   }
 
   /**
@@ -133,6 +202,14 @@ export class CredentialVault {
           writable = described?.writable !== false;
         } catch {
           /* 服务异常：当作未配置 */
+        }
+      }
+      // 无官方服务（或服务里没有）时，自管 0600 文件里的值也算「已配置」
+      if (!configured) {
+        const fallback = await this.readFallback();
+        if (typeof fallback[`${transport}/${field.id}`] === "string") {
+          configured = true;
+          writable = true;
         }
       }
       // 值也可能来自文件 / 环境变量；用来告诉用户「已经能用了」但不必回填

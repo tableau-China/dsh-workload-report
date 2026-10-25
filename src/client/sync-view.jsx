@@ -138,14 +138,16 @@ export function CredentialForm({ t, transport, onSaved }) {
 
   const load = useCallback(async () => {
     try {
-      const response = await fetch(`${API_PATH}/sync/credentials`, { headers: { accept: "application/json" } });
+      const query = transport === null ? "" : `?transport=${encodeURIComponent(transport)}`;
+      const response = await fetch(`${API_PATH}/sync/credentials${query}`, { headers: { accept: "application/json" } });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const body = await response.json();
       setState({ status: "ready", vault: body.vault === true, fields: body.fields ?? [], error: null });
     } catch (error) {
       setState({ status: "error", vault: false, fields: [], error: String(error?.message ?? error) });
     }
-  }, []);
+    // transport 变化要重新拉字段（切到 COS 立刻显示 SecretId/SecretKey）
+  }, [transport]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -164,7 +166,7 @@ export function CredentialForm({ t, transport, onSaved }) {
       const response = await fetch(`${API_PATH}/sync/credentials`, {
         method: "POST",
         headers: { "content-type": "application/json", accept: "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ ...payload, transport }),
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok || body.ok !== true) throw new Error(body.error ?? `HTTP ${response.status}`);
@@ -190,11 +192,13 @@ export function CredentialForm({ t, transport, onSaved }) {
   if (transport === "local") return null;
   if (state.status === "loading") return null;
   if (state.status === "error") return <p className="wl-hint" data-kind="sync-error">{t("cred.saveFail", { message: state.error ?? "" })}</p>;
-  if (!state.vault) return <p className="wl-hint" data-kind="sync-error">{t("cred.noVault")}</p>;
+  // 没有官方凭据服务时不再隐藏表单：插件会退化为自管 0600 文件（见 credential-vault.js），
+  // 这里只提示一句「存在本地文件」，避免用户以为必须手改配置。
 
   return (
     <div className="wl-cred">
       <CardHead title={t("cred.title")} hint={t("cred.hint")} />
+      {state.vault === true ? null : <p className="wl-hint" data-kind="sync-storage">{t("cred.fileFallback")}</p>}
       <div className="wl-cred-fields">
         {state.fields.map((field) => {
           const sourceKey = field.source === "vault" ? "cred.fromVault" : field.source === "file" ? "cred.fromFile" : field.source === "env" ? "cred.fromEnv" : null;
@@ -243,7 +247,7 @@ export function CredentialForm({ t, transport, onSaved }) {
  *   · 服务地址/分支有平台预设，选了 GitHub 自动填 api.github.com + main；
  *   · 所有校验在宿主侧做（必填、{machineId} 模板、owner/name 格式），这里只展示错误。
  */
-export function SyncSettings({ t, onSaved }) {
+export function SyncSettings({ t, onSaved, onTransportChange = null }) {
   const [state, setState] = useState({ status: "loading", view: null, transports: [], presets: {}, cosRegions: [], canSave: false, error: null });
   const [form, setForm] = useState(null);
   const [baseline, setBaseline] = useState(null);
@@ -258,6 +262,7 @@ export function SyncSettings({ t, onSaved }) {
       setState({ status: "ready", ...body, error: null });
       setForm(body.view);
       setBaseline(body.view);
+      if (typeof onTransportChange === "function") onTransportChange(body.view?.transport ?? null);
     } catch (error) {
       setState((previous) => ({ ...previous, status: "error", error: String(error?.message ?? error) }));
     }
@@ -274,6 +279,7 @@ export function SyncSettings({ t, onSaved }) {
   });
 
   const changeTransport = (id) => {
+    if (typeof onTransportChange === "function") onTransportChange(id);
     setForm((previous) => {
       const next = { ...previous, transport: id };
       const preset = state.presets?.[id];
@@ -310,6 +316,7 @@ export function SyncSettings({ t, onSaved }) {
       setMessage({ kind: "ok", text: t("set.saved") });
       setForm(body.view);
       setBaseline(body.view);
+      if (typeof onTransportChange === "function") onTransportChange(body.view?.transport ?? null);
       if (typeof onSaved === "function") onSaved();
     } catch (error) {
       setMessage({ kind: "fail", text: t("set.saveFail", { message: String(error?.message ?? error) }) });
@@ -396,6 +403,8 @@ export function BySyncView({ t, onChanged }) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [busy, setBusy] = useState(null);
   const [message, setMessage] = useState(null);
+  /** 设置表单里**正在编辑**的传输方式：用户切到 COS 还没保存时，凭据框也要立刻显示 COS 字段。 */
+  const [draftTransport, setDraftTransport] = useState(null);
   const state = useSyncStatus(refreshKey);
 
   /**
@@ -473,8 +482,8 @@ export function BySyncView({ t, onChanged }) {
         <dd>{formatTime(status?.lastPullAt ?? 0, t("sync.never"))}</dd>
       </dl>
 
-      <SyncSettings t={t} onSaved={settingsSaved} />
-      <CredentialForm t={t} transport={status?.transport} onSaved={() => setRefreshKey((key) => key + 1)} />
+      <SyncSettings t={t} onSaved={settingsSaved} onTransportChange={setDraftTransport} />
+      <CredentialForm t={t} transport={draftTransport ?? status?.transport} onSaved={() => setRefreshKey((key) => key + 1)} />
 
       {status?.lastPushError ? <p className="wl-hint" data-kind="sync-error">{t("sync.failed", { message: status.lastPushError })}</p> : null}
       {status?.lastPullError ? <p className="wl-hint" data-kind="sync-error">{t("sync.failed", { message: status.lastPullError })}</p> : null}

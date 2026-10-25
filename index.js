@@ -23,7 +23,7 @@ import { AI_PROFILE_DEFAULTS, ProfileService, buildProfileDiagnostic, profileCod
 import { buildProfilePayload, localProfile, profileFingerprint } from "./src/ai-profile.js";
 import { renderReport } from "./src/report-html.js";
 import { DEFAULT_WAIT_MIN_MS, DEFAULT_WAIT_TOOLS, foldSessionModels, resolvePricing } from "./src/models.js";
-import { SYNC_DEFAULTS, SyncService } from "./src/sync-service.js";
+import { SYNC_DEFAULTS, SyncService, TRANSPORTS } from "./src/sync-service.js";
 import { COS_REGIONS, PLATFORM_PRESETS, TRANSPORT_META, applySettingsPatch, editableView, saveViaConfigEditor } from "./src/sync-settings.js";
 
 /** 插件版本：getBalance 的客户端元数据（x-client-version）用它，避免手写常量与 package.json 漂移。 */
@@ -1510,21 +1510,34 @@ export function apply(ctx, config = {}) {
           sendJson(res, 200, { enabled: false, vault: false, fields: [] });
           return;
         }
+        // 允许显式指定传输方式：用户在设置里切到 COS 但还没保存时，
+        // 凭据框要立刻显示 COS 的 SecretId/SecretKey，而不是已保存的旧传输字段。
+        const requestedTransport = params.get("transport");
+        const transportOverride = TRANSPORTS.includes(requestedTransport) ? requestedTransport : null;
         if (req.method === "GET" || req.method === "HEAD") {
-          const fields = await index.deviceSync.credentialStatus();
-          sendJson(res, 200, { enabled: true, vault: index.deviceSync.vault.available, transport: index.deviceSync.config.transport, fields });
+          const fields = await index.deviceSync.credentialStatus(transportOverride);
+          sendJson(res, 200, {
+            enabled: true,
+            // vault 表示「DSH 官方凭据服务可用」；为 false 时插件退化为自管 0600 文件，
+            // 界面仍然渲染表单（storage 告诉用户值存哪）
+            vault: index.deviceSync.vault.hasService,
+            storage: index.deviceSync.vault.hasService ? "vault" : "file",
+            transport: transportOverride ?? index.deviceSync.config.transport,
+            fields,
+          });
           return;
         }
         // POST：body 是 JSON；delete=1 表示清空（带上限，避免超大 body 缓冲进内存）
         const body = await readJsonBody(req, res);
         if (body === undefined) return;
+        const bodyTransport = TRANSPORTS.includes(body?.transport) ? body.transport : null;
         try {
           const result = body.delete === true
-            ? await index.deviceSync.clearCredentials()
-            : await index.deviceSync.saveCredentials(body.values ?? {});
+            ? await index.deviceSync.clearCredentials(bodyTransport)
+            : await index.deviceSync.saveCredentials(body.values ?? {}, bodyTransport);
           // 保存后立刻自检一次，把「凭据对不对」直接反馈给界面
           const probe = await index.deviceSync.probe();
-          sendJson(res, 200, { ok: true, result, probe, fields: await index.deviceSync.credentialStatus() });
+          sendJson(res, 200, { ok: true, result, probe, fields: await index.deviceSync.credentialStatus(bodyTransport) });
         } catch (error) {
           sendJson(res, 400, { error: reasonOf(error) });
         }

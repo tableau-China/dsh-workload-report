@@ -3343,14 +3343,62 @@ bootSync.seq = 1;
     };
   }
 
-  // 14.1 无可选服务时降级：available=false，读取返回 null，写入抛明确错误
+  // 14.1 无可选服务时降级到插件自管 0600 文件：GUI 仍可填写（2.0.0 起的行为）
   {
-    const vault = new CredentialVault({ get: () => undefined });
-    eq(vault.available, false, "凭据库：服务缺失时 available=false");
-    eq(await vault.read("cos", "secret-id"), null, "凭据库：服务缺失时读取返回 null");
-    let threw = null;
-    try { await vault.write("cos", "secret-id", "x"); } catch (error) { threw = reasonOfForTest(error); }
-    ok(/没有加密凭据存储/.test(threw ?? ""), "凭据库：服务缺失时写入给出明确错误", threw);
+    const home = "/tmp/wl-verify-vault-" + process.pid;
+    await rm(home, { recursive: true, force: true }).catch(() => {});
+    const vault = new CredentialVault({ get: () => undefined, dshHome: home });
+    eq(vault.hasService, false, "凭据库：服务缺失时 hasService=false");
+    eq(vault.available, true, "凭据库：服务缺失时 GUI 仍可填（available=true，退化为自管文件）");
+    eq(await vault.read("cos", "secret-id"), null, "凭据库：未写入时读取返回 null");
+    const written = await vault.write("cos", "secret-id", "AKIDtest-value");
+    eq(written.saved, true, "凭据库：无服务时写入成功（落自管文件）");
+    eq(written.storage, "file", "凭据库：写入结果标明 storage=file");
+    eq(await vault.read("cos", "secret-id"), "AKIDtest-value", "凭据库：写入后可读回");
+    const { stat } = await import("node:fs/promises");
+    const mode = (await stat(vault.fallbackPath)).mode & 0o777;
+    eq(mode, 0o600, "凭据库：自管凭据文件权限是 0600", mode.toString(8));
+    const status = await vault.status("cos", {});
+    ok(status.every((field) => field.configured === false || field.writable === true), "凭据库：自管文件里的值也算已配置且可写");
+    const cleared = await vault.delete("cos", "secret-id");
+    eq(cleared.deleted, true, "凭据库：删除自管文件里的记录");
+    eq(await vault.read("cos", "secret-id"), null, "凭据库：删除后读取为 null");
+    await rm(home, { recursive: true, force: true }).catch(() => {});
+  }
+
+  // 14.1b 新环境（无 credentials 服务）：/sync/credentials 仍返回可填表单，storage=file
+  {
+    const home = "/tmp/wl-verify-vault-route-" + process.pid;
+    await rm(home, { recursive: true, force: true }).catch(() => {});
+    const prevHome = process.env.DSH_HOME;
+    process.env.DSH_HOME = home;
+    const host = bootSync({ sync: { enabled: true, transport: "cos", cos: { bucket: "b", region: "ap-shanghai" }, pullEveryMs: 86400000, pushEveryMs: 86400000 } });
+    await waitHealth(host.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "无凭据服务实例索引完成");
+    const res = await routeJson(host.routeList, "/workload-report/v1/sync/credentials");
+    eq(res.status, 200, "无凭据服务：/sync/credentials 仍 200");
+    eq(res.body.vault, false, "无凭据服务：vault=false（告知前端用文件兜底）");
+    eq(res.body.storage, "file", "无凭据服务：storage=file");
+    ok(Array.isArray(res.body.fields) && res.body.fields.length === 2, "无凭据服务：仍返回 COS 两个字段（表单可渲染）", JSON.stringify(res.body.fields?.map((f) => f.id)));
+    ok(res.body.fields.every((f) => f.configured === false), "无凭据服务：初始未配置");
+    // 写入后应落到自管文件，并且不回显
+    const saved = await postJson(host.routeList, "/workload-report/v1/sync/credentials", { values: { "secret-id": "AKIDroute-test", "secret-key": "KEYroute-test" } });
+    eq(saved.status, 200, "无凭据服务：POST 保存成功", JSON.stringify(saved.body).slice(0, 120));
+    ok(!JSON.stringify(saved.body).includes("KEYroute-test"), "无凭据服务：响应不回显凭据值");
+    const after = await routeJson(host.routeList, "/workload-report/v1/sync/credentials");
+    ok(after.body.fields.every((f) => f.configured === true), "无凭据服务：保存后显示已配置");
+    // 显式 transport：切到 COS 但未保存时，凭据框要显示 COS 字段而不是已保存传输的字段
+    const cosFields = await routeJson(host.routeList, "/workload-report/v1/sync/credentials?transport=cos");
+    eq(cosFields.body.transport, "cos", "显式 transport：返回 cos");
+    eq(cosFields.body.fields.map((f) => f.id).join(","), "secret-id,secret-key", "显式 transport：COS 字段是 SecretId/SecretKey");
+    const ghFields = await routeJson(host.routeList, "/workload-report/v1/sync/credentials?transport=github");
+    eq(ghFields.body.fields.map((f) => f.id).join(","), "token", "显式 transport：GitHub 字段是 token");
+    const bogus = await routeJson(host.routeList, "/workload-report/v1/sync/credentials?transport=drop-table");
+    eq(bogus.body.transport, "cos", "显式 transport：非法值被忽略，回落到已配置的传输", String(bogus.body.transport));
+    const text = await readFile(join(home, "workload-report", "credentials.json"), "utf8").catch(() => "");
+    ok(text.includes("cos/secret-id"), "无凭据服务：值写入自管 0600 文件", text.slice(0, 60));
+    if (prevHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = prevHome;
+    await rm(home, { recursive: true, force: true }).catch(() => {});
+    await rm(host.indexPath, { force: true }).catch(() => {});
   }
 
   // 14.2 有服务时：写入 → 读取 → describe 不看值 → 删除
