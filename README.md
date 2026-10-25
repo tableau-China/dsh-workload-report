@@ -1,7 +1,7 @@
 # TimeMirror for DSH · Workload Report
 
 > **See your effort and your token spend on the same picture** — by **date** and by **workspace**: a calendar heatmap, time-of-day analysis, workspace share, model usage, and a **one-click self-contained HTML report** you can send straight to a client.
-> A DeepSeek Harness (DSH) plugin. Current version: **1.0.5**.
+> A DeepSeek Harness (DSH) plugin. Current version: **2.0.0**.
 
 > TimeMirror is a macOS time-distribution app I published on the Mac App Store; this plugin brings the same idea to AI-assisted work. The package/repo keeps the descriptive name `dsh-workload-report` so it can be found in the DSH ecosystem; the brand stays TimeMirror.
 
@@ -109,6 +109,14 @@ The dashboard card has **two measures** and a third visual layer:
 - **Attribution date** = the session's creation day in the selected time zone. A session resumed across midnight still belongs to its creation day.
 - **Model cost** is estimated from built-in official public prices (DeepSeek peak/off-peak, as-of 2026-10-13). Only models with an official price get a number; models without one show **—**. Estimates never fetch prices at runtime. The estimate is intentionally not described as an invoice.
 
+### Ranges
+
+- **All four ranges share one rule**: the end is always today, and the start is `max(window start, first active day)`.
+  "All time" begins at your first active day; the last 7 / 30 / 90 days keep their fixed window once history is long enough,
+  and also begin at the first active day when history is shorter — so the active-days denominator is always the real span
+  (a new account picking 30 days sees `3/3`, not `3/30`). An explicit `from` / `to` and the AI-profile window are never truncated.
+- The calendar heatmap always covers the full history and ignores the top range filter.
+
 ## Configuration
 
 Override any of these in the profile's `cordis.patch.yml` (all optional):
@@ -152,6 +160,49 @@ Override any of these in the profile's `cordis.patch.yml` (all optional):
 ```
 
 The default model prices are built in and offline; `pricing.overrides`, `pricing.asOf` and `pricing.links` let you replace them if your contract differs. See [docs/models.md](./docs/models.md).
+
+## Multi-device sync (2.0.0)
+
+Running DSH on several machines? Merge their usage into one report. **Disabled by default** — with no `sync` config the plugin behaves exactly as before and makes zero outbound requests.
+
+```yaml
+- id: workload-report
+  name: dsh-workload-report
+  config:
+    sync:
+      enabled: true
+      transport: cos          # cos | github | gitea | local
+      cos:
+        bucket: my-sync-1250000000
+        region: ap-guangzhou
+        secretIdFile: ~/.dsh/.cos-id    # 0600
+        secretKeyFile: ~/.dsh/.cos-key  # 0600
+```
+
+| Transport | Best for | Credential |
+| --- | --- | --- |
+| `cos` | Tencent Cloud COS — low latency, near-zero cost | SecretId/SecretKey (sub-account scoped to `machines/*` of one bucket) |
+| `github` / `gitea` | You already have a Git account | fine-grained PAT: `Contents: Read and write`, one repo only |
+| `local` | No cloud account / corporate intranet | **none** — point at an iCloud / Syncthing / NAS folder |
+
+- **Aggregate rows only**: per-session stats (id / time / path / duration / tokens / models). No conversation content, prompts, or attachments.
+- **Machine identity is automatic**: read from `<DSH_HOME>/.anonymous-user-id`; override the display name with `sync.machineName`.
+- **Conflict-free by construction**: each machine writes only its own key (`machines/{machineId}.json`).
+- **Per-device filtering**: device chips above the KPIs, or `?machine=` on the API.
+- **Built-in "Device sync" entry** at the right end of the device-filter chip row (not a top tab); it opens sync settings, credentials, device status and manual push/pull.
+- **Use a private bucket/repo**: the payload carries absolute `cwd` paths; `sync.redactPaths: true` hashes them.
+
+See [docs/sync.md](./docs/sync.md) for the full config reference and least-privilege policies.
+
+## Style and layout changes (2.0.0)
+
+- **Equal initial height for all four tabs**: the panel is a fixed `92vh` frame and scrolls internally,
+  so switching between By date / Model usage / By workspace / Top sessions no longer jumps the frame height.
+- **Responsive report width**: full width on narrow screens, capped at 1600px on wide ones, with viewport-scaled
+  side padding (it used to be a fixed 1120px, leaving large empty margins on big displays).
+- **"Device sync" entry** now sits at the right end of the device-filter chip row instead of the top tab bar.
+- **One shared range rule**: 7 / 30 / 90 days and All time all start at the first active day; a short history
+  shows its real span (for example `5/5 days` instead of `5/30`).
 
 ## AI user profile
 
@@ -219,7 +270,7 @@ All statistics stay on your machine. The plugin registers **read-only** HTTP rou
 | --- | --- |
 | `pnpm add -D esbuild puppeteer-core` | Install build and browser-test dependencies (or point `ESBUILD_PATH` / `WL_PUPPETEER_DIR` at existing installs) |
 | `node build.mjs` | Bundle `src/client/` into `lib/client.js` (ModuleLoader factory format) with esbuild |
-| `node test/verify.mjs` | **993 offline assertions**: aggregation semantics, time zones, turn-based hour bucketing and conservation, hourly tokens by message time, human-message density, wait exclusion (all three rules + long-task exemption + `excludeWait:false` regression), index/read fallbacks, report structure parity, the AI-profile tab as a right-aligned navigation entry, the 30-day profile window, zero model calls on first open, i18n key alignment, and balance states |
+| `node test/verify.mjs` | **1254 offline assertions**: aggregation semantics with one shared range rule, time zones, turn-based hour bucketing and conservation, hourly tokens by message time, human-message density, wait exclusion (all three rules + long-task exemption + `excludeWait:false` regression), index/read fallbacks, report structure parity, the AI-profile tab as a right-aligned navigation entry, the 30-day profile window, multi-device sync (payload / merge / credentials / settings / device filter), zero model calls on first open, i18n key alignment, and balance states |
 | `./test/e2e-boot.sh 3299` | Boot an **isolated instance** (own DSH_HOME and port) without touching your running GUI |
 | `node test/e2e-ui.mjs` | Real-browser E2E: calendar/bar switching, geometry, donuts, report export, time-of-day card |
 

@@ -15,6 +15,7 @@ import { MetricBarCell } from "./bar-cell.jsx";
 import { Chip, ChipGroup } from "./chips.jsx";
 import { CardHead } from "./card-head.jsx";
 import { ProfileCard } from "./profile-card.jsx";
+import { BySyncView, DeviceFilter } from "./sync-view.jsx";
 import { SESSION_PAGE_SECTIONS } from "./session-layout.js";
 import { hourTokensNote } from "./hour-status.js";
 import { sectorPath } from "../sector-path.js";
@@ -125,10 +126,11 @@ export const formatCost = formatMoney;
  * 这是"每次打开都要等一会儿"的主要解法——数据通常没变，先渲染旧值体感就是秒开。
  */
 const SNAPSHOT_CACHE = new Map();
-const snapshotKey = ({ days, scope, all }) => `${days}|${scope}|${all === true ? "all" : "range"}`;
+const snapshotKey = ({ days, scope, all, machines }) =>
+  `${days}|${scope}|${all === true ? "all" : "range"}|${(machines ?? []).join(",")}`;
 
-function useSnapshot({ days, scope, refreshKey, enabled, all }) {
-  const key = snapshotKey({ days, scope, all });
+function useSnapshot({ days, scope, refreshKey, enabled, all, machines = [] }) {
+  const key = snapshotKey({ days, scope, all, machines });
   const [state, setState] = useState(() => {
     const cached = SNAPSHOT_CACHE.get(key);
     return cached === undefined
@@ -150,6 +152,8 @@ function useSnapshot({ days, scope, refreshKey, enabled, all }) {
       tz: localTimeZone(),
     });
     if (all) query.set("all", "1");
+    // 设备筛选：可重复的 machine 参数；空数组表示全部设备
+    for (const machine of machines ?? []) query.append("machine", machine);
     fetch(`${API_PATH}/snapshot?${query.toString()}`, { signal: abort.signal, headers: { accept: "application/json" } })
       .then(async (response) => {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -164,7 +168,7 @@ function useSnapshot({ days, scope, refreshKey, enabled, all }) {
         setState((previous) => ({ status: "error", data: previous.data, error: String(error?.message ?? error) }));
       });
     return () => abort.abort();
-  }, [days, scope, refreshKey, enabled, all, key]);
+  }, [days, scope, refreshKey, enabled, all, key, machines]);
   return state;
 }
 
@@ -1254,7 +1258,7 @@ function SkeletonBody({ t }) {
  *   1) 每日用量：默认「日历热力图」（周一~周日 × Year-Week，颜色＝活跃时长），可切「柱状图」
  *   2) 右列「模型 Token 占比」：紧凑环形图（复用 WorkspacePie，固定 Token 口径）
  *   3) 并排两图：左「时刻分析」（0–23 点谁更活跃） 右「工作区占比」（环形图，时长/Token 可切）
- *   4) 「按日期明细」默认折叠
+ *   4) 「按日期明细」默认展开（超过 10 天分页，v1.0.2 起）
  * 模型明细 / treemap / 按日趋势已移到独立页签「模型用量」。
  */
 function ByDayView({ data, t }) {
@@ -1655,8 +1659,10 @@ function Overlay({ control }) {
   const [scope, setScope] = useState("all");
   const [refreshKey, setRefreshKey] = useState(0);
   const [tab, setTab] = useState("byDay");
+  // 设备筛选：空数组 = 全部设备（同步关闭时设备清单为 null → 只剩「设备同步」入口）
+  const [machines, setMachines] = useState([]);
   // 关闭时不请求，避免白跑一次接口
-  const state = useSnapshot({ days, scope, refreshKey, enabled: open, all: allTime });
+  const state = useSnapshot({ days, scope, refreshKey, enabled: open, all: allTime, machines });
   const indexing = state.data?.diagnostics?.indexing === true;
 
   const close = useCallback(() => control.close(), [control]);
@@ -1733,6 +1739,15 @@ function Overlay({ control }) {
                   {t("state.indexing", { done: formatInt(state.data.diagnostics?.sessions ?? 0) })}
                 </p>
               ) : null}
+              {/* 设备筛选 chips + 「设备同步」入口（入口在筛选器右侧，不再占顶部页签位） */}
+              <DeviceFilter
+                devices={state.data.devices}
+                value={machines}
+                onChange={setMachines}
+                t={t}
+                syncOpen={tab === "deviceSync"}
+                onOpenSync={() => setTab("deviceSync")}
+              />
               <Kpis data={state.data} t={t} />
               <div className="wl-tabs">
                 {["byDay", "model", "byWorkspace", "bySession"].map((key) => (
@@ -1758,6 +1773,9 @@ function Overlay({ control }) {
               ) : null}
               {tab === "aiProfile" ? (
                 <ByProfileView t={t} lang={lang} days={days} scope={scope} allTime={allTime} />
+              ) : null}
+              {tab === "deviceSync" ? (
+                <BySyncView t={t} onChanged={() => setRefreshKey((value) => value + 1)} />
               ) : null}
               <p className="wl-note">
                 <strong>{t("note.title")}</strong>：{t("note.body")}

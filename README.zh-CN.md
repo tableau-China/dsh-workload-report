@@ -1,7 +1,7 @@
 # TimeMirror for DSH · 工作量报告
 
 > **把「我的付出」和「Token 消耗」放在同一张图上**——按**日期**与**工作区**看清时间投入到哪、Token 花在哪：日历热力图、时刻分析、工作区占比、模型用量，以及一键导出**可直接发给客户的自包含 HTML 报告**。
-> DeepSeek Harness（DSH）插件。当前版本：**1.0.5**。
+> DeepSeek Harness（DSH）插件。当前版本：**2.0.0**。
 
 > **TimeMirror** 是我在 Mac App Store 发布的 macOS 时间分布应用；这个插件把同一件事带到 AI 协作场景。包名 / 仓库名沿用描述式的 `dsh-workload-report`，方便在 DSH 生态里被搜到；品牌仍是 TimeMirror。
 
@@ -109,6 +109,14 @@ dsh plugin --profile web add link:$PWD
 - **归属日期** = 会话创建时间在所选时区的自然日；跨天续聊仍记在创建那天。
 - **模型费用**按内置官方公开价估算（DeepSeek 峰 / 谷两档，as-of 2026-10-13）。只有有官方价的模型才给数字，无价显示 **—**；运行时不联网取价。它是估算，不是账单。
 
+### 统计区间
+
+- **四档同一套算法**：区间终点恒为今天，起点 = `max(窗口起点, 最早活跃日)`。
+  「全部」直接从第一天活跃开始；近 7 / 30 / 90 天在历史更长时仍是固定窗口，
+  数据不足 N 天时同样从第一天活跃开始算——所以「活跃天数」的分母永远是真实跨度
+  （新账号选近 30 天看到 `3/3 天`，而不是 `3/30`）。显式 `from` / `to` 与 AI 画像的固定窗口不受此截短。
+- 日历热力图固定展示全部历史，不随顶部区间筛选变化。
+
 ## 配置
 
 在 profile 的 `cordis.patch.yml` 里覆盖（全部可选）：
@@ -152,6 +160,47 @@ dsh plugin --profile web add link:$PWD
 ```
 
 默认价目内置、离线可用；如合同价不同，可用 `pricing.overrides` / `pricing.asOf` / `pricing.links` 覆盖，详见 [docs/models.md](./docs/models.md)。
+
+## 多设备同步（2.0.0）
+
+多台机器各跑一份 DSH？把它们的用量合成一张报告。**默认关闭**，不配置时插件行为与之前完全一致、零外发请求。
+
+**不需要改 YAML。** 打开看板 →「设备同步」，三块配置都在界面里：
+
+1. **同步设置**：选存储方式（COS / GitHub / Gitea / 共享目录），填该方式需要的参数
+   （COS 填桶名+地域；GitHub/Gitea 填仓库+分支+服务地址；共享目录填路径），点「保存设置」——立即生效，不用重启。
+2. **凭据**：粘贴 SecretId / SecretKey（或 Token），点「保存并测试」，立刻告诉你连没连上。
+   存在 **DSH 加密凭据库**里，不进配置文件、不进 git、界面不回显。
+3. **设备**：看其它设备上次同步时间，随时手动推送/拉取。
+
+想用配置文件的场景（服务器 / CI）也支持，见 [docs/sync.md](./docs/sync.md) 第四节。
+
+四种传输任选：
+
+| 传输 | 适用 | 凭据 |
+| --- | --- | --- |
+| `cos` | 国内用户推荐，延迟低、几乎免费 | SecretId/SecretKey（建议子账号，只授权单个桶的 `machines/*`） |
+| `github` / `gitea` | 已有 Git 账号 | fine-grained PAT，仅 `Contents: Read and write` + 单仓库 |
+| `local` | 不想开云账号 / 企业内网 | **零凭据**，指向 iCloud / Syncthing / NAS 目录即可 |
+
+要点：
+
+- **只同步统计行**：逐会话汇总（id / 时间 / 路径 / 时长 / token / 模型），**不含对话内容、提示词、附件**。
+- **机器自动识别**：读 `<DSH_HOME>/.anonymous-user-id`，用户零配置；展示名可用 `sync.machineName` 覆盖。
+- **天然无冲突**：每台机器只写自己那一个 key（`machines/{machineId}.json`），不需要任何合并冲突处理。
+- **按设备筛选**：看板 KPI 上方有设备 chip（多选，默认「全部设备」），API 用 `?machine=`。
+- **「设备同步」入口**：就在设备 chips 同一行的右侧（不是顶部页签）；选存储方式、填参数、管理凭据、看设备状态、手动推送拉取，全在界面里完成。
+- **桶 / 仓库必须是私有的**：载荷含 `cwd` 绝对路径；可用 `sync.redactPaths: true` 抹成别名或短哈希。
+
+完整配置项、最小权限策略与验收标准见 [docs/sync.md](./docs/sync.md)。
+
+## 样式与布局调整（2.0.0）
+
+- **四个页签初始高度一致**：按日期 / 模型用量 / 按工作区 / 主要会话 内容长短不同，面板固定 `92vh`，
+  超出部分在面板内部滚动——切页签时外框不再跳高。
+- **导出报告页宽自适应**：窄屏占满、宽屏最多 1600px，左右留白随视口收缩（原来固定 1120px，大屏两侧大片空白）。
+- **「设备同步」入口**：放在设备筛选 chips 同一行的右侧（不再占顶部页签位）。
+- **四档区间同一套口径**：近 7 / 30 / 90 天与「全部」都从第一天活跃开始算，数据不足 N 天时显示真实跨度（如 `5/5 天`）。
 
 ## AI 用户画像
 
@@ -197,8 +246,11 @@ dsh plugin --profile web add link:$PWD
 | `GET {apiPath}/profile?...&provider=...&model=...` | **调试入口**：临时覆盖本次调用的路由（仅 enabled 生效、不写配置、不写缓存） |
 | `GET {apiPath}/health` | 索引诊断（会话数、检查点命中、冷读、读取失败、耗时）；`diagnostics.aiProfile` 含最近一次画像的 code / stage / error / route |
 | `GET {apiPath}/balance` | 顶部工具栏 chip 用的余额状态；不触发索引 |
+| `GET {apiPath}/sync` | 多设备同步状态（传输方式 / 上次推送拉取 / 设备清单）；默认关闭时只回 `enabled:false` |
+| `GET {apiPath}/sync?action=probe\|push\|pull` | 测试连接 / 立即推送 / 立即拉取；同步关闭时一律不触发网络 |
 
-参数：`from`/`to`（YYYY-MM-DD，优先于 `days`）、`days`、`all=1`（最早的活跃日 → 今天）、`tz`（IANA 时区）、`scope`。
+参数：`from`/`to`（YYYY-MM-DD，优先于 `days`）、`days`、`all=1`（最早的活跃日 → 今天）、`tz`（IANA 时区）、`scope`、
+`machine`（可重复，按设备 id 或名称筛选，`machine=local` 只看本机；缺省为全部设备）。
 
 ## 索引与升级注意
 
@@ -234,7 +286,7 @@ dsh plugin --profile web add link:$PWD
 | --- | --- |
 | `pnpm add -D esbuild puppeteer-core` | 安装构建与浏览器测试依赖（也可用 `ESBUILD_PATH` / `WL_PUPPETEER_DIR` 指向已有安装） |
 | `node build.mjs` | 用 esbuild 把 `src/client/` 打成 `lib/client.js`（ModuleLoader 工厂格式） |
-| `node test/verify.mjs` | **993 项离线断言**：聚合口径、时区、轮次落桶与守恒、按消息时间的小时 Token、人类消息密度、等待剔除（三层判定 + 长任务豁免 + `excludeWait:false` 回归）、索引 / 冷读兜底、报告结构对齐、画像独立页签右对齐与 30 天窗口、首开零模型调用、i18n 逐键对齐、余额状态 |
+| `node test/verify.mjs` | **1254 项离线断言**：聚合口径与四档区间同源、时区、轮次落桶与守恒、按消息时间的小时 Token、人类消息密度、等待剔除（三层判定 + 长任务豁免 + `excludeWait:false` 回归）、索引 / 冷读兜底、报告结构对齐、画像独立页签右对齐与 30 天窗口、多设备同步（载荷 / 合并 / 凭据 / 设置 / 设备筛选）、首开零模型调用、i18n 逐键对齐、余额状态 |
 | `./test/e2e-boot.sh 3299` | 起一个**隔离实例**（独立 DSH_HOME + 端口），不影响正在用的 GUI |
 | `node test/e2e-ui.mjs` | 真实浏览器 E2E：日历 / 柱状切换、几何校验、环形图、报告导出、时刻卡 |
 

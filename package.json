@@ -1,7 +1,7 @@
 {
   "name": "dsh-workload-report",
-  "version": "1.0.5",
-  "description": "DeepSeek Harness (DSH) plugin — see your effort and token usage by date and workspace: calendar heatmap, time-of-day analysis, workspace share, and a shareable self-contained HTML report.",
+  "version": "2.0.0",
+  "description": "DeepSeek Harness (DSH) plugin — see your effort and token usage by date and workspace: calendar heatmap, time-of-day analysis, workspace share, a shareable self-contained HTML report, and multi-device sync (Tencent COS / GitHub / Gitea / shared folder).",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -47,7 +47,12 @@
     "calendar-heatmap",
     "productivity",
     "cost-tracking",
-    "worklog"
+    "worklog",
+    "sync",
+    "multi-device",
+    "cos",
+    "tencent-cos",
+    "object-storage"
   ],
   "author": {
     "name": "XILEJUN",

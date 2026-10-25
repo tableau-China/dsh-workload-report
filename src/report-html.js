@@ -662,7 +662,9 @@ export function renderReport(snapshot, options = {}) {
   body { margin: 0; background: ${palette.bg}; color: ${palette.text};
     font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif;
     -webkit-font-smoothing: antialiased; }
-  .page { max-width: 1120px; margin: 0 auto; padding: 40px 28px 56px; }
+  /* 页宽：自适应视口（窄屏占满），宽屏最多 1600px —— 不再固定 1120px 导致大屏两侧大片空白。
+     左右留白随视口在 20–44px 之间收缩，保证 1240 / 1512 / 1728 / 1920 下都不横滑。 */
+  .page { width: 100%; max-width: 1600px; margin: 0 auto; padding: 40px clamp(20px, 2.4vw, 44px) 56px; }
   .hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 24px; flex-wrap: wrap; }
   h1 { font-size: 28px; margin: 0 0 6px; letter-spacing: -0.01em; }
   .range { margin: 0; color: ${palette.muted}; font-size: 14px; }

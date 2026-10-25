@@ -23,6 +23,8 @@ import { AI_PROFILE_DEFAULTS, ProfileService, buildProfileDiagnostic, profileCod
 import { buildProfilePayload, localProfile, profileFingerprint } from "./src/ai-profile.js";
 import { renderReport } from "./src/report-html.js";
 import { DEFAULT_WAIT_MIN_MS, DEFAULT_WAIT_TOOLS, foldSessionModels, resolvePricing } from "./src/models.js";
+import { SYNC_DEFAULTS, SyncService } from "./src/sync-service.js";
+import { COS_REGIONS, PLATFORM_PRESETS, TRANSPORT_META, applySettingsPatch, editableView, saveViaConfigEditor } from "./src/sync-settings.js";
 
 /** 插件版本：getBalance 的客户端元数据（x-client-version）用它，避免手写常量与 package.json 漂移。 */
 const PLUGIN_VERSION = createRequire(import.meta.url)("./package.json").version ?? "0.0.0";
@@ -136,6 +138,12 @@ const DEFAULTS = {
    * 详见 docs/ai-profile.md。
    */
   aiProfile: { ...AI_PROFILE_DEFAULTS },
+  /**
+   * 多设备同步：**默认关闭**。关闭时本插件不产生任何外发请求（离线断言覆盖）。
+   * 开启后每台机器只写 path 模板指向的自己的对象，读端按 row.id 合并，天然无冲突。
+   * 详见 docs/sync.md。
+   */
+  sync: { ...SYNC_DEFAULTS },
 };
 
 /** 把未知异常收敛成一行文本。 */
@@ -433,6 +441,8 @@ class WorkloadIndex {
     this.liveSeen = new Map();
     /** 余额（默认关闭；可选依赖 deepseekAccount，见 BalanceTracker）。 */
     this.balance = new BalanceTracker(ctx, config.balance ?? {});
+    /** 多设备同步（默认关闭；enabled=false 时零外发，见 src/sync-service.js）。 */
+    this.deviceSync = new SyncService(ctx, config.sync ?? SYNC_DEFAULTS, { pluginVersion: PLUGIN_VERSION });
     this.resolvedPricing = undefined;
     this.diagnostics = {
       sessions: 0, cached: 0, reused: 0, live: 0, cold: 0, missing: 0,
@@ -732,6 +742,8 @@ class WorkloadIndex {
             timeZone: query.timeZone,
             scope: query.scope,
             all: query.all === true,
+            // SWR 后台重建必须与请求同口径（画像固定窗口传 false；默认按最早活跃日截短）
+            anchorToActivity: query.anchorToActivity !== false,
             aliases: this.config.workspaceAliases,
             pricing: this.pricingTable(),
             modelAliases: this.config.modelAliases,
@@ -1054,7 +1066,14 @@ class WorkloadIndex {
     // 余额：只在启用时真的查询；不 await（快照绝不因出网变慢），结果下次请求即生效
     void this.balance.ensure();
     // 同参数 TTL 复用：面板反复打开时省掉"聚合 + 大 JSON 序列化"
-    const cacheKey = JSON.stringify({ from: query.from, to: query.to, days: query.days, tz: query.timeZone, scope: query.scope, all: query.all === true });
+    const cacheKey = JSON.stringify({
+      from: query.from, to: query.to, days: query.days, tz: query.timeZone, scope: query.scope, all: query.all === true,
+      // 区间是否按最早活跃日截短（画像固定窗口传 false）必须进缓存键：
+      // 否则看板 days=30（截短到实际历史）与画像 days=30（固定 30 天）会互相命中。
+      anchor: query.anchorToActivity !== false,
+      // 设备筛选必须进缓存键，否则切换设备会命中旧缓存
+      machines: query.machines ?? null,
+    });
     // stale-while-revalidate：活会话每来一个事件都会作废快照缓存（patchLive），
     // 于是「在会话里打字 → 打开面板」总是 miss。改为：
     //   缓存被作废但旧值还在 → 立即返回旧值（dataStale=true），后台重建一次。
@@ -1073,6 +1092,7 @@ class WorkloadIndex {
           ...cached.value,
           dataStale: !fresh,
           balance: this.balanceState(),
+          devices: this.deviceSync?.enabled === true ? this.deviceSync.devices() : null,
           diagnostics: {
             ...this.diagnosticsFor(),
             hourSource: cached.value.hourSource ?? null,
@@ -1083,7 +1103,8 @@ class WorkloadIndex {
         };
       }
     }
-    const rows = [...this.rows.values()];
+    const merged = this.mergeRows(query.machines);
+    const rows = [...merged.rows.values()];
     const result = present(
       aggregate(rows, {
         from: query.from,
@@ -1092,6 +1113,7 @@ class WorkloadIndex {
         timeZone: query.timeZone,
         scope: query.scope,
         all: query.all === true,
+        anchorToActivity: query.anchorToActivity !== false,
         aliases: this.config.workspaceAliases,
         pricing: this.pricingTable(),
         modelAliases: this.config.modelAliases,
@@ -1103,12 +1125,30 @@ class WorkloadIndex {
     return {
       ...result,
       balance: this.balanceState(),
+      devices: this.deviceSync?.enabled === true ? this.deviceSync.devices() : null,
       diagnostics: {
         ...this.diagnosticsFor(),
         hourSource: result.hourSource ?? null,
         hourTokensSource: result.hourTokensSource ?? null,
       },
     };
+  }
+
+  /**
+   * 合并本机行与其它设备行（同步关闭时就是本机行，行为与旧版完全一致）。
+   * @param machines - 设备筛选：null/空数组 = 全部设备；["local"] = 只看本机；其余为 machine.key。
+   */
+  mergeRows(machines = null) {
+    try {
+      if (this.deviceSync?.enabled !== true || this.deviceSync.sources.size === 0) {
+        return { rows: this.rows, origin: null, dropped: 0 };
+      }
+      return this.deviceSync.merge(this.rows, { machines });
+    } catch (error) {
+      // 合并失败不能拖垮快照：退回本机数据，错误进诊断
+      this.diagnostics.lastError = reasonOf(error);
+      return { rows: this.rows, origin: null, dropped: 0 };
+    }
   }
 
   /** 余额状态（快照的 balance 字段；未启用时 enabled=false，客户端据此完全不渲染）。 */
@@ -1153,6 +1193,10 @@ class WorkloadIndex {
       aiProfile: typeof this.profile?.healthState === "function"
         ? this.profile.healthState()
         : { enabled: false, lastCode: null, lastStage: null, lastError: null, lastAt: 0, route: null },
+      // 多设备同步诊断（默认关闭时 shape 固定，客户端据此不渲染设备 UI）。
+      sync: typeof this.deviceSync?.diagnostics === "function"
+        ? this.deviceSync.diagnostics()
+        : { enabled: false, mode: null, transport: null, sources: 0, devices: [] },
     };
   }
 }
@@ -1170,6 +1214,15 @@ export function apply(ctx, config = {}) {
   }
   if (config.aiProfile !== undefined && config.aiProfile !== null) {
     merged.aiProfile = { ...DEFAULTS.aiProfile, ...config.aiProfile };
+  }
+  if (config.sync !== undefined && config.sync !== null) {
+    // 嵌套浅合并：只写 sync.cos.bucket 时不能把默认 path / timeoutMs 丢掉
+    merged.sync = { ...DEFAULTS.sync, ...config.sync };
+    for (const key of ["github", "cos", "local"]) {
+      if (config.sync[key] !== undefined && config.sync[key] !== null) {
+        merged.sync[key] = { ...DEFAULTS.sync[key], ...config.sync[key] };
+      }
+    }
   }
   const apiPath = typeof merged.apiPath === "string" && merged.apiPath.startsWith("/") ? merged.apiPath.replace(/\/+$/, "") : DEFAULTS.apiPath;
   const index = new WorkloadIndex(ctx, { ...merged, apiPath });
@@ -1227,14 +1280,56 @@ export function apply(ctx, config = {}) {
     };
   }, "workload-report: background model fold timers");
 
+  /**
+   * 多设备同步定时器：**默认关闭**（sync.enabled=false 时一个定时器都不建、零外发）。
+   * 索引就绪后先拉一次（拿到别的设备的历史数据），之后按 pullEveryMs / pushEveryMs 周期执行。
+   * 定时器 unref：不阻止进程退出。
+   */
+  if (index.deviceSync?.enabled === true) {
+    ctx.effect(() => {
+      const pullMs = Math.max(60 * 1000, Number(merged.sync.pullEveryMs) || DEFAULTS.sync.pullEveryMs);
+      const pushMs = Math.max(60 * 1000, Number(merged.sync.pushEveryMs) || DEFAULTS.sync.pushEveryMs);
+      let cancelled = false;
+      const runPull = () => {
+        if (cancelled) return;
+        void index.deviceSync.pull().then((result) => {
+          if (result?.ok === true) index.invalidateSnapshot("sync-pull");
+        });
+      };
+      const runPush = () => {
+        if (cancelled) return;
+        void index.deviceSync.push(index.rows);
+      };
+      const pullTimer = setInterval(runPull, pullMs);
+      const pushTimer = setInterval(runPush, pushMs);
+      pullTimer.unref?.();
+      pushTimer.unref?.();
+      // 首次：索引就绪后拉一次，避免刚开机面板空着
+      ready.then(() => {
+        if (cancelled) return;
+        runPull();
+      }).catch(() => {});
+      ctx.logger.info(
+        `[workload-report] 多设备同步已启用：${merged.sync.transport} · 推送 ${Math.round(pushMs / 60000)} 分钟 · 拉取 ${Math.round(pullMs / 60000)} 分钟`,
+      );
+      return () => {
+        cancelled = true;
+        clearInterval(pullTimer);
+        clearInterval(pushTimer);
+      };
+    }, "workload-report: device sync timers");
+  }
+
   const handle = async (req, res) => {
     try {
-      if (req.method !== "GET" && req.method !== "HEAD") {
-        sendJson(res, 405, { error: "只支持 GET / HEAD" });
-        return;
-      }
       const url = new URL(req.url ?? "/", "http://workload-report.invalid");
       const route = url.pathname.slice(apiPath.length) || "/";
+      // 唯一允许写的路由：保存/清除同步凭据（DSH 加密凭据库）。其余全部只读。
+      const isWriteRoute = req.method === "POST" && (route === "/sync/credentials" || route === "/sync/settings");
+      if (req.method !== "GET" && req.method !== "HEAD" && !isWriteRoute) {
+        sendJson(res, 405, { error: "只支持 GET / HEAD（保存设置用 POST /sync/settings，保存凭据用 POST /sync/credentials）" });
+        return;
+      }
       const params = url.searchParams;
       const timeZone = params.get("tz") ?? systemTimeZone();
       const scopeParam = params.get("scope");
@@ -1248,6 +1343,8 @@ export function apply(ctx, config = {}) {
         scope,
         all: params.get("all") === "1",
         refresh: params.get("refresh") === "1",
+        // 设备筛选：可重复 ?machine=<id|name>；缺省 = 全部设备；machine=local = 只看本机
+        machines: params.getAll("machine").filter((value) => value.length > 0),
       };
 
       if (route === "/balance") {
@@ -1261,6 +1358,120 @@ export function apply(ctx, config = {}) {
         // diagnostics 与 /snapshot 用同一份口径（indexing / syncing / modelUsage / modelFold 都在里面）。
         const diagnostics = index.diagnosticsFor();
         sendJson(res, 200, { ok: true, apiPath, indexing: diagnostics.indexing, syncing: diagnostics.syncing, diagnostics });
+        return;
+      }
+      if (route === "/sync/settings") {
+        // 同步设置：GET 返回可编辑视图（不含机密）+ 候选项；POST 写入 profile 并热应用。
+        const currentSync = merged.sync ?? DEFAULTS.sync;
+        if (req.method === "GET" || req.method === "HEAD") {
+          sendJson(res, 200, {
+            view: editableView(currentSync),
+            transports: Object.entries(TRANSPORT_META).map(([id, meta]) => ({ id, ...meta })),
+            presets: PLATFORM_PRESETS,
+            cosRegions: COS_REGIONS,
+            canSave: typeof ctx?.get === "function" && ctx.get("configEditor") !== undefined && ctx?.fiber?.entry !== undefined,
+          });
+          return;
+        }
+        let body = {};
+        try {
+          const chunks = [];
+          for await (const chunk of req) chunks.push(chunk);
+          const text = Buffer.concat(chunks).toString("utf8");
+          body = text.length > 0 ? JSON.parse(text) : {};
+        } catch {
+          sendJson(res, 400, { error: "请求体不是合法 JSON" });
+          return;
+        }
+        // 用 configEditor 回调里的**磁盘现值**作为基准，避免用内存快照覆盖掉别处的改动
+        let nextSync = null;
+        let validationError = null;
+        const saved = await saveViaConfigEditor(ctx, (diskCurrent) => {
+          try {
+            nextSync = applySettingsPatch(diskCurrent, body.values ?? body);
+            return nextSync;
+          } catch (error) {
+            validationError = reasonOf(error);
+            throw error;
+          }
+        });
+        if (saved.ok !== true && validationError !== null) {
+          sendJson(res, 400, { error: validationError });
+          return;
+        }
+        if (saved.ok !== true) {
+          sendJson(res, saved.status === "unavailable" ? 501 : 400, { error: saved.message ?? "保存失败", status: saved.status });
+          return;
+        }
+        // 保存后热应用：把新配置直接喂给运行中的 SyncService，界面立刻可用
+        try {
+          index.deviceSync.config = { ...index.deviceSync.config, ...nextSync };
+        } catch {
+          /* 配置已落盘，热应用失败不影响下次重启 */
+        }
+        sendJson(res, 200, { ok: true, view: editableView(nextSync ?? currentSync), status: index.deviceSync.diagnostics() });
+        return;
+      }
+      if (route === "/sync/credentials") {
+        // 凭据读写：GET 只返回「是否已配置」，POST 保存到 DSH 加密凭据库。
+        // 值永远不出现在响应里，也不写日志。
+        if (index.deviceSync?.enabled !== true) {
+          sendJson(res, 200, { enabled: false, vault: false, fields: [] });
+          return;
+        }
+        if (req.method === "GET" || req.method === "HEAD") {
+          const fields = await index.deviceSync.credentialStatus();
+          sendJson(res, 200, { enabled: true, vault: index.deviceSync.vault.available, transport: merged.sync.transport, fields });
+          return;
+        }
+        // POST：body 是 JSON；delete=1 表示清空
+        let body = {};
+        try {
+          const chunks = [];
+          for await (const chunk of req) chunks.push(chunk);
+          const text = Buffer.concat(chunks).toString("utf8");
+          body = text.length > 0 ? JSON.parse(text) : {};
+        } catch {
+          sendJson(res, 400, { error: "请求体不是合法 JSON" });
+          return;
+        }
+        try {
+          const result = body.delete === true
+            ? await index.deviceSync.clearCredentials()
+            : await index.deviceSync.saveCredentials(body.values ?? {});
+          // 保存后立刻自检一次，把「凭据对不对」直接反馈给界面
+          const probe = await index.deviceSync.probe();
+          sendJson(res, 200, { ok: true, result, probe, fields: await index.deviceSync.credentialStatus() });
+        } catch (error) {
+          sendJson(res, 400, { error: reasonOf(error) });
+        }
+        return;
+      }
+      if (route === "/sync") {
+        // 多设备同步：状态 / 自检 / 手动触发。默认关闭时只回 enabled:false，不发任何请求。
+        const action = params.get("action") ?? "status";
+        if (index.deviceSync?.enabled !== true) {
+          sendJson(res, 200, { enabled: false, action, status: index.deviceSync?.diagnostics?.() ?? { enabled: false } });
+          return;
+        }
+        if (action === "probe") {
+          const result = await index.deviceSync.probe();
+          sendJson(res, 200, { enabled: true, action, result, status: index.deviceSync.diagnostics() });
+          return;
+        }
+        if (action === "push") {
+          const result = await index.deviceSync.push(index.rows);
+          index.invalidateSnapshot("sync-push");
+          sendJson(res, 200, { enabled: true, action, result, status: index.deviceSync.diagnostics() });
+          return;
+        }
+        if (action === "pull") {
+          const result = await index.deviceSync.pull();
+          index.invalidateSnapshot("sync-pull"); // 设备数据变了，快照缓存作废
+          sendJson(res, 200, { enabled: true, action, result, status: index.deviceSync.diagnostics() });
+          return;
+        }
+        sendJson(res, 200, { enabled: true, action, status: index.deviceSync.diagnostics() });
         return;
       }
       if (route === "/snapshot" || route === "/export.json") {
@@ -1323,7 +1534,15 @@ export function apply(ctx, config = {}) {
       if (route === "/report.html") {
         const snapshot = await index.snapshot(query);
         // 顶部区间筛选器只做视觉呈现：告诉渲染层当前是哪一档，以便高亮。
-        const rangeKey = params.get("all") === "1" ? "all" : String(snapshot.range?.days ?? params.get("days") ?? "7");
+        // 必须按**请求的档位**判断，不能用 snapshot.range.days 反推：
+        // 区间起点会按最早活跃日截短（数据不足 N 天时 days < N），反推会把 7/30/90 高亮错。
+        // 显式 from/to 的报告没有档位概念，退回实际跨度（渲染层按 days 匹配）。
+        const explicitSpan = params.get("from") !== null || params.get("to") !== null;
+        const rangeKey = params.get("all") === "1"
+          ? "all"
+          : explicitSpan
+            ? String(snapshot.range?.days ?? "7")
+            : String(query.days);
         const html = renderReport(snapshot, {
           theme: params.get("theme") === "dark" ? "dark" : "light",
           title: params.get("title") ?? merged.defaultTitle,

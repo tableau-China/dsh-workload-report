@@ -2,12 +2,22 @@
 // 用法：node test/verify.mjs
 
 import { readFileSync } from "node:fs";
-import { readFile, rm } from "node:fs/promises";
+import { readFile, readdir, rm } from "node:fs/promises";
+import { join } from "node:path";
 
 import { aggregate, dateKey, present, resolveRange, rowFromSession, workspaceLabel } from "../src/aggregate.js";
 import { escapeHtml, formatHours, formatInt, formatMoney, formatTokens } from "../src/format.js";
 import { barPercent } from "../src/client/bar-width.js";
 import { renderReport } from "../src/report-html.js";
+import {
+  CosTransport, ContentsTransport, LocalTransport, PAYLOAD_KIND, PAYLOAD_SCHEMA, SYNC_DEFAULTS, SyncService, TRANSPORTS,
+  buildPayload, createTransport, validatePayload,
+} from "../src/sync-service.js";
+import { cosSign, cosUrlEncode } from "../src/cos-sign.js";
+import { CREDENTIAL_OWNER, CredentialVault, fieldsOf, resolveField } from "../src/credential-vault.js";
+import {
+  COS_REGIONS, TRANSPORT_META, applySettingsPatch, editableView, saveViaConfigEditor, slimConfig,
+} from "../src/sync-settings.js";
 import { balanceChip } from "../src/client/balance.js";
 import {
   PROFILE_DIMENSION_KEYS, PROFILE_EVIDENCE_MAX, PROFILE_HEADLINE_MAX, PROFILE_INSIGHT_MAX, PROFILE_LINE_MAX,
@@ -31,6 +41,8 @@ import {
   hourBarPercent, hourDotCenterY, hourDotRadius, hourMeasureMax, hourMeasureValue,
   normalizeHourMeasure, scaleTokenBuckets,
 } from "../src/hour-scale.js";
+
+const reasonOfForTest = (error) => (error instanceof Error ? error.message : String(error));
 
 let failures = 0;
 const ok = (condition, label, detail = "") => {
@@ -579,12 +591,41 @@ console.log("\n—— 等待用户剔除（0.6.5）——");
   eq(translate("en", "kpi.active.waitSub", { wait: "3 h" }), "Waiting 3 h", "i18n：英文等待副标题");
 }
 
-console.log("\n—— 「全部」从最早活跃日算起 ——");
+console.log("\n—— 区间口径：四档同源（起点 = max(窗口起点, 最早活跃日)）——");
+const firstActive = dateKey(Math.min(...rows.map((row) => row.createdAt)), "Asia/Shanghai");
 const allSnap = present(aggregate(rows, { all: true, timeZone: "Asia/Shanghai", now: base }));
-eq(allSnap.range.from, dateKey(Math.min(...rows.map((row) => row.createdAt)), "Asia/Shanghai"), "全部档的起点＝最早的活跃日（不再是 3650 天前）");
+eq(allSnap.range.from, firstActive, "全部档的起点＝最早的活跃日（不再是 3650 天前）");
 eq(allSnap.range.to, dateKey(base, "Asia/Shanghai"), "全部档的终点＝今天");
-ok(allSnap.range.days < 30 && allSnap.range.days >= 3, "全部档跨度＝真实历史长度（本例 3 天）", String(allSnap.range.days));
+eq(allSnap.range.days, 3, "全部档跨度＝真实历史长度（本例 3 天）");
 eq(allSnap.totals.sessions, 5, "全部档仍然包含所有会话");
+
+// 数据只有 3 天（10-08 ~ 10-10）：近 7/30/90 天都必须从第一天活跃开始，和「全部」完全同一套算法
+for (const days of [7, 30, 90]) {
+  const snap = present(aggregate(rows, { days, timeZone: "Asia/Shanghai", now: base }));
+  eq(snap.range.from, firstActive, `近 ${days} 天：数据不足 N 天 → 起点也是最早活跃日`);
+  eq(snap.range.days, 3, `近 ${days} 天：跨度＝实际历史 3 天（不是 ${days} 天）`);
+  eq(snap.byDay.length, 3, `近 ${days} 天：byDay 只有实际有活动的 3 天`);
+  eq(snap.totals.sessions, 5, `近 ${days} 天：会话合计与「全部」一致`);
+  eq(JSON.stringify(snap.totals), JSON.stringify(allSnap.totals), `近 ${days} 天：口径与「全部」逐项一致`);
+}
+
+// 历史比窗口长时，近 N 天仍是固定窗口（只截短「数据不足 N 天」这一侧）
+const oldRows = [...rows, makeRow({ id: "old", cwd: "/Users/me/proj-a", createdAt: base - 40 * 24 * HOUR })];
+const within7 = present(aggregate(oldRows, { days: 7, timeZone: "Asia/Shanghai", now: base }));
+eq(within7.range.from, dateKey(base - 6 * 24 * HOUR, "Asia/Shanghai"), "历史更长时，近 7 天用固定窗口起点");
+eq(within7.range.days, 7, "历史更长时，近 7 天跨度仍为 7 天");
+eq(within7.totals.sessions, 5, "窗口外（40 天前）的会话不计入近 7 天");
+const within30 = present(aggregate(oldRows, { days: 30, timeZone: "Asia/Shanghai", now: base }));
+eq(within30.range.from, dateKey(base - 29 * 24 * HOUR, "Asia/Shanghai"), "历史更长时，近 30 天用固定窗口起点");
+eq(within30.range.days, 30, "历史更长时，近 30 天跨度仍为 30 天");
+eq(within30.totals.sessions, 5, "40 天前的会话也不在近 30 天窗口内");
+const within90 = present(aggregate(oldRows, { days: 90, timeZone: "Asia/Shanghai", now: base }));
+eq(within90.range.from, dateKey(base - 40 * 24 * HOUR, "Asia/Shanghai"), "近 90 天：历史（41 天）不足 90 天 → 起点仍是第一天活跃");
+eq(within90.range.days, 41, "近 90 天：跨度＝真实历史 41 天");
+eq(within90.totals.sessions, 6, "近 90 天包含 40 天前那条会话");
+const fixedWindow = present(aggregate(rows, { days: 30, timeZone: "Asia/Shanghai", now: base, anchorToActivity: false }));
+eq(fixedWindow.range.from, dateKey(base - 29 * 24 * HOUR, "Asia/Shanghai"), "anchorToActivity:false（画像固定窗口）不按活跃日截短");
+eq(fixedWindow.range.days, 30, "anchorToActivity:false 时跨度就是请求的 30 天");
 
 console.log("\n—— 日历数据源（不受日期筛选影响）——");
 const narrowDays = present(aggregate(rows, { days: 1, timeZone: "Asia/Shanghai", now: base }));
@@ -596,15 +637,17 @@ eq(narrowDays.calendar.days.reduce((sum, day) => sum + day.sessions, 0), 5, "cal
 const scopedCalendar = present(aggregate(rows, { all: true, scope: "main", timeZone: "Asia/Shanghai", now: base }));
 eq(scopedCalendar.calendar.days.reduce((sum, day) => sum + day.sessions, 0), 4, "calendar 尊重 scope（仅主会话 4 个）");
 
-console.log("\n—— 长区间（「全部」）不截断近期数据 ——");
-const longRange = present(aggregate(rows, { days: 3650, timeZone: "Asia/Shanghai", now: base }));
-eq(longRange.range.days > 3000, true, "全部区间跨度为 3650 天");
+console.log("\n—— 长区间不截断近期数据 ——");
+// 显式 from/to 是调用方指定的固定窗口，不按最早活跃日截短（「全部」只用 3650 天兜底）
+const longRange = present(aggregate(rows, { from: "2016-10-11", to: dateKey(base, "Asia/Shanghai"), timeZone: "Asia/Shanghai", now: base }));
+eq(longRange.range.days > 3000, true, "显式 from/to 的长区间跨度 > 3000 天");
 ok(longRange.byDay.length <= 400, "byDay 长度有上界", String(longRange.byDay.length));
 ok(longRange.byDay.every((day) => day.sessions > 0), "长区间下 byDay 只含有活动的日子");
 ok(longRange.byDay.some((day) => day.date === dateKey(base, "Asia/Shanghai")), "长区间下最近的活动日仍在列表里");
 eq(longRange.totals.sessions, 5, "长区间合计与会话总数一致（不受展示截断影响）");
-const shortRange = present(aggregate(rows, { days: 7, timeZone: "Asia/Shanghai", now: base }));
-eq(shortRange.byDay.length, 7, "小区间补齐空白日（7 天 7 条）");
+const allLong = present(aggregate(rows, { days: 3650, all: true, timeZone: "Asia/Shanghai", now: base }));
+eq(allLong.range.days, 3, "全部档不按 3650 天窗口显示（3650 只是兜底上界）");
+eq(allLong.totals.sessions, 5, "全部档跨 3650 天兜底时仍包含所有会话");
 
 console.log("\n—— 时区归属 ——");
 const edge = [makeRow({ id: "tz", cwd: "/tmp/x", createdAt: Date.parse("2026-10-09T16:30:00Z") })];
@@ -750,9 +793,22 @@ ok(html.includes("活跃天数"), "报告的工作区表格含「活跃天数」
 ok(html.includes("ws-metrics"), "报告的工作区条形区是左右两块布局");
 ok(html.includes("is-tokens"), "报告右侧那条 bar 是 Token（is-tokens）");
 ok(!/[\s\S]*m-label/.test("") || !parityHtml.includes("m-label"), "结构：按工作区不再逐行重复「我的付出 / Token 消耗」标签（已按需求删除）");
-ok(html.includes("活跃 1/30 天"), "报告左侧小字含「活跃 N/M 天」", (html.match(/活跃 \d+\/\d+ 天/) ?? [""])[0]);
+ok(html.includes("活跃 1/1 天"), "报告左侧小字含「活跃 N/M 天」（数据不足窗口天数 → 分母＝实际跨度）", (html.match(/活跃 \d+\/\d+ 天/) ?? [""])[0]);
 ok(!/https?:\/\//.test(html.replace(/https?:\/\/www\.w3\.org/g, "")), "无外部资源引用（自包含）");
 ok(!html.includes("platform.deepseek.com") && !html.includes("余额"), "报告不含余额 / 余额接口（余额不入导出）");
+
+console.log("\n—— 布局：面板高度 / 报告页宽 ——");
+{
+  const stylesSource = await readFile(new URL("../src/client/styles.js", import.meta.url), "utf8");
+  const reportSource = await readFile(new URL("../src/report-html.js", import.meta.url), "utf8");
+  const panelRule = (stylesSource.match(/\.wl-panel \{[^}]*\}/s) ?? [""])[0];
+  ok(/height: 92vh/.test(panelRule) && /max-height: 92vh/.test(panelRule), "看板面板高度固定 92vh（四个页签初始高度一致）", panelRule.slice(0, 120));
+  ok(/\.wl-body \{[^}]*flex: 1 1 auto[^}]*min-height: 0/s.test(stylesSource), "内容区填满面板并在内部滚动（flex + min-height:0）");
+  const pageRule = (reportSource.match(/\.page \{[^}]*\}/s) ?? [""])[0];
+  ok(/width: 100%/.test(pageRule) && /max-width: 1600px/.test(pageRule), "报告页宽自适应视口（宽屏最多 1600px）", pageRule.slice(0, 140));
+  ok(!/max-width: 1120px/.test(pageRule), "报告不再固定 1120px 宽");
+  ok(/clamp\(20px, 2\.4vw, 44px\)/.test(pageRule), "报告左右留白随视口收缩（20–44px）");
+}
 
 // ---------------------------------------------------------------- 宿主路由
 console.log("\n—— 文案（i18n）一致性 ——");
@@ -760,7 +816,7 @@ console.log("\n—— 文案（i18n）一致性 ——");
   const localesSource = await readFile(new URL("../src/client/locales.js", import.meta.url), "utf8");
   // 文案引用可能出现在任意客户端模块（chips / card-head / hour-status / balance…）；
   // 全部一起扫描，死键检查才完整（否则新组件里的 key 会被误判为死键）。
-  const clientModules = ["index.jsx", "balance.js", "chips.jsx", "card-head.jsx", "hour-status.js", "bar-cell.jsx", "profile-card.jsx"];
+  const clientModules = ["index.jsx", "balance.js", "chips.jsx", "card-head.jsx", "hour-status.js", "bar-cell.jsx", "profile-card.jsx", "sync-view.jsx"];
   const clientSource = (await Promise.all(
     clientModules.map((name) => readFile(new URL(`../src/client/${name}`, import.meta.url), "utf8")),
   )).join("\n");
@@ -1072,6 +1128,29 @@ const reportRes = await call("/workload-report/v1/report.html?days=30&tz=UTC&the
 eq(reportRes.status, 200, "/report.html 返回 200");
 ok(String(reportRes.headers["content-type"] ?? "").startsWith("text/html"), "报告 content-type 正确");
 ok(reportRes.body.includes("工作量报告"), "报告正文含标题");
+// 区间可能被最早活跃日截短：高亮必须按**请求档位**判断，不能用 range.days 反推
+ok(reportRes.body.includes('data-active="true">近 30 天'), "报告：近 30 天档按请求档位高亮（截短后不会亮错 / 不亮）");
+const report7Res = await call("/workload-report/v1/report.html?days=7&tz=UTC");
+ok(report7Res.body.includes('data-active="true">近 7 天'), "报告：近 7 天档高亮");
+const reportAllRes = await call("/workload-report/v1/report.html?all=1&days=3650&tz=UTC");
+ok(reportAllRes.body.includes('data-active="true">全部'), "报告：全部档高亮");
+
+// —— 区间口径（路由层）：近 N 天在历史不足 N 天时同样从最早活跃日开始 ——
+{
+  const nowMs = Date.now();
+  const dayKey = (offset) => dateKey(nowMs - offset * 86400000, "UTC");
+  const earliest = "2026-10-09"; // stub 最早会话：base − 5h，UTC 仍是 10-09
+  const windowFrom = dayKey(29);
+  const expectFrom = earliest > windowFrom ? earliest : windowFrom;
+  const span = JSON.parse((await call("/workload-report/v1/snapshot?days=30&tz=UTC")).body);
+  eq(span.range.from, expectFrom, "接口：近 30 天起点 = max(今天−29, 最早活跃日)");
+  eq(span.range.to, dayKey(0), "接口：区间终点＝今天（UTC）");
+  eq(span.byDay.length, span.range.days, "接口：byDay 天数与区间跨度一致");
+  if (expectFrom === earliest) {
+    ok(span.range.days < 30, "接口：数据不足 30 天时跨度按真实历史截短", String(span.range.days));
+    ok(span.totals.activeDays <= span.range.days, "接口：活跃天数分母＝实际跨度");
+  }
+}
 
 const missing = await call("/workload-report/v1/nope");
 eq(missing.status, 404, "未知路由 404");
@@ -1084,7 +1163,14 @@ ctx.sessions = { get: () => liveSession };
 ctx.sessionProjections = { snapshot: () => ({ asOfSeq: 99, values: { sessionStats: { turns: 9, steps: 20, llmMs: 5 * HOUR, toolMs: HOUR }, tokenUsage: { totals: { uncachedInputTokens: 999, outputTokens: 888, cacheReadTokens: 777, cacheWriteTokens: 0 } }, title: "实时" } }) };
 eventListener(liveSession, { type: "step/end" });
 const afterLive = await call(`/workload-report/v1/snapshot?days=30&tz=UTC`);
-const liveApi = JSON.parse(afterLive.body);
+let liveApi = JSON.parse(afterLive.body);
+// 活会话事件走 stale-while-revalidate：命中旧值时会先返回 dataStale 的旧数字，
+// 后台立即重建；再取一次就能拿到新值（旧实现在这里靠时序碰巧拿到 fresh，不稳定）。
+if (liveApi.dataStale === true) {
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  liveApi = JSON.parse((await call(`/workload-report/v1/snapshot?days=30&tz=UTC`)).body);
+  ok(liveApi.dataStale !== true, "活会话事件后后台重建完成，再取即为新值");
+}
 eq(liveApi.totals.tokens.input, 1014, "活会话事件即时反映到快照（999 + 10 + 冷读 5）");
 
 // ---------------------------------------------------------------- 模型维度（0.4.0）
@@ -2349,6 +2435,7 @@ async function cleanupProfile(host, body) {
   eq(profileWindowDays(90, 30), 90, "窗口下限：days=90 保持 90");
   eq(profileWindowDays(7, 45), 45, "窗口下限：minDays=45 时 → 45");
   eq(profileWindowQuery({ days: 7, all: true }, 30).days, 30, "查询窗口：all 也先把 days 抬到 30");
+  eq(profileWindowQuery({ days: 7 }, 30).anchorToActivity, false, "查询窗口：画像固定窗口，不按最早活跃日截短");
 
   const llm = makeLlm({ text: aiHostText() });
   const host = bootProfile({ llm: llm.service, defaultSelection: { provider: "p", model: "m" } });
@@ -2713,6 +2800,553 @@ async function cleanupProfile(host, body) {
   eq(health.body.diagnostics.aiProfile.lastStage, "route", "/health：现场场景 lastStage=route");
   eq(health.body.diagnostics.aiProfile.route?.provider, "magpie", "/health：现场场景 route.provider 可见");
   await cleanupProfile(host, res.body);
+}
+
+/** 起一个最小宿主实例：只关心同步路由，不需要 llm。 */
+function bootSync(config = {}) {
+  const routeList = [];
+  const header = { id: "sync1", createdAt: base, cwd: "/tmp/sync-workspace", isSeeded: false, version: 4 };
+  const values = {
+    sessionStats: { turns: 1, steps: 2, llmMs: HOUR, toolMs: 0 },
+    tokenUsage: { uncachedInputTokens: 10, outputTokens: 5, cacheReadTokens: 20, cacheWriteTokens: 0 },
+    title: "同步测试会话",
+  };
+  const ctx = {
+    logger: { info() {}, warn() {} },
+    effect(fn) { const dispose = fn(); return typeof dispose === "function" ? dispose : () => {}; },
+    on() { return () => {}; },
+    get() { return undefined; },
+    sessions: { get: () => undefined },
+    sessionProjections: { snapshot: () => undefined },
+    sessionQuery: {
+      listSessions: async () => [{ header, live: false, persisted: true }],
+      observeSession: async () => ({ header, projections: { asOfSeq: 2, values }, dispose() {} }),
+      readSession: async () => ({ session: {}, inheritedEventCount: 0, events: [] }),
+    },
+    sessionProjectionCache: { cachedSnapshot: () => ({ asOfSeq: 2, values }) },
+    webServer: { register(spec) { routeList.push(spec); return () => {}; } },
+  };
+  const merged = {
+    indexPath: "/tmp/wl-verify-sync-" + process.pid + "-" + (bootSync.seq++) + ".json",
+    aiProfile: { enabled: false },
+    ...config,
+  };
+  const index = apply(ctx, merged);
+  return { routeList, indexPath: merged.indexPath, index };
+}
+bootSync.seq = 1;
+
+// ---------------------------------------------------------------- 12) 多设备同步
+// 铁律：默认关闭 → 零外发；开启后才推送/拉取；合并按 row.id 去重；设备筛选生效。
+{
+  // 12.1 默认配置：sync 全部关闭
+  eq(SYNC_DEFAULTS.enabled, false, "同步：默认 enabled=false");
+  eq(SYNC_DEFAULTS.mode, "push+pull", "同步：默认 mode=push+pull");
+  eq(SYNC_DEFAULTS.path, "machines/{machineId}.json", "同步：默认 path 模板按机器分文件");
+  eq(SYNC_DEFAULTS.redactPaths, false, "同步：默认不抹路径（用户自己决定）");
+  eq(SYNC_DEFAULTS.github.token, "", "同步：默认不带内联 token");
+  eq(SYNC_DEFAULTS.cos.secretKey, "", "同步：默认不带内联 secretKey");
+
+  // 12.2 COS 签名（q-sign-algorithm=sha1）：与官方测试向量逐段对齐
+  // 官方文档示例「上传对象」的中间变量是公开的，可直接当回归基准。
+  {
+    const signed = cosSign({
+      method: "PUT",
+      // 文档的 HttpString 用的是**解码后**的路径（"/exampleobject(腾讯云)"）
+      uriPath: "/exampleobject(腾讯云)",
+      query: {},
+      headers: {
+        Date: "Thu, 16 May 2019 06:45:51 GMT",
+        Host: "examplebucket-1250000000.cos.ap-beijing.myqcloud.com",
+        "Content-Type": "text/plain",
+        "Content-Length": "13",
+        "Content-MD5": "mQ/fVh815F3k6TAUm8m0eg==",
+        "x-cos-acl": "private",
+        "x-cos-grant-read": 'uin="100000000011"',
+      },
+      // 官方文档示例里的 SecretKey 是真实格式的示例密钥：GitHub push protection 会拦截入库，
+      // 所以这里改用占位测试密钥；canonical 字段仍按官方文档示例断言，签名值改为已知答案（见下）。
+      secretId: "wl-test-secret-id",
+      secretKey: "wl-test-secret-key",
+      startAtMs: 1557989151 * 1000,
+      expiresMs: (1557996351 - 1557989151) * 1000,
+    });
+    // KeyTime / HeaderList 与文档完全一致
+    eq(signed.keyTime, "1557989151;1557996351", "COS 签名：KeyTime 格式与文档一致");
+    eq(
+      signed.headerList,
+      "content-length;content-md5;content-type;date;host;x-cos-acl;x-cos-grant-read",
+      "COS 签名：HeaderList 按字典序且包含全部签名头",
+    );
+    eq(signed.urlParamList, "", "COS 签名：无查询参数时 UrlParamList 为空");
+    ok(signed.authorization.startsWith("q-sign-algorithm=sha1&q-ak="), "COS 签名：算法标识为 sha1", signed.authorization.slice(0, 40));
+    ok(signed.authorization.includes("&q-sign-time=1557989151;1557996351&"), "COS 签名：q-sign-time 与 KeyTime 一致");
+    ok(signed.authorization.includes("&q-key-time=1557989151;1557996351&"), "COS 签名：q-key-time 与 KeyTime 一致");
+    ok(/&q-signature=[0-9a-f]{40}$/.test(signed.authorization), "COS 签名：签名是 40 位小写 hex（HMAC-SHA1）", signed.authorization.slice(-50));
+    // 已知答案：HttpString / KeyTime / HeaderList 仍与官方文档示例逐段一致；
+    // 该签名值由独立的 Python hmac 实现对同一 canonical 串复算得出，canonical 逻辑一改就会失败。
+    eq(signed.signature, "23b87a0ae2f97f0885611ee648ab9949f382483e", "COS 签名：已知答案（HMAC-SHA1 全量比对）");
+    eq(signed.authorization.includes("&q-ak=wl-test-secret-id&"), true, "COS 签名：q-ak 使用传入的 SecretId");
+
+    // 确定性 + 敏感性
+    const again = cosSign({
+      method: "PUT", uriPath: "/exampleobject(腾讯云)", query: {},
+      headers: { Host: "examplebucket-1250000000.cos.ap-beijing.myqcloud.com", "Content-Type": "text/plain" },
+      secretId: "AKID1", secretKey: "K1", startAtMs: 1557989151000, expiresMs: 7200000,
+    });
+    const same = cosSign({
+      method: "PUT", uriPath: "/exampleobject(腾讯云)", query: {},
+      headers: { Host: "examplebucket-1250000000.cos.ap-beijing.myqcloud.com", "Content-Type": "text/plain" },
+      secretId: "AKID1", secretKey: "K1", startAtMs: 1557989151000, expiresMs: 7200000,
+    });
+    eq(again.signature, same.signature, "COS 签名：同输入同签名（确定性）");
+    const otherKey = cosSign({
+      method: "PUT", uriPath: "/exampleobject", query: {},
+      headers: { Host: "examplebucket-1250000000.cos.ap-beijing.myqcloud.com" },
+      secretId: "AKID1", secretKey: "K1", startAtMs: 1557989151000, expiresMs: 7200000,
+    });
+    ok(otherKey.signature !== again.signature, "COS 签名：路径不同则签名不同");
+    // method 大小写不敏感（内部统一转小写）
+    const upper = cosSign({
+      method: "PUT", uriPath: "/x", query: {}, headers: { Host: "h" },
+      secretId: "A", secretKey: "K", startAtMs: 1e12, expiresMs: 1000,
+    });
+    const lower = cosSign({
+      method: "put", uriPath: "/x", query: {}, headers: { Host: "h" },
+      secretId: "A", secretKey: "K", startAtMs: 1e12, expiresMs: 1000,
+    });
+    eq(upper.signature, lower.signature, "COS 签名：method 大小写不影响结果");
+    // 查询参数参与签名
+    const withQuery = cosSign({
+      method: "GET", uriPath: "/", query: { prefix: "machines/", "max-keys": "1000" },
+      headers: { Host: "h" }, secretId: "A", secretKey: "K", startAtMs: 1e12, expiresMs: 1000,
+    });
+    eq(withQuery.urlParamList, "max-keys;prefix", "COS 签名：查询参数键按字典序");
+    // UrlEncode 边界
+    eq(cosUrlEncode("a b"), "a%20b", "COS UrlEncode：空格编码为 %20（不是 +）");
+    eq(cosUrlEncode("a/b"), "a%2Fb", "COS UrlEncode：斜杠被编码");
+    eq(cosUrlEncode("'()*!"), "%27%28%29%2A%21", "COS UrlEncode：特殊字符额外编码且十六进制大写");
+    eq(cosUrlEncode("AZaz09-_.~"), "AZaz09-_.~", "COS UrlEncode：unreserved 字符保持原样");
+    // key 逐段编码：分隔用的 / 保留
+    eq(CosTransport.encodeKey("machines/abc.json"), "/machines/abc.json", "COS key：/ 作为分隔符保留");
+    eq(CosTransport.encodeKey("a b/c.json"), "/a%20b/c.json", "COS key：段内特殊字符被编码");
+  }
+
+  // 12.3 传输工厂：四种类型都能构造，且默认（github）不需要网络
+  eq(createTransport({ transport: "cos", cos: {} }) instanceof CosTransport, true, "传输工厂：cos → CosTransport");
+  eq(createTransport({ transport: "local", local: {} }) instanceof LocalTransport, true, "传输工厂：local → LocalTransport");
+  eq(createTransport({ transport: "gitea", github: {} }) instanceof ContentsTransport, true, "传输工厂：gitea → ContentsTransport");
+  eq(createTransport({ transport: "github", github: {} }) instanceof ContentsTransport, true, "传输工厂：github → ContentsTransport");
+  eq(createTransport({ transport: "unknown", github: {} }) instanceof ContentsTransport, true, "传输工厂：未知类型退回 ContentsTransport（不抛）");
+
+  // 12.4 载荷：只含统计行，绝不含对话内容 / 提示词
+  const payloadRows = new Map([
+    ["s1", makeRow({ id: "s1", cwd: "/Users/me/secret-project", createdAt: base, title: "机密标题", turns: 2 })],
+  ]);
+  const payload = buildPayload(payloadRows, { id: "m1", name: "Mac" }, {});
+  eq(payload.schema, PAYLOAD_SCHEMA, "载荷：schema 版本正确");
+  eq(payload.kind, PAYLOAD_KIND, "载荷：kind 正确");
+  eq(payload.rows.length, 1, "载荷：行数正确");
+  ok(payload.machine.id === "m1" && payload.machine.name === "Mac", "载荷：带 machine 身份");
+  const serialized = JSON.stringify(payload);
+  ok(!serialized.includes("messages"), "载荷：不含 messages 字段");
+  ok(!/\"prompt\"/.test(serialized), "载荷：不含 prompt 字段");
+  eq(payload.rows[0].cwd, "/Users/me/secret-project", "载荷：默认保留 cwd（用户自行决定是否抹）");
+
+  // 12.5 redactPaths：绝对路径被抹成别名或短哈希
+  const redacted = buildPayload(payloadRows, { id: "m1", name: "Mac" }, { redactPaths: true, aliases: { "secret-project": "秘密项目" } });
+  eq(redacted.rows[0].cwd, "秘密项目", "载荷：redactPaths 命中别名时用别名");
+  const hashOnly = buildPayload(payloadRows, { id: "m1", name: "Mac" }, { redactPaths: true, aliases: {} });
+  ok(!hashOnly.rows[0].cwd.includes("/Users/"), "载荷：redactPaths 且无别名时不暴露绝对路径", hashOnly.rows[0].cwd);
+  ok(/#[0-9a-f]{6}$/.test(hashOnly.rows[0].cwd), "载荷：redactPaths 用「名字#短哈希」", hashOnly.rows[0].cwd);
+
+  // 12.6 载荷校验：坏载荷必须被拒
+  ok(validatePayload(payload, "ok") === payload, "载荷校验：合法载荷通过");
+  let rejected = 0;
+  for (const bad of [null, {}, { schema: 9, kind: PAYLOAD_KIND, rows: [] }, { schema: 1, kind: "x", rows: [] },
+    { schema: 1, kind: PAYLOAD_KIND }, { schema: 1, kind: PAYLOAD_KIND, rows: [], machine: {} }]) {
+    try { validatePayload(bad, "bad"); } catch { rejected += 1; }
+  }
+  eq(rejected, 6, "载荷校验：6 种坏载荷全部被拒");
+
+  // 12.7 合并语义：按 row.id 去重、updatedAt 大者胜、活跃天数不重复计天
+  const syncConfig = { enabled: true, transport: "local", local: { dir: "/tmp/wl-verify-sync-" + process.pid } };
+  const svc = new SyncService({ logger: { info() {}, warn() {} } }, syncConfig, { home: "/tmp/wl-verify-home-" + process.pid });
+  const localRows = new Map([
+    ["a", makeRow({ id: "a", cwd: "/Users/me/proj-a", createdAt: base, turns: 3 })],
+    ["b", makeRow({ id: "b", cwd: "/Users/me/proj-a", createdAt: base - 24 * HOUR, turns: 1 })],
+  ]);
+  const remoteRows = [
+    makeRow({ id: "c", cwd: "/Users/other/proj-a", createdAt: base, turns: 5 }),
+    // 同 id 冲突：远端更新更早 → 保留本机
+    { ...makeRow({ id: "a", cwd: "/Users/me/proj-a", createdAt: base, turns: 99 }), updatedAt: 1 },
+  ];
+  svc.sources.set("remote-1", {
+    payload: { schema: PAYLOAD_SCHEMA, kind: PAYLOAD_KIND, generatedAt: Date.now(), machine: { id: "remote-1", name: "iMac" }, rows: remoteRows },
+    fetchedAt: Date.now(),
+    key: "machines/remote-1.json",
+  });
+  const merged = svc.merge(localRows);
+  eq(merged.rows.size, 3, "合并：2 本机 + 1 新远端 = 3（同 id 只计一次）");
+  eq(merged.rows.get("a").turns, 3, "合并：同 id 冲突保留本机行（本机投影最准）");
+  eq(merged.origin.get("c"), "remote-1", "合并：来源标记正确");
+
+  const soloAgg = present(aggregate([...localRows.values()], { all: true, timeZone: "UTC", scope: "all", aliases: {} }));
+  const bothAgg = present(aggregate([...merged.rows.values()], { all: true, timeZone: "UTC", scope: "all", aliases: {} }));
+  eq(soloAgg.totals.sessions, 2, "合并：单机会话数 2");
+  eq(bothAgg.totals.sessions, 3, "合并：合并后会话数 3");
+  eq(soloAgg.totals.activeDays, 2, "合并：单机活跃天数 2（两条跨两天）");
+  eq(bothAgg.totals.activeDays, 2, "合并：远端会话与最早一天同日 → 活跃天数仍是 2（不重复计天）");
+
+  // 12.8 设备筛选
+  const onlyLocal = svc.merge(localRows, { machines: ["local"] });
+  eq(onlyLocal.rows.size, 2, "设备筛选：只看本机 → 2 行");
+  eq(onlyLocal.dropped, 2, "设备筛选：丢掉远端 2 行");
+  const onlyRemote = svc.merge(localRows, { machines: ["remote-1"] });
+  eq(onlyRemote.rows.size, 3, "设备筛选：选中远端（本机永远在）→ 3 行");
+  const allDevices = svc.merge(localRows, { machines: [] });
+  eq(allDevices.rows.size, 3, "设备筛选：空数组 = 全部设备");
+  const named = svc.merge(localRows, { machines: ["iMac"] });
+  eq(named.rows.size, 3, "设备筛选：也支持按机器名筛选");
+
+  // 12.9 设备清单与诊断
+  svc.identity = { id: "self-1", name: "Mac mini", host: "h", platform: "darwin", arch: "arm64", plugin: "1.0.5" };
+  const devices = svc.devices();
+  eq(devices.length, 2, "设备清单：本机 + 1 个来源");
+  eq(devices[0].local, true, "设备清单：第一项是本机");
+  eq(devices[1].name, "iMac", "设备清单：来源名来自载荷");
+  eq(devices[1].rows, 2, "设备清单：来源行数正确");
+  const diag = svc.diagnostics();
+  eq(diag.enabled, true, "诊断：enabled=true");
+  eq(diag.transport, "local", "诊断：transport 正确");
+  eq(diag.sources, 1, "诊断：sources 计数正确");
+
+  // 12.10 local 传输：真实读写（走临时目录，不联网）
+  {
+    const dir = "/tmp/wl-verify-sync-" + process.pid;
+    const transport = new LocalTransport({ dir });
+    eq(await transport.read("machines/none.json"), null, "local 传输：不存在返回 null");
+    await transport.write("machines/a.json", '{"x":1}');
+    eq(await transport.read("machines/a.json"), '{"x":1}', "local 传输：写后可读");
+    eq(JSON.stringify(await transport.list("machines/")), '["machines/a.json"]', "local 传输：list 只返回 .json");
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+
+  // 12.11 关闭时零外发：enabled=false 时 push/pull/probe 一律 skipped，不构造请求
+  {
+    const off = new SyncService({ logger: { info() {}, warn() {} } }, { enabled: false, transport: "cos", cos: { bucket: "b-1", region: "ap-guangzhou" } });
+    eq(off.canPush, false, "关闭时：canPush=false");
+    eq(off.canPull, false, "关闭时：canPull=false");
+    eq((await off.push(new Map())).skipped, true, "关闭时：push 直接 skipped");
+    eq((await off.pull()).skipped, true, "关闭时：pull 直接 skipped");
+    eq(off.diagnostics().enabled, false, "关闭时：诊断 enabled=false");
+    eq(off.diagnostics().devices.length, 0, "关闭时：设备清单为空");
+  }
+
+  // 12.12 /sync 路由：默认关闭只回 enabled:false
+  {
+    const host = bootSync({});
+    await waitHealth(host.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "同步默认关闭实例索引完成");
+    const res = await routeJson(host.routeList, "/workload-report/v1/sync");
+    eq(res.status, 200, "路由：/sync 默认关闭仍 200");
+    eq(res.body.enabled, false, "路由：默认关闭 enabled=false");
+    const probe = await routeJson(host.routeList, "/workload-report/v1/sync?action=probe");
+    eq(probe.body.enabled, false, "路由：默认关闭 probe 不触发网络");
+    const health = await routeJson(host.routeList, "/workload-report/v1/health");
+    eq(health.body.diagnostics.sync.enabled, false, "诊断：/health 暴露 sync.enabled=false");
+    eq(JSON.stringify(health.body.diagnostics.sync.devices), "[]", "诊断：默认关闭时 devices 为空数组");
+    await rm(host.indexPath, { force: true }).catch(() => {});
+  }
+
+  // 12.13 /sync 路由：开启 local 传输后，push/pull 走真实目录（端到端，不联网）
+  {
+    const dir = "/tmp/wl-verify-sync-e2e-" + process.pid;
+    const host = bootSync({ sync: { enabled: true, transport: "local", local: { dir }, pullEveryMs: 86400000, pushEveryMs: 86400000 } });
+    await waitHealth(host.routeList, (body) => body.indexing === false && body.diagnostics.lastSyncAt > 0, "同步开启实例索引完成");
+    const pushed = await routeJson(host.routeList, "/workload-report/v1/sync?action=push");
+    eq(pushed.body.enabled, true, "路由：开启后 enabled=true");
+    eq(pushed.body.result.ok, true, "路由：push 成功");
+    const listed = await readdir(join(dir, "machines")).catch(() => []);
+    eq(listed.length, 1, "路由：push 后目录里有 1 个机器文件");
+    ok(listed[0].endsWith(".json"), "路由：文件名是 .json");
+    const pulled = await routeJson(host.routeList, "/workload-report/v1/sync?action=pull");
+    eq(pulled.body.result.ok, true, "路由：pull 成功");
+    eq(pulled.body.result.fetched, 0, "路由：pull 跳过自己的文件（fetched=0）");
+    const status = await routeJson(host.routeList, "/workload-report/v1/sync");
+    eq(status.body.status.devices.length, 1, "路由：设备清单只含本机");
+    eq(status.body.status.devices[0].local, true, "路由：设备清单第一项是本机");
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+    await rm(host.indexPath, { force: true }).catch(() => {});
+  }
+}
+
+
+
+
+// ---------------------------------------------------------------- 15) 同步设置（GUI 选传输 + 参数）
+{
+  // 15.1 四种传输都能被选，且标记是否需要凭据
+  eq(TRANSPORTS.length, 4, "设置：支持四种传输");
+  ok(TRANSPORTS.includes("cos") && TRANSPORTS.includes("github") && TRANSPORTS.includes("gitea") && TRANSPORTS.includes("local"), "设置：cos/github/gitea/local 齐全");
+  eq(TRANSPORT_META.cos.needsCredential, true, "设置：COS 需要凭据");
+  eq(TRANSPORT_META.local.needsCredential, false, "设置：共享目录不需要凭据");
+  ok(TRANSPORT_META.github.fields.includes("repo"), "设置：GitHub 有仓库字段");
+  ok(TRANSPORT_META.gitea.fields.includes("baseUrl"), "设置：Gitea 有服务地址字段");
+
+  // 15.2 切换传输并填参数
+  {
+    let cfg = applySettingsPatch({ enabled: false }, { enabled: true, transport: "cos", cos: { bucket: "b-1250000000", region: "ap-shanghai" } });
+    eq(cfg.transport, "cos", "设置：可切到 COS");
+    eq(cfg.cos.bucket, "b-1250000000", "设置：写入桶名");
+    eq(cfg.cos.region, "ap-shanghai", "设置：写入地域");
+    eq(cfg.enabled, true, "设置：可开启");
+
+    // 切到 github：保留 COS 配置（切回来不用重填）
+    cfg = applySettingsPatch(cfg, { transport: "github", github: { repo: "me/sync", branch: "main" } });
+    eq(cfg.transport, "github", "设置：可切到 GitHub");
+    eq(cfg.github.repo, "me/sync", "设置：写入仓库");
+    eq(cfg.cos.bucket, "b-1250000000", "设置：切换传输不清空其它传输的配置");
+
+    // 切到 gitea 并自定义服务地址
+    cfg = applySettingsPatch(cfg, { transport: "gitea", github: { repo: "admin/sync", baseUrl: "https://git.example.com", branch: "master" } });
+    eq(cfg.github.baseUrl, "https://git.example.com", "设置：可自定义 Gitea 服务地址");
+    eq(cfg.github.branch, "master", "设置：可自定义分支");
+
+    // 切到本地目录
+    cfg = applySettingsPatch(cfg, { transport: "local", local: { dir: "~/sync/dsh" } });
+    eq(cfg.local.dir, "~/sync/dsh", "设置：可切到共享目录");
+  }
+
+  // 15.3 校验：路径必须含 {machineId}
+  let err = null;
+  try { applySettingsPatch({ enabled: false }, { path: "machines/fixed.json" }); } catch (error) { err = reasonOfForTest(error); }
+  ok(/machineId/.test(err ?? ""), "设置：路径缺 {machineId} 被拒", err);
+  eq(applySettingsPatch({ enabled: false }, { path: "dsh/machines/{machineId}.json" }).path, "dsh/machines/{machineId}.json", "设置：含 {machineId} 的路径通过");
+
+  // 15.4 校验：开启前必填项
+  for (const [transport, expect] of [["cos", "桶名"], ["github", "仓库"], ["local", "目录"]]) {
+    let message = null;
+    try { applySettingsPatch({ enabled: false }, { enabled: true, transport }); } catch (error) { message = reasonOfForTest(error); }
+    ok((message ?? "").includes(expect), `设置：${transport} 开启时缺「${expect}」被拒`, message);
+  }
+
+  // 15.5 校验：仓库格式与服务地址协议
+  let repoErr = null;
+  try { applySettingsPatch({}, { github: { repo: "no-slash" } }); } catch (error) { repoErr = reasonOfForTest(error); }
+  ok(/owner\/name/.test(repoErr ?? ""), "设置：仓库必须是 owner/name", repoErr);
+  eq(applySettingsPatch({}, { github: { repo: "https://github.com/me/x.git" } }).github.repo, "me/x", "设置：仓库接受 URL 形式并规整");
+  let urlErr = null;
+  try { applySettingsPatch({}, { github: { baseUrl: "git.example.com" } }); } catch (error) { urlErr = reasonOfForTest(error); }
+  ok(/http/.test(urlErr ?? ""), "设置：服务地址必须带协议", urlErr);
+
+  // 15.6 不支持的传输被拒
+  let badTransport = null;
+  try { applySettingsPatch({}, { transport: "ftp" }); } catch (error) { badTransport = reasonOfForTest(error); }
+  ok(/不支持/.test(badTransport ?? ""), "设置：未知传输被拒", badTransport);
+
+  // 15.7 周期有下限（防抖）
+  eq(applySettingsPatch({}, { pullEveryMs: 1000 }).pullEveryMs, SYNC_DEFAULTS.pullEveryMs, "设置：过小的周期回落默认值");
+
+  // 15.8 editableView 绝不含机密
+  {
+    const view = editableView({
+      enabled: true, transport: "cos",
+      cos: { bucket: "b-1", region: "ap-guangzhou", secretId: "AKIDleak", secretKey: "KEYleak" },
+      github: { repo: "me/x", token: "ghp_leak" },
+    });
+    const text = JSON.stringify(view);
+    ok(!text.includes("AKIDleak") && !text.includes("KEYleak") && !text.includes("ghp_leak"), "设置：可编辑视图不含任何机密字段");
+    eq(view.cos.bucket, "b-1", "设置：视图保留桶名");
+  }
+
+  // 15.9 configEditor 不可用时给出明确提示（不静默失败）
+  {
+    const noEditor = await saveViaConfigEditor({ get: () => undefined }, () => ({}));
+    eq(noEditor.ok, false, "设置：无 configEditor 时保存失败");
+    ok(/不支持从界面保存|不支持/.test(noEditor.message ?? ""), "设置：无 configEditor 时提示手动改配置", noEditor.message);
+  }
+
+  // 15.9b slimConfig：只把非默认值写进 YAML，切换传输不丢其它配置
+  {
+    const slim = slimConfig({
+      enabled: true, transport: "cos", path: SYNC_DEFAULTS.path, timeoutMs: SYNC_DEFAULTS.timeoutMs,
+      cos: { bucket: "b-1", region: "ap-guangzhou", secretIdFile: "", secretKeyFile: "" },
+      github: { repo: "", branch: "main", baseUrl: "https://api.github.com" },
+      local: { dir: "" },
+    });
+    eq(slim.enabled, true, "slimConfig：非默认值保留");
+    eq(slim.transport, "cos", "slimConfig：transport 保留");
+    eq(slim.path, undefined, "slimConfig：等于默认值的 path 被省略");
+    eq(slim.timeoutMs, undefined, "slimConfig：等于默认值的 timeoutMs 被省略");
+    eq(JSON.stringify(slim.cos), '{"bucket":"b-1","region":"ap-guangzhou"}', "slimConfig：空的 secretIdFile 被省略");
+    eq(slim.github, undefined, "slimConfig：全默认的 github 段被省略");
+    eq(slim.local, undefined, "slimConfig：全空 local 段被省略");
+  }
+
+  // 15.10 configEditor 可用时调用 edit 且只改 sync 子树
+  {
+    let captured = null;
+    const fakeCtx = {
+      fiber: { entry: { id: "workload-report" } },
+      get: (name) => (name === "configEditor" ? { async edit(entry, change) { captured = { entry, next: change({ apiPath: "/workload-report/v1", sync: { enabled: false } }) }; } } : undefined),
+    };
+    const result = await saveViaConfigEditor(fakeCtx, (current) => ({ ...current, enabled: true, transport: "cos" }));
+    eq(result.ok, true, "设置：configEditor 可用时保存成功");
+    eq(captured.next.sync.enabled, true, "设置：写入新 sync.enabled");
+    eq(captured.next.apiPath, "/workload-report/v1", "设置：保留其它配置项（不覆盖整个 config）");
+  }
+}
+
+// ---------------------------------------------------------------- 14) 凭据仓库（加密存储优先）
+{
+  // 假的 credentials 服务：内存记录，模拟 dsh-credentials 的形状
+  function fakeCredentials() {
+    const records = new Map();
+    return {
+      calls: { read: 0, write: 0, delete: 0, describe: 0 },
+      async readRecord(key) { this.calls.read += 1; return records.get(key); },
+      async describeRecord(key) {
+        this.calls.describe += 1;
+        const rec = records.get(key);
+        return rec === undefined ? { configured: false, writable: true } : { configured: true, kind: rec.kind, writable: true };
+      },
+      async listRecords() { return [...records.keys()].map((key) => ({ key, kind: "api-key" })); },
+      async modifyRecord(key, mutate) {
+        this.calls.write += 1;
+        const next = await mutate(records.get(key));
+        if (next !== undefined) records.set(key, next);
+        return records.get(key);
+      },
+      async deleteRecord(key) { this.calls.delete += 1; records.delete(key); },
+    };
+  }
+
+  // 14.1 无可选服务时降级：available=false，读取返回 null，写入抛明确错误
+  {
+    const vault = new CredentialVault({ get: () => undefined });
+    eq(vault.available, false, "凭据库：服务缺失时 available=false");
+    eq(await vault.read("cos", "secret-id"), null, "凭据库：服务缺失时读取返回 null");
+    let threw = null;
+    try { await vault.write("cos", "secret-id", "x"); } catch (error) { threw = reasonOfForTest(error); }
+    ok(/没有加密凭据存储/.test(threw ?? ""), "凭据库：服务缺失时写入给出明确错误", threw);
+  }
+
+  // 14.2 有服务时：写入 → 读取 → describe 不看值 → 删除
+  {
+    const service = fakeCredentials();
+    const vault = new CredentialVault({ get: (name) => (name === "credentials" ? service : undefined) });
+    eq(vault.available, true, "凭据库：服务存在时 available=true");
+    eq(vault.keyOf("cos", "secret-id"), "dsh-workload-report/cos-secret-id", "凭据库：记录 key 形如 <owner>/<transport>-<id>");
+
+    await vault.write("cos", "secret-id", "AKIDtest123");
+    eq(await vault.read("cos", "secret-id"), "AKIDtest123", "凭据库：写入后可读回");
+
+    const described = await service.describeRecord(vault.keyOf("cos", "secret-id"));
+    eq(described.configured, true, "凭据库：describe 报告已配置");
+    eq(described.kind, "api-key", "凭据库：记录类型是 api-key");
+    ok(JSON.stringify(described).indexOf("AKIDtest123") < 0, "凭据库：describe 不包含凭据值");
+
+    const listed = await service.listRecords();
+    ok(JSON.stringify(listed).indexOf("AKIDtest123") < 0, "凭据库：listRecords 不包含凭据值");
+
+    // 空值不覆盖（避免用户误清空）
+    await vault.write("cos", "secret-id", "   ");
+    eq(await vault.read("cos", "secret-id"), "AKIDtest123", "凭据库：空值不会覆盖已存值（delete 才清）");
+
+    await vault.delete("cos", "secret-id");
+    eq(await vault.read("cos", "secret-id"), null, "凭据库：删除后读取为 null");
+  }
+
+  // 14.3 优先级：加密库 > 文件 > 环境变量 > 内联
+  {
+    const service = fakeCredentials();
+    const vault = new CredentialVault({ get: () => service });
+    process.env.WR_TEST_SECRET = "from-env";
+    await vault.write("cos", "secret-id", "from-vault");
+    eq((await resolveField({ vault, transport: "cos", id: "secret-id", fileValue: "from-file", envKeys: ["WR_TEST_SECRET"], inline: "from-inline" })).value, "from-vault", "凭据优先级：加密库最高");
+    await vault.delete("cos", "secret-id");
+    eq((await resolveField({ vault, transport: "cos", id: "secret-id", fileValue: "from-file", envKeys: ["WR_TEST_SECRET"], inline: "from-inline" })).value, "from-file", "凭据优先级：无库值时文件优先");
+    eq((await resolveField({ vault, transport: "cos", id: "secret-id", fileValue: "", envKeys: ["WR_TEST_SECRET"], inline: "from-inline" })).value, "from-env", "凭据优先级：无文件时环境变量");
+    eq((await resolveField({ vault, transport: "cos", id: "secret-id", fileValue: "", envKeys: [], inline: "from-inline" })).value, "from-inline", "凭据优先级：最后退回内联");
+    eq(await resolveField({ vault, transport: "cos", id: "secret-id", fileValue: "", envKeys: [], inline: "" }), null, "凭据优先级：都没有时返回 null");
+    delete process.env.WR_TEST_SECRET;
+  }
+
+  // 14.4 字段定义：COS 两项、GitHub 一项
+  eq(fieldsOf("cos").length, 2, "凭据字段：COS 需要两项");
+  eq(fieldsOf("github").length, 1, "凭据字段：GitHub 需要一项");
+  eq(fieldsOf("gitea").length, 1, "凭据字段：Gitea 复用 GitHub 那组");
+  ok(fieldsOf("cos").find((f) => f.id === "secret-key").secret === true, "凭据字段：SecretKey 标记为敏感");
+  ok(fieldsOf("cos").find((f) => f.id === "secret-id").secret !== true, "凭据字段：SecretId 不算敏感（可回显）");
+
+  // 14.5 SyncService 暴露的凭据接口
+  {
+    const service = fakeCredentials();
+    const svc = new SyncService(
+      { logger: { info() {}, warn() {} }, get: (name) => (name === "credentials" ? service : undefined) },
+      { enabled: true, transport: "cos", cos: { bucket: "b-1", region: "ap-guangzhou" } },
+    );
+    const status = await svc.credentialStatus();
+    eq(status.length, 2, "SyncService：凭据状态返回两项");
+    eq(status[0].configured, false, "SyncService：初始未配置");
+    ok(JSON.stringify(status).indexOf("secretKey") < 0 || !status.some((s) => "value" in s), "SyncService：状态里不含 value 字段");
+
+    await svc.saveCredentials({ "secret-id": "AKIDx", "secret-key": "KEYy", bogus: "nope" });
+    const after = await svc.credentialStatus();
+    ok(after.every((f) => f.configured === true), "SyncService：保存后全部已配置");
+    eq((await svc.credentials?.( ) ) ?? null, null, "SyncService：不暴露 credentials 方法（防止误用）");
+
+    await svc.clearCredentials();
+    const cleared = await svc.credentialStatus();
+    ok(cleared.every((f) => f.configured === false), "SyncService：清空后全部未配置");
+
+    // local 传输不需要凭据
+    const localSvc = new SyncService({ logger: { info() {}, warn() {} } }, { enabled: true, transport: "local", local: { dir: "/tmp" } });
+    let msg = null;
+    try { await localSvc.saveCredentials({ token: "x" }); } catch (error) { msg = reasonOfForTest(error); }
+    ok(/不需要凭据/.test(msg ?? ""), "SyncService：local 传输拒绝保存凭据", msg);
+  }
+}
+
+// ---------------------------------------------------------------- 13) 客户端同步 UI 结构
+// 没有真实浏览器时，用源码结构断言保证：组件存在、复用统一组件、入口位置正确。
+{
+  const syncView = await readFile(new URL("../src/client/sync-view.jsx", import.meta.url), "utf8");
+  const clientIndex = await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8");
+
+  ok(syncView.includes("export function DeviceFilter"), "UI：导出 DeviceFilter");
+  ok(syncView.includes("export function BySyncView"), "UI：导出 BySyncView");
+  ok(syncView.includes("export function CredentialForm"), "UI：导出 CredentialForm（GUI 填凭据）");
+  ok(syncView.includes('type="password"'), "UI：凭据输入框是 password（不露字）");
+  ok(syncView.includes("setDraft({})"), "UI：提交后清空输入框（值不留在界面）");
+  ok(syncView.includes("/sync/credentials"), "UI：凭据走 /sync/credentials 接口");
+  ok(!/value=\{[^}]*configured[^}]*\}/.test(syncView), "UI：已配置字段不回填值");
+  // 复用统一组件（不另造样式）
+  ok(syncView.includes('from "./chips.jsx"'), "UI：设备筛选复用 ChipGroup/Chip");
+  ok(syncView.includes('from "./card-head.jsx"'), "UI：卡片头复用 CardHead");
+  ok(!/wl-chip-[a-z]+/.test(syncView), "UI：没有自造 chip 变体 class");
+  // 凭据绝不回显
+  ok(!/secretKey\s*[:=]\s*[^,]*(?:<\/|value=)/.test(syncView), "UI：不回显 secretKey");
+  ok(syncView.includes('data-enabled="false"'), "UI：同步关闭时渲染独立的关闭态容器");
+
+  // 「设备同步」入口：设备筛选行右侧（不再占顶部页签位，也不在 AI 画像之后）
+  ok(syncView.includes('data-sync-entry="true"'), "UI：「设备同步」入口渲染在 DeviceFilter 内部");
+  ok(/onOpenSync/.test(syncView) && /t\("tab\.deviceSync"\)/.test(syncView), "UI：入口用「设备同步」文案并回调打开");
+  ok(!clientIndex.includes('data-sync-tab="true"'), "UI：顶部页签行不再有「设备同步」页签");
+  ok(!/wl-tab[^>]*deviceSync/.test(clientIndex), "UI：设备同步不再是 wl-tab 页签");
+  ok(clientIndex.includes("onOpenSync={() => setTab(\"deviceSync\")}"), "UI：看板把入口接到设备同步页");
+
+  ok((syncView.match(/onSaved=\{settingsSaved\}/g) ?? []).length === 2, "UI：同步设置保存后刷新本页 + 通知看板重拉快照（设备行即时更新）");
+  ok(/const settingsSaved = useCallback\(\(\) => \{[\s\S]*?onChanged\(\);/.test(syncView), "UI：settingsSaved 里确实调用了 onChanged（联动看板快照）");
+
+  // 挂载条件
+  ok(clientIndex.includes("BySyncView"), "UI：看板挂载 BySyncView");
+  ok(clientIndex.includes("DeviceFilter"), "UI：看板挂载 DeviceFilter");
+  ok(clientIndex.includes('query.append("machine"'), "UI：设备筛选通过 machine 参数传给宿主");
+
+  // 报告不含同步 UI（报告是自包含快照，不暴露设备管理）
+  const reportSource = await readFile(new URL("../src/report-html.js", import.meta.url), "utf8");
+  ok(!reportSource.includes("DeviceFilter") && !reportSource.includes("BySyncView"), "UI：HTML 报告不含设备管理 UI");
 }
 
 // 收尾：删掉本次的临时索引

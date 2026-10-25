@@ -22,6 +22,10 @@ export const STYLES = `
 @keyframes wl-fade { from { opacity: 0; } to { opacity: 1; } }
 .wl-panel {
   width: min(1180px, 100%);
+  /* 高度固定＝视口 92vh：四个页签（按日期 / 模型用量 / 按工作区 / 主要会话）内容长短不同，
+     若让面板随内容收缩，切页签时外框会跳（内容不足一屏的页签尤其明显）。
+     固定后每个页签的初始高度一致，内容超出时只在面板内部滚动。 */
+  height: 92vh;
   max-height: 92vh;
   display: flex;
   flex-direction: column;
@@ -81,7 +85,7 @@ export const STYLES = `
 .wl-btn[data-kind="primary"]:hover { filter: brightness(1.05); color: #fff; }
 .wl-btn:disabled { opacity: 0.55; cursor: not-allowed; }
 .wl-btn:disabled:hover { filter: none; }
-.wl-body { padding: 18px 20px 24px; overflow: auto; }
+.wl-body { padding: 18px 20px 24px; overflow: auto; flex: 1 1 auto; min-height: 0; }
 /* KPI：5 列等宽栅格；Tokens / 模型费用各跨 2 列 —— 8 张卡 = 10 格，正好排满 2 行 */
 .wl-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
 .wl-kpi { background: var(--dsw-alias-bg-layer-2, #f7f8fa); border: 1px solid var(--dsw-alias-border-l2, #eceef1); border-radius: 12px; padding: 12px 14px; min-width: 0; }
@@ -379,4 +383,28 @@ export const STYLES = `
 .wl-legend-item { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); }
 .wl-legend-item i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
 @media (max-width: 900px) { .wl-model-grid { grid-template-columns: 1fr; } }
+/* —— 凭据表单 —— */
+.wl-cred { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border: 1px solid var(--dsw-alias-border-l2, #e5e7eb); border-radius: 10px; background: var(--dsw-alias-bg-layer-2, #fafbfc); }
+.wl-cred-fields { display: flex; flex-direction: column; gap: 12px; }
+.wl-cred-field { display: flex; flex-direction: column; gap: 5px; }
+.wl-cred-label { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--dsw-alias-label-primary, #111); }
+.wl-cred-label [data-kind="ok"] { font-size: 11px; color: var(--dsw-static-green-600, #059669); }
+.wl-cred-label [data-kind="missing"] { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); }
+.wl-cred-field input { font: inherit; font-size: 12px; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--dsw-alias-border-l2, #d7dbe0); background: var(--dsw-alias-bg-layer-1, #fff); color: var(--dsw-alias-label-primary, #111); }
+.wl-cred-field input:focus { outline: none; border-color: var(--dsw-static-deepseek-500, #4d6bfe); }
+.wl-cred-source { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); }
+.wl-cred-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.wl-cred-field select { font: inherit; font-size: 12px; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--dsw-alias-border-l2, #d7dbe0); background: var(--dsw-alias-bg-layer-1, #fff); color: var(--dsw-alias-label-primary, #111); }
+.wl-cred-field select:focus { outline: none; border-color: var(--dsw-static-deepseek-500, #4d6bfe); }
+/* —— 多设备同步（默认关闭时这些容器不渲染）—— */
+.wl-sync { display: flex; flex-direction: column; gap: 12px; }
+.wl-sync-meta { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; font-size: 12px; }
+.wl-sync-meta dt { color: var(--dsw-alias-label-tertiary, #6b7280); }
+.wl-sync-meta dd { margin: 0; color: var(--dsw-alias-label-primary, #111); }
+.wl-sync [data-kind="sync-ok"] { color: var(--dsw-static-green-600, #059669); }
+.wl-sync [data-kind="sync-fail"], .wl-sync [data-kind="sync-error"] { color: var(--dsw-static-red-600, #dc2626); }
+.wl-sync [data-kind="stale"] { color: var(--dsw-static-amber-600, #b45309); }
+.wl-chip[data-stale="true"] { border-style: dashed; }
+/* 「设备同步」入口（设备筛选行右侧的主按钮）：当前页时用强调色 hover 态，与页签选中态同口径 */
+.wl-btn[data-kind="primary"][data-active="true"] { background: var(--dsw-alias-bg-accent-hover, #2f4bd8); }
 `;

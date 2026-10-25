@@ -40,6 +40,10 @@
 因此 `payload.range.days` 与响应 `summaryDays` 始终 `>= minDays`（默认 30），
 卡片用 `summaryDays` 标注 **「基于近 N 天汇总」**。
 
+画像窗口是**固定窗口**（`profileWindowQuery` 传 `anchorToActivity: false`）：
+看板会把近 N 天的区间截短到最早活跃日，画像不跟进——否则历史不足 30 天的新账号会被压成「近几天」，
+趋势字段也失去 14 天基线。
+
 ## 2. 发送的数据（白名单，56 个键）
 
 白名单定义在 `src/ai-profile.js` 的 `PROFILE_PAYLOAD_KEYS`，构造后立即断言顶层键集合严格相等；

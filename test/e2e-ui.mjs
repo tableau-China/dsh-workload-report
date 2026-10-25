@@ -202,6 +202,33 @@ try {
   });
   ok(kpiLayout.rows === 2 && kpiLayout.spans.includes("kpi.tokens") && kpiLayout.spans.includes("kpi.modelCost") && !kpiLayout.overflow, "KPI 8 张卡 2 行排满（Tokens / 模型费用跨 2 列）且值不溢出", JSON.stringify(kpiLayout));
 
+  // —— 四个页签初始高度一致：面板固定 92vh，切页签时外框不跳 ——
+  {
+    const panelHeights = [];
+    for (const pattern of [/按日期|By date/, /模型用量|Model usage/, /按工作区|By workspace/, /主要会话|Top sessions/]) {
+      const clicked = await page.evaluate((source) => {
+        const regex = new RegExp(source);
+        const tab = [...document.querySelectorAll(".wl-tabs .wl-tab")].find((node) => regex.test(node.textContent || ""));
+        tab?.click();
+        return tab !== undefined;
+      }, pattern.source);
+      if (!clicked) continue;
+      await page.waitForFunction(() => document.querySelector("[data-kind=skeleton]") === null, { timeout: 60000 }).catch(() => {});
+      await sleep(600);
+      const height = await page.evaluate(() => Math.round(document.querySelector(".wl-panel")?.getBoundingClientRect().height ?? 0));
+      panelHeights.push({ tab: pattern.source, height });
+    }
+    const uniqueHeights = [...new Set(panelHeights.map((item) => item.height))];
+    ok(panelHeights.length === 4 && uniqueHeights.length === 1, "四个页签的初始高度一致（面板固定 92vh，不随内容长短跳）", JSON.stringify(panelHeights));
+    // 回到「按日期」，后续日历 / 图表断言沿用该页签
+    await page.evaluate(() => {
+      const tab = [...document.querySelectorAll(".wl-tabs .wl-tab")].find((node) => /按日期|By date/.test(node.textContent || ""));
+      tab?.click();
+    });
+    await page.waitForFunction(() => document.querySelector("[data-kind=skeleton]") === null, { timeout: 60000 }).catch(() => {});
+    await sleep(600);
+  }
+
   // —— 问题 5：「复制 JSON」按钮已删除（工具栏只剩 刷新 / 导出 / 关闭）——
   const headerButtons = await page.evaluate(() => [...document.querySelectorAll(".wl-head .wl-btn")].map((node) => (node.textContent || "").trim()));
   ok(
@@ -214,12 +241,12 @@ try {
   const copyCheck = await page.evaluate(() => ({
     kpiActive: document.querySelectorAll(".wl-kpi-value")[0]?.textContent ?? "",
     workspaceValue: document.querySelector(".wl-metrics .wl-metric-value")?.textContent ?? "",
-    weekdayTip: document.querySelector('[data-kind="weekday-bar"] title')?.textContent ?? "",
+    weekdayTips: [...document.querySelectorAll('[data-kind="weekday-bar"] title')].map((node) => node.textContent ?? ""),
     hints: [...document.querySelectorAll(".wl-hint, .wl-metric-sub, .wl-note")].map((n) => n.textContent ?? ""),
     bodyHasChineseHour: document.body.innerText.includes("小时"),
   }));
   ok(/\d+(\.\d+)?\s*[hms]\b|^0$/i.test(copyCheck.kpiActive.trim()), "活跃时长 KPI 用小写 h/m/s 单位", copyCheck.kpiActive);
-  ok(/[hms]\b/i.test(copyCheck.weekdayTip), "周几条 tooltip 用小写 h/m/s 单位", copyCheck.weekdayTip);
+  ok(copyCheck.weekdayTips.some((tip) => /[hms]\b/i.test(tip)), "周几条 tooltip 用小写 h/m/s 单位（至少一个有活动的周几）", JSON.stringify(copyCheck.weekdayTips));
   ok(copyCheck.bodyHasChineseHour === false, "界面上不再出现「小时」字样");
   const longestHint = copyCheck.hints.reduce((max, text) => Math.max(max, text.length), 0);
   ok(longestHint <= 90, "备注文案已压短（最长 ≤ 90 字）", `最长 ${longestHint} 字`);
@@ -403,7 +430,7 @@ try {
     const node = document.querySelector("details.wl-details");
     return node === null ? null : { open: node.hasAttribute("open"), summary: node.querySelector("summary")?.textContent ?? "", rows: node.querySelectorAll("tbody tr").length };
   });
-  ok(details !== null && details.open === false, "按日期明细默认折叠", JSON.stringify(details));
+  ok(details !== null && details.open === true, "按日期明细默认展开（v1.0.2 起，超 10 天分页）", JSON.stringify(details));
   ok(/明细|detail/i.test(details?.summary ?? ""), "折叠标题写明是明细", details?.summary);
   // ---- 模型区块：独立页签「模型用量」——treemap + 联动筛选 + 官方计费链接 ----
   await page.evaluate(() => {
@@ -610,7 +637,14 @@ try {
   }));
   const denominator = Number((allTime.kpis[3] ?? "").replace(/[^\d/]/g, "").split("/")[1] ?? "0");
   ok(denominator > 0 && denominator < 400, "「全部」档活跃天数分母＝真实历史跨度（不是 3650）", allTime.kpis[3]);
-  ok(/2026-0[89]/.test(allTime.subtitle), "「全部」档区间从最早活跃日开始", allTime.subtitle);
+  // 与快照里的真实起点对齐（数据只覆盖最近几天时，硬编码月份 / 其它页签的日历都会误报）
+  const allStart = await page.evaluate(async () => {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    const response = await fetch(`/workload-report/v1/snapshot?days=3650&all=1&tz=${encodeURIComponent(tz)}`);
+    const snapshot = await response.json();
+    return { earliest: snapshot?.calendar?.from ?? null, subtitle: document.querySelector(".wl-subtitle")?.textContent ?? "" };
+  });
+  ok(allStart.earliest !== null && allStart.subtitle.startsWith(allStart.earliest), "「全部」档区间从最早活跃日开始（与快照 calendar.from 一致）", JSON.stringify(allStart));
 
   // 导出 HTML 报告（直接访问路由，等价于按钮行为）
   const reportPage = await browser.newPage();
@@ -622,6 +656,27 @@ try {
   ok(/工作量报告/.test(reportText), "报告页渲染标题");
   ok(!/总 Token\s*\n?\s*0\b/.test(reportText) && /[KMB]/.test(reportText), "报告页 Token 非零", reportText.replace(/\n/g, " ").slice(0, 160));
   ok(!/加载失败|Failed/.test(reportText), "报告页无错误");
+
+  // —— 报告页宽自适应：窄屏占满、宽屏最多 1600px（不再固定 1120px）——
+  {
+    const narrowReport = await reportPage.evaluate(() => ({
+      innerWidth: window.innerWidth,
+      pageWidth: Math.round(document.querySelector("main.page")?.getBoundingClientRect().width ?? 0),
+      horizontalScroll: document.body.scrollWidth > window.innerWidth + 1,
+    }));
+    ok(
+      narrowReport.pageWidth >= 1200 && narrowReport.pageWidth <= narrowReport.innerWidth && !narrowReport.horizontalScroll,
+      "报告页宽自适应视口（1240 宽下不再固定 1120）",
+      JSON.stringify(narrowReport),
+    );
+    await reportPage.setViewport({ width: 1600, height: 1200, deviceScaleFactor: 2 });
+    const wideReport = await reportPage.evaluate(() => ({
+      innerWidth: window.innerWidth,
+      pageWidth: Math.round(document.querySelector("main.page")?.getBoundingClientRect().width ?? 0),
+    }));
+    ok(wideReport.pageWidth === Math.min(1600, wideReport.innerWidth), "宽屏报告页宽最多 1600px（不无限拉伸）", JSON.stringify(wideReport));
+    await reportPage.setViewport({ width: 1240, height: 1400, deviceScaleFactor: 2 });
+  }
 
   // —— 问题 4：导出报告与看板对齐（模型用量一节 + 模型费用 KPI + 去折线 / 周末异色）——
   const reportDom = await reportPage.evaluate(() => {

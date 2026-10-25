@@ -190,10 +190,16 @@ export function profileWindowDays(days, minDays = AI_PROFILE_DEFAULTS.minDays) {
   return Math.max(Number.isFinite(requested) && requested > 0 ? requested : minimum, minimum);
 }
 
-/** /profile 的聚合查询：天数抬到 minDays；all / from / to 仍由 handle 校正。 */
+/**
+ * /profile 的聚合查询：天数抬到 minDays；all / from / to 仍由 handle 校正。
+ *
+ * `anchorToActivity: false`：画像是"固定窗口"语义（汇总窗口至少 minDays 天），
+ * 不跟着看板把区间截短到最早活跃日——否则历史不足 minDays 的账号会退化成近几天，
+ * 与「汇总窗口至少 30 天」的口径冲突，趋势字段也失去基线。
+ */
 export function profileWindowQuery(query = {}, minDays = AI_PROFILE_DEFAULTS.minDays) {
   const raw = query !== null && typeof query === "object" ? query : {};
-  return { ...raw, days: profileWindowDays(raw.days, minDays) };
+  return { ...raw, days: profileWindowDays(raw.days, minDays), anchorToActivity: false };
 }
 
 /** 配置归一化：数值兜底、字符串裁剪；未知字段忽略。 */

@@ -489,6 +489,8 @@ export function filterRows(rows, { from, to, timeZone, scope = "all" } = {}) {
  * 生成完整快照。
  * @param rows - 全部会话行。
  * @param options - from / to / days / timeZone / scope / aliases / includeEmptyDays。
+ * @param options.anchorToActivity - 近 N 天区间是否按最早活跃日截短（默认 true；
+ *   画像的固定窗口传 false，保证「汇总窗口至少 N 天」不被历史长度压缩）。
  * @returns { range, scope, totals, byDay, byWorkspace }。
  */
 export function aggregate(rows, options = {}) {
@@ -499,6 +501,7 @@ export function aggregate(rows, options = {}) {
     now = Date.now(),
     includeEmptyDays = true,
     all = false,
+    anchorToActivity = true,
     pricing = { currency: "CNY", asOf: "", links: [], table: {}, estimated: false },
     modelAliases = {},
     activeModelMetric = "requests",
@@ -507,13 +510,21 @@ export function aggregate(rows, options = {}) {
   // 只看 scope 的集合：用来算"最早活跃日"，以及生成不受日期筛选影响的日历数据
   const scopedAll = filterRows(rows, { scope, timeZone });
 
-  // all（「全部」档）：区间从**最早的活跃日**开始，而不是固定 3650 天前
+  // 最早活跃日：四档区间共用同一个起点锚点
   const earliestKey = scopedAll.length > 0
     ? scopedAll.reduce((min, row) => (row.createdAt < min ? row.createdAt : min), scopedAll[0].createdAt)
     : null;
-  const range = all && earliestKey !== null
-    ? { from: dateKey(earliestKey, timeZone), to: dateKey(now, timeZone) }
-    : resolveRange({ ...options, now, timeZone });
+  const earliestDay = earliestKey === null ? null : dateKey(earliestKey, timeZone);
+  // 窗口（近 N 天 / 显式 from 指定的固定跨度）：起点由 days / from 决定，终点默认今天
+  const window = resolveRange({ ...options, now, timeZone });
+  // 区间口径四档完全一致：
+  //   · 「全部」：从第一天活跃开始算（窗口只是 3650 天的兜底上界）；
+  //   · 近 7/30/90 天：起点 = max(窗口起点, 最早活跃日)——历史更长时用窗口起点，
+  //     数据不足 N 天时同样从第一天活跃开始算，口径与「全部」同一套算法。
+  // 显式 from 或 anchorToActivity=false（画像的固定窗口）不截短。
+  const anchored = earliestDay !== null
+    && (all || (anchorToActivity && !isDateKey(options.from) && earliestDay > window.from));
+  const range = anchored ? { from: earliestDay, to: window.to } : window;
 
   const scoped = all ? scopedAll : filterRows(rows, { ...range, timeZone, scope });
 
