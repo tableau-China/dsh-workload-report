@@ -19,6 +19,9 @@ import { useCallback, useEffect, useState } from "react";
 import { formatInt } from "../format.js";
 import { Chip, ChipGroup } from "./chips.jsx";
 import { CardHead } from "./card-head.jsx";
+import {
+  FREQUENCY_OPTIONS, FREQUENCY_TEXT_KEYS, ICON_TEXT_KEYS, checkMachineIdentity, configureIconState, deviceRenameReport, pathPreview, prefixOf, shortDeviceId,
+} from "./sync-state.js";
 
 /** 宿主半部注册的只读接口前缀（与 index.js 的默认 apiPath 一致）。 */
 const API_PATH = "/workload-report/v1";
@@ -31,6 +34,21 @@ function formatTime(ms, never) {
   } catch {
     return never;
   }
+}
+
+/** 自检结果的时间可读化（同 formatTime，never 时显示"从未"）。 */
+function formatProbe(probe, never) {
+  if (probe === null || probe === undefined || !probe.at) return never;
+  return formatTime(probe.at, never);
+}
+
+/** 当前存储方式是否填了必填项（与宿主 applySettingsPatch 的必填校验同一口径）。 */
+function transportConfigured(view, transport) {
+  if (view === null || view === undefined) return false;
+  if (transport === "cos") return (view.cos?.bucket ?? "").trim() !== "" && (view.cos?.region ?? "").trim() !== "";
+  if (transport === "github" || transport === "gitea") return (view.github?.repo ?? "").trim() !== "";
+  if (transport === "local") return (view.local?.dir ?? "").trim() !== "";
+  return false;
 }
 
 /** 拉 /sync 状态。 */
@@ -141,18 +159,28 @@ export function DeviceFilter({ devices, value, onChange, t, syncOpen = false, on
  * @param onSaved - 保存成功后回调（刷新状态 + 让看板重拉快照）。
  * @param onClose - 关闭对话框。
  */
-export function SyncSettingsDialog({ t, initialTransport = null, onSaved, onClose }) {
+export function SyncSettingsDialog({ t, initialTransport = null, initialStatus = null, onSaved, onClose }) {
   const [state, setState] = useState({
     status: "loading", view: null, transports: [], presets: {}, cosRegions: [], canSave: false, error: null,
   });
+  /** 宿主运行状态（enabled / transport / lastPushAt / lastPullAt / lastProbe / devices）。 */
+  const [status, setStatus] = useState(initialStatus ?? null);
   const [form, setForm] = useState(null);
   const [baseline, setBaseline] = useState(null);
   const [credentials, setCredentials] = useState({ status: "loading", vault: false, fields: [], error: null });
   const [draft, setDraft] = useState({});
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(null);
-  /** 「高级选项」默认收起：路径模板等项默认值即可用，普通用户不必看。 */
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  /** 同步频率：**本轮只预留界面**（6 小时为默认；12 小时 / 开机同步在下一版随后台周期一起打开）。 */
+  const [frequency, setFrequency] = useState("6h");
+  /** 最近一次自检结果（来自 /sync 的 status.lastProbe 或本页测试按钮），决定标题右侧的对号 / 圆圈 / 感叹号。 */
+  const [probe, setProbe] = useState(initialStatus?.lastProbe ?? null);
+  /** 基准设备 id：本弹窗第一次看到的本机 id（后续所有保存都跟它比对）。 */
+  const [savedDeviceId, setSavedDeviceId] = useState(initialStatus?.devices?.find((d) => d.local === true)?.id ?? null);
+  /** 保存前那次的本机显示名（用来提示"从 X 改成 Y，设备 id 不变"）。 */
+  const [renamedFrom, setRenamedFrom] = useState(null);
+  /** 自检请求进行中（按钮置灰 + 状态卡片显示"测试中…"）。 */
+  const [probing, setProbing] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -192,6 +220,20 @@ export function SyncSettingsDialog({ t, initialTransport = null, onSaved, onClos
   }, [credentialTransport]);
 
   useEffect(() => { void loadCredentials(); }, [loadCredentials]);
+
+  /** 弹窗内的运行状态（上次推送 / 拉取、最近自检、错误）：保存或手动同步后刷新。 */
+  const loadStatus = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_PATH}/sync`, { headers: { accept: "application/json" } });
+      if (!response.ok) return;
+      const body = await response.json();
+      setStatus(body.status ?? null);
+      if (body.status?.lastProbe !== undefined) setProbe(body.status.lastProbe);
+    } catch {
+      /* 状态读不到不影响表单 */
+    }
+  }, []);
+  useEffect(() => { void loadStatus(); }, [loadStatus]);
 
   const setField = (path, value) => setForm((previous) => {
     const next = { ...previous };
@@ -236,7 +278,24 @@ export function SyncSettingsDialog({ t, initialTransport = null, onSaved, onClos
   const submit = async () => {
     setBusy(true);
     setMessage(null);
+    // 改名不影响数据：设备身份是 id（.anonymous-user-id），这里只留档用于界面提示
+    setRenamedFrom(baseline?.machineName ?? "");
     try {
+      // **身份防回归**：只有 DSH_HOME 被换掉（换账户/换安装/删了 id 文件）才会变 id。
+      // 一旦变了，改名字也不该悄悄把历史数据切成两台设备 → 先拦下来让用户知情。
+      let currentId = localDeviceId;
+      try {
+        const probeStatus = await fetch(`${API_PATH}/sync`, { headers: { accept: "application/json" } }).then((r) => r.json());
+        currentId = probeStatus?.status?.devices?.find((device) => device.local === true)?.id ?? currentId;
+      } catch { /* 读不到就不拦（不阻断保存） */ }
+      const identity = checkMachineIdentity(savedDeviceId ?? localDeviceId, currentId);
+      if (identity.ok !== true) {
+        setMessage({ kind: "fail", text: t("set.deviceIdChanged", { from: shortDeviceId(identity.previous), to: shortDeviceId(identity.current) }) });
+        setBusy(false);
+        return;
+      }
+      // 本次解析出的 id 成为后续比对的基准（改名不会走到这里的分支）
+      if (identity.current.length > 0 && savedDeviceId !== identity.current) setSavedDeviceId(identity.current);
       const values = changedSettings();
       let savedView = form;
       if (Object.keys(values).length > 0) {
@@ -259,7 +318,7 @@ export function SyncSettingsDialog({ t, initialTransport = null, onSaved, onClos
       const deletion = draft.__delete === true;
       let credentialText = null;
       // 设置这一步已经成功：先给出确定文案，凭据那一步再覆盖成最终结果
-      setMessage({ kind: "ok", text: t(SAVED_KEY) });
+      setMessage({ kind: "ok", text: t("set.saved") });
       if (hasCredentials || deletion) {
         const response = await fetch(`${API_PATH}/sync/credentials`, {
           method: "POST",
@@ -275,17 +334,19 @@ export function SyncSettingsDialog({ t, initialTransport = null, onSaved, onClos
             ? t("cred.cleared")
             : t("cred.clearedButExternal", { fields: stillExternal.map((field) => field.label).join(", ") });
         } else if (body.probe?.ok === true) {
-          credentialText = t(SAVED_KEY);
+          credentialText = t("set.saved");
         } else {
           // 设置已经保存成功，只是连接没通：用「部分成功」的文案，别让用户以为整次保存失败
           credentialText = t("set.savedCredFail", { message: body.probe?.message ?? "?" });
         }
       }
 
-      const okText = credentialText === null || credentialText === t(SAVED_KEY) || credentialText === t("cred.cleared");
-      setMessage({ kind: okText ? "ok" : "fail", text: credentialText ?? t(SAVED_KEY) });
+      const okText = credentialText === null || credentialText === t("set.saved") || credentialText === t("cred.cleared");
+      setMessage({ kind: okText ? "ok" : "fail", text: credentialText ?? t("set.saved") });
       await loadCredentials();
       if (typeof onSaved === "function") onSaved();
+      // 配置后**立即自检**：同步已开启才测（关闭时宿主会拒绝写凭据、也连不出去）
+      if (savedView?.enabled === true) await runProbe({ silent: true });
     } catch (error) {
       setMessage({ kind: "fail", text: t("set.saveFail", { message: String(error?.message ?? error) }) });
     } finally {
@@ -293,9 +354,74 @@ export function SyncSettingsDialog({ t, initialTransport = null, onSaved, onClos
     }
   };
 
+  /**
+   * 测试连接：走宿主 /sync?action=probe。
+   * 结果写进 `probe`（供状态卡片与标题图标使用），`silent` 时只在卡片里显示、不额外弹提示。
+   */
+  const runProbe = useCallback(async ({ silent = false } = {}) => {
+    setProbing(true);
+    if (!silent) setMessage(null);
+    try {
+      const response = await fetch(`${API_PATH}/sync?action=probe`, { headers: { accept: "application/json" } });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const body = await response.json();
+      const result = body.result ?? {};
+      setProbe({ ...result, at: Date.now() });
+      if (!silent) {
+        setMessage(result.ok === true
+          ? { kind: "ok", text: t("sync.probeOk") }
+          : { kind: "fail", text: `${t("sync.probeFail")}（${result.code ?? "?"}）` });
+      }
+      return result;
+    } catch (error) {
+      const failure = { ok: false, code: "ERROR", message: String(error?.message ?? error), at: Date.now() };
+      setProbe(failure);
+      if (!silent) setMessage({ kind: "fail", text: t("sync.failed", { message: failure.message }) });
+      return failure;
+    } finally {
+      setProbing(false);
+      void loadStatus();
+    }
+  }, [t, loadStatus]);
+
+  /** 手动推送 / 拉取（迁移自旧「设备同步」页，现在只在弹窗里出现）。 */
+  const runSync = useCallback(async (action) => {
+    setBusy(action);
+    setMessage(null);
+    try {
+      const response = await fetch(`${API_PATH}/sync?action=${action}`, { headers: { accept: "application/json" } });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const body = await response.json();
+      const result = body.result ?? {};
+      setMessage(result.ok === true
+        ? { kind: "ok", text: action === "push" ? t("sync.pushOk", { n: formatInt(result.rows ?? 0) }) : t("sync.pullOk", { n: formatInt(result.fetched ?? 0) }) }
+        : { kind: "fail", text: t("sync.failed", { message: result.error ?? "?" }) });
+      await loadStatus();
+      if (result.ok === true && typeof onSaved === "function") onSaved();
+    } catch (error) {
+      setMessage({ kind: "fail", text: t("sync.failed", { message: String(error?.message ?? error) }) });
+    } finally {
+      setBusy(null);
+    }
+  }, [t, onSaved, loadStatus]);
+
   const canSave = state.canSave === true && form !== null;
   /** 仓库类（GitHub / Gitea）才有右列（仓库 / 服务地址 / 分支）。 */
   const isRepoTransport = transport === "github" || transport === "gitea";
+  /** 已登记设备（本机 + 拉到的其它设备），以及本机设备 id —— 用于「改名字不会断数据」的说明。 */
+  const deviceList = Array.isArray(status?.devices) ? status.devices : [];
+  const localDeviceId = deviceList.find((device) => device.local === true)?.id ?? null;
+  /** 保存时的改名说明（只在确实改过名字、且保存成功后展示）。 */
+  const renameInfo = renamedFrom === null
+    ? null
+    : deviceRenameReport(deviceList, renamedFrom, form?.machineName ?? "");
+
+  /** 图标语义：✓ 已配置并通过自检 / ! 连接失败 / ○ 未配置或未检查。 */
+  const iconState = configureIconState({
+    enabled: form?.enabled === true,
+    configured: transportConfigured(form, transport ?? initialTransport),
+    probeOk: typeof probe?.ok === "boolean" ? probe.ok : null,
+  });
   const helpKey = transport === "cos" ? "set.cosHelp" : transport === "local" ? "set.localHelp" : transport === "gitea" ? "set.giteaHelp" : "set.githubHelp";
   /**
    * 连接参数 / 凭据的**行式字段**：左侧标题（+ 灰色小字说明），右侧输入框，**一行一个、不换行**。
@@ -368,22 +494,62 @@ export function SyncSettingsDialog({ t, initialTransport = null, onSaved, onClos
     >
       <div className="wl-dialog" data-busy={busy ? "true" : undefined}>
         <header className="wl-head">
-          <div>
+          <div className="wl-dialog-title">
             <h2 className="wl-title">{t("set.dialogTitle")}</h2>
-            <p className="wl-subtitle">{t("set.hint")}</p>
+            {/* 配置状态图标：✓ 已配置并通过自检 / ! 连接失败 / ○ 未配置或未检查 */}
+            <span className="wl-state-icon" data-state={iconState} data-icon-state={iconState} title={t(ICON_TEXT_KEYS[iconState])} aria-label={t(ICON_TEXT_KEYS[iconState])} role="img">
+              {iconState === "configured" ? "✓" : iconState === "failed" ? "!" : "○"}
+            </span>
+            <span className="wl-state-icon-text">{t(ICON_TEXT_KEYS[iconState])}</span>
           </div>
+          <p className="wl-subtitle">{t("set.hint")}</p>
           <div className="wl-spacer" />
+          {/* 测试连接在弹窗之内（配置后保存会自动测一次，这里可随时手动重测） */}
+          <button
+            type="button"
+            className="wl-btn"
+            data-action="probe-now"
+            disabled={busy || probing || form?.enabled !== true}
+            onClick={() => void runProbe()}
+            title={form?.enabled === true ? t("sync.probe") : t("set.probeNeedEnable")}
+          >
+            {probing ? t("sync.probing") : t("sync.probe")}
+          </button>
           <button type="button" className="wl-btn" onClick={onClose} disabled={busy} aria-label={t("action.close")}>✕</button>
         </header>
 
         {state.status === "error" ? <p className="wl-state">{t("state.failed", { message: state.error ?? "" })}</p> : (
           form === null ? <p className="wl-state">{t("state.loading")}</p> : (
             <div className="wl-body wl-dialog-body">
-              {/* ① 全局项：本机显示名只设一次，对四种存储方式都生效 → 放在存储方式 chips **上方** */}
+              {/* ① 设备：本机显示名（全局项）与**已登记设备**并列一行；设备身份是 id，改名字不会断数据 */}
               <div className="wl-form-global" data-row="device">
-                <div className="wl-form-fields">
-                  {text("machineName", t("set.machineName"), t("set.machineNameHint"), form.machineName, (v) => setField("machineName", v), "Mac mini")}
+                <div className="wl-form-grid" data-block="device-row" data-cols="2">
+                  <div className="wl-form-fields">
+                    {text("machineName", t("set.machineName"), t("set.machineNameHint"), form.machineName, (v) => setField("machineName", v), "Mac mini")}
+                  </div>
+                  <div className="wl-form-fields" data-block="device-list">
+                    <div className="wl-field-row" data-row="registered">
+                      <span className="wl-field-label">
+                        {t("set.registeredDevices")}
+                        <span className="wl-field-hint">{t("set.registeredCount", { n: formatInt(deviceList.length) })}</span>
+                      </span>
+                      <span className="wl-device-chips">
+                        {deviceList.length === 0 ? (
+                          <span className="wl-hint" data-kind="sync-storage">{t("sync.noDevices")}</span>
+                        ) : deviceList.map((device) => (
+                          <span key={device.key ?? device.id ?? device.name} className="wl-device-chip" data-local={device.local === true ? "true" : undefined} data-device-id={device.id ?? ""} title={device.id ?? ""}>
+                            <span className="wl-dot-mini" data-local={device.local === true ? "true" : undefined} aria-hidden="true" />
+                            {device.name ?? device.id ?? "?"}
+                          </span>
+                        ))}
+                      </span>
+                    </div>
+                  </div>
                 </div>
+                {/* 设备 id 保障：名字只是标签，身份认的是 DSH 的安装 id */}
+                <p className="wl-hint" data-kind="device-identity">
+                  {t("set.deviceIdHint", { id: shortDeviceId(localDeviceId) || t("set.deviceIdUnknown") })}
+                </p>
               </div>
 
               {/* ② 存储方式 + 开启同步（只对当前存储方式生效的项全在下面） */}
@@ -458,27 +624,99 @@ export function SyncSettingsDialog({ t, initialTransport = null, onSaved, onClos
                 )}
               </section>
 
-              {/* ⑤ 高级选项（默认收起）：只有普通用户不用管、默认值即可的项 */}
-              <div className="wl-form-advanced" data-open={advancedOpen ? "true" : "false"}>
-                <button
-                  type="button"
-                  className="wl-btn"
-                  data-action="toggle-advanced"
-                  aria-expanded={advancedOpen}
-                  onClick={() => setAdvancedOpen((open) => !open)}
-                >
-                  {advancedOpen ? t("set.advancedHide") : t("set.advanced")}
-                </button>
-                {advancedOpen ? (
-                  <div className="wl-form-advanced-body">
-                    {text("path", t("set.path"), null, form.path, (v) => setField("path", v), "machines/{machineId}.json")}
-                    <p className="wl-hint">{t("set.pathHint")}</p>
+              {/* ④b 状态：连接自检结果 + 上次推送/拉取 + 设备数（原「设备同步」页的只读状态搬进弹窗） */}
+              <section className="wl-form-block" data-block="sync-status" aria-label={t("set.statusTitle")}>
+                <h4 className="wl-form-section">{t("set.statusTitle")}</h4>
+                {/* 一行：大号状态图标 + 结论 + 上次推送 / 拉取（同一行，紧凑） */}
+                <div className="wl-sync-status" data-probe={probing ? "probing" : probe === null ? "none" : probe.ok === true ? "ok" : "fail"}>
+                  <span
+                    className="wl-status-badge"
+                    data-state={probing ? "probing" : probe === null ? "unchecked" : probe.ok === true ? "configured" : "failed"}
+                    data-badge-state={probing ? "probing" : probe === null ? "unchecked" : probe.ok === true ? "configured" : "failed"}
+                    role="img"
+                    aria-label={probing ? t("sync.probing") : probe === null ? t("sync.probeNever") : probe.ok === true ? t("sync.probeOk") : t("sync.probeFail")}
+                  >
+                    {probing ? "…" : probe === null ? "○" : probe.ok === true ? "✓" : "!"}
+                  </span>
+                  <div className="wl-sync-status-text">
+                    <span className="wl-sync-status-main" data-kind={probing ? "sync-probing" : probe === null ? null : probe.ok === true ? "sync-ok" : "sync-error"}>
+                      {probing
+                        ? t("sync.probing")
+                        : probe === null
+                          ? t("sync.probeNever")
+                          : probe.ok === true
+                            ? t("set.probeOkShort")
+                            : `${t("set.probeFailShort")}（${probe.code ?? "?"}）`}
+                    </span>
+                    <span className="wl-sync-status-last" data-block="sync-last-line">
+                      {t("set.lastTimes", { push: formatTime(status?.lastPushAt ?? 0, t("sync.never")), pull: formatTime(status?.lastPullAt ?? 0, t("sync.never")) })}
+                    </span>
                   </div>
+                </div>
+                {/* 失败时把原因单独一行（只在出错时占位，成功保持紧凑） */}
+                {probe !== null && probe.ok === false && probe.message ? (
+                  <p className="wl-hint" data-kind="sync-error">{probe.message}</p>
                 ) : null}
-              </div>
+                {status?.lastPushError ? <p className="wl-hint" data-kind="sync-error">{t("sync.failed", { message: status.lastPushError })}</p> : null}
+                {status?.lastPullError ? <p className="wl-hint" data-kind="sync-error">{t("sync.failed", { message: status.lastPullError })}</p> : null}
+              </section>
+
+              {/* ④c 同步频率：**本轮只预留界面**——6 小时为默认，12 小时 / 开机同步在下一版随后台周期一起打开。
+                  「立即推送 / 立即拉取」保留为临时手动操作，等自动同步上线后再收起。 */}
+              <section className="wl-form-block" data-block="sync-frequency" aria-label={t("set.frequency")}>
+                <h4 className="wl-form-section">
+                  {t("set.frequency")}
+                  <span className="wl-form-badge" data-kind="soon">{t("set.frequencySoon")}</span>
+                </h4>
+                <ChipGroup label={t("set.frequency")}>
+                  {FREQUENCY_OPTIONS.map((item) => (
+                    <Chip
+                      key={item.id}
+                      active={frequency === item.id}
+                      data-frequency={item.id}
+                      disabled={item.ready !== true}
+                      title={item.ready === true ? undefined : t("set.frequencyComing")}
+                      onClick={() => { if (item.ready === true) setFrequency(item.id); }}
+                    >
+                      {t(FREQUENCY_TEXT_KEYS[item.id])}
+                    </Chip>
+                  ))}
+                </ChipGroup>
+                <p className="wl-hint" data-kind="sync-frequency-note">{t("set.frequencyNote")}</p>
+                <div className="wl-sync-manual">
+                  <button type="button" className="wl-btn" data-action="sync-now-push" disabled={busy !== null || form?.enabled !== true} onClick={() => void runSync("push")}>
+                    {busy === "push" ? t("sync.pushing") : t("sync.pushNow")}
+                  </button>
+                  <button type="button" className="wl-btn" data-action="sync-now-pull" disabled={busy !== null || form?.enabled !== true} onClick={() => void runSync("pull")}>
+                    {busy === "pull" ? t("sync.pulling") : t("sync.pullNow")}
+                  </button>
+                </div>
+              </section>
+
+              {/* ⑤ 高级选项（默认收起）：只有普通用户不用管、默认值即可的项 */}
+              <section className="wl-form-block" data-block="advanced" aria-label={t("set.advanced")}>
+                <h4 className="wl-form-section">{t("set.advanced")}</h4>
+                {/* 路径只读：用户不需要改，但可以自己核对"文件到底写到哪"，便于在桶 / 仓库里安全排查 */}
+                <div className="wl-field-row" data-row="path-readonly">
+                  <span className="wl-field-label">{t("set.path")}</span>
+                  <code className="wl-path-preview" data-path-template={form.path ?? ""}>{pathPreview(form.path, { machineId: localDeviceId ? shortDeviceId(localDeviceId).replace("…", "") : "" })}</code>
+                </div>
+                <p className="wl-hint" data-kind="path-hint">{t("set.pathReadonlyHint")}</p>
+                <p className="wl-hint" data-kind="path-location">{t("set.pathLocation", { dir: prefixOf(form.path) })}</p>
+              </section>
 
               {state.canSave === true ? null : <p className="wl-hint" data-kind="sync-error">{t("set.noEditor")}</p>}
               {message === null ? null : <p className="wl-hint" data-kind={`sync-${message.kind}`}>{message.text}</p>}
+              {/* 改过名字时明确告诉用户：身份没变、数据不断 */}
+              {renameInfo === null || renameInfo.renamed !== true || message?.kind !== "ok" ? null : (
+                <p className="wl-hint" data-kind="device-renamed">
+                  {t("set.renamedOk", {
+                    from: renameInfo.previousName === "" ? t("set.machineNameAuto") : renameInfo.previousName,
+                    to: renameInfo.nextName === "" ? t("set.machineNameAuto") : renameInfo.nextName,
+                    id: shortDeviceId(localDeviceId) || t("set.deviceIdUnknown"),
+                  })}
+                </p>
+              )}
               <p className="wl-note">{t("cred.why")}</p>
             </div>
           )
@@ -495,144 +733,3 @@ export function SyncSettingsDialog({ t, initialTransport = null, onSaved, onClos
     </div>
   );
 }
-
-
-/**
- * 「设备同步」页主体（入口在设备筛选行右侧，见上面的 DeviceFilter）。
- *
- * 页面上只留**只读状态**（传输方式 / 上次推送 / 上次拉取 / 错误 / 设备清单）与三个操作，
- * 所有可编辑项都在 SyncSettingsDialog 里——页面不再堆表单。
- *
- * @param onChanged - 推送/拉取/保存成功后回调（让看板重新拉快照）。
- */
-export function BySyncView({ t, onChanged }) {
-  const [refreshKey, setRefreshKey] = useState(0);
-  const [busy, setBusy] = useState(null);
-  const [message, setMessage] = useState(null);
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const state = useSyncStatus(refreshKey);
-
-  /**
-   * 设置保存成功后的联动：刷新本页状态 + 让看板重拉快照。
-   * 设置可能改变 enabled / 设备名 / 传输方式，而设备筛选行（设备 chips + 「设备同步」入口就在这一行）
-   * 与诊断都来自看板快照——不重拉就要手动点顶部「刷新」才会出现设备 chips。
-   */
-  const settingsSaved = useCallback(() => {
-    setRefreshKey((key) => key + 1);
-    if (typeof onChanged === "function") onChanged();
-  }, [onChanged]);
-
-  const run = useCallback(async (action) => {
-    setBusy(action);
-    setMessage(null);
-    try {
-      const response = await fetch(`${API_PATH}/sync?action=${action}`, { headers: { accept: "application/json" } });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const body = await response.json();
-      const result = body.result ?? body.status ?? {};
-      if (action === "probe") {
-        setMessage({ kind: result.ok === true ? "ok" : "fail", text: result.ok === true ? t("sync.probeOk") : `${t("sync.probeFail")}（${result.code ?? "?"}）` });
-      } else if (action === "push") {
-        setMessage(result.ok === true ? { kind: "ok", text: t("sync.pushOk", { n: formatInt(result.rows ?? 0) }) } : { kind: "fail", text: t("sync.failed", { message: result.error ?? "?" }) });
-      } else if (action === "pull") {
-        setMessage(result.ok === true ? { kind: "ok", text: t("sync.pullOk", { n: formatInt(result.fetched ?? 0) }) } : { kind: "fail", text: t("sync.failed", { message: result.error ?? "?" }) });
-      }
-      setRefreshKey((key) => key + 1);
-      if (action !== "probe" && result.ok === true && typeof onChanged === "function") onChanged();
-    } catch (error) {
-      setMessage({ kind: "fail", text: t("sync.failed", { message: String(error?.message ?? error) }) });
-    } finally {
-      setBusy(null);
-    }
-  }, [t, onChanged]);
-
-  const status = state.body?.status ?? null;
-  const enabled = state.body?.enabled === true;
-  const dialog = dialogOpen
-    ? <SyncSettingsDialog t={t} initialTransport={status?.transport ?? null} onSaved={settingsSaved} onClose={() => setDialogOpen(false)} />
-    : null;
-  const settingsButton = (
-    <button type="button" className="wl-btn" data-kind="primary" data-action="open-sync-settings" onClick={() => setDialogOpen(true)}>
-      {t("set.open")}
-    </button>
-  );
-
-  // 默认关闭：仍然渲染设置入口（否则用户没有入口开启它），只是不显示设备表格
-  if (state.status === "ready" && !enabled) {
-    return (
-      <div className="wl-sync" data-enabled="false">
-        <CardHead title={t("set.title")} hint={t("set.hint")}>{settingsButton}</CardHead>
-        <p className="wl-hint" data-kind="sync-disabled">{t("sync.disabled")}</p>
-        {dialog}
-      </div>
-    );
-  }
-  if (state.status === "loading") return <p className="wl-state">{t("state.loading")}</p>;
-  if (state.status === "error") return <p className="wl-state">{t("state.failed", { message: state.error ?? "" })}</p>;
-
-  const devices = Array.isArray(status?.devices) ? status.devices : [];
-  const others = devices.filter((device) => device.local !== true);
-
-  return (
-    <div className="wl-sync" data-enabled="true">
-      <CardHead title={t("sync.title")} hint={t("sync.hint")}>
-        <ChipGroup label={t("sync.title")}>
-          <Chip active={false} disabled={busy !== null} onClick={() => void run("probe")}>{t("sync.probe")}</Chip>
-          <Chip active={false} disabled={busy !== null} onClick={() => void run("push")}>{t("sync.pushNow")}</Chip>
-          <Chip active={false} disabled={busy !== null} onClick={() => void run("pull")}>{t("sync.pullNow")}</Chip>
-        </ChipGroup>
-        {settingsButton}
-      </CardHead>
-
-      {message === null ? null : (
-        <p className="wl-hint" data-kind={`sync-${message.kind}`}>{message.text}</p>
-      )}
-
-      <dl className="wl-sync-meta">
-        <dt>{t("sync.transport")}</dt>
-        <dd>{status?.transport ?? "—"}</dd>
-        <dt>{t("sync.lastPush")}</dt>
-        <dd>{formatTime(status?.lastPushAt ?? 0, t("sync.never"))}</dd>
-        <dt>{t("sync.lastPull")}</dt>
-        <dd>{formatTime(status?.lastPullAt ?? 0, t("sync.never"))}</dd>
-      </dl>
-
-      {status?.lastPushError ? <p className="wl-hint" data-kind="sync-error">{t("sync.failed", { message: status.lastPushError })}</p> : null}
-      {status?.lastPullError ? <p className="wl-hint" data-kind="sync-error">{t("sync.failed", { message: status.lastPullError })}</p> : null}
-
-      <CardHead title={t("sync.devices")} />
-      {others.length === 0 ? (
-        <p className="wl-hint">{t("sync.noDevices")}</p>
-      ) : (
-        <table className="wl-table">
-          <thead>
-            <tr>
-              <th>{t("devices.title")}</th>
-              <th>{t("sync.status")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {devices.map((device) => (
-              <tr key={device.key} data-device={device.key}>
-                <td>{device.local === true ? t("devices.local") : device.name}</td>
-                <td>
-                  {device.stale === true
-                    ? <span data-kind="stale">{t("devices.stale")}</span>
-                    : device.local === true
-                      ? t("sync.enabledOn")
-                      : t("devices.rows", { n: formatInt(device.rows ?? 0) })}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-
-      <p className="wl-note">{t("sync.secretHint")}</p>
-      {dialog}
-    </div>
-  );
-}
-
-/** 保存成功的统一文案键（集中引用一次，避免同一键在字典里被判成死键 / 各处写法漂移）。 */
-const SAVED_KEY = "set.saved";

@@ -20,6 +20,10 @@ import {
 } from "../src/sync-settings.js";
 import { balanceChip } from "../src/client/balance.js";
 import {
+  FREQUENCY_OPTIONS, FREQUENCY_TEXT_KEYS, ICON_TEXT_KEYS, checkMachineIdentity, configureIconState,
+  deviceRenameReport, pathPreview, prefixOf as prefixOfPure, shortDeviceId,
+} from "../src/client/sync-state.js";
+import {
   PROFILE_DIMENSION_KEYS, PROFILE_EVIDENCE_MAX, PROFILE_HEADLINE_MAX, PROFILE_INSIGHT_MAX, PROFILE_LINE_MAX,
   PROFILE_PAYLOAD_KEYS, PROFILE_TITLE_MAX, assertProfilePayload, buildProfilePayload, isProfileTextUnfinished, localProfile, parseProfileText,
   profileFingerprint, repairProfileJson,
@@ -820,7 +824,7 @@ console.log("\n—— 文案（i18n）一致性 ——");
   const localesSource = await readFile(new URL("../src/client/locales.js", import.meta.url), "utf8");
   // 文案引用可能出现在任意客户端模块（chips / card-head / hour-status / balance…）；
   // 全部一起扫描，死键检查才完整（否则新组件里的 key 会被误判为死键）。
-  const clientModules = ["index.jsx", "balance.js", "chips.jsx", "card-head.jsx", "hour-status.js", "bar-cell.jsx", "profile-card.jsx", "sync-view.jsx"];
+  const clientModules = ["index.jsx", "balance.js", "chips.jsx", "card-head.jsx", "hour-status.js", "bar-cell.jsx", "profile-card.jsx", "sync-view.jsx", "sync-state.js"];
   const clientSource = (await Promise.all(
     clientModules.map((name) => readFile(new URL(`../src/client/${name}`, import.meta.url), "utf8")),
   )).join("\n");
@@ -3496,8 +3500,11 @@ bootSync.seq = 1;
   const profileCard = await readFile(new URL("../src/client/profile-card.jsx", import.meta.url), "utf8");
 
   ok(syncView.includes("export function DeviceFilter"), "UI：导出 DeviceFilter");
-  ok(syncView.includes("export function BySyncView"), "UI：导出 BySyncView");
   ok(syncView.includes("export function SyncSettingsDialog"), "UI：导出 SyncSettingsDialog（设置 + 凭据合并成一个对话框）");
+  // 2.0.3：「设备同步」页面已并入弹窗——不再有页面内视图 / 弹窗套弹窗
+  ok(!syncView.includes("export function BySyncView"), "UI：不再有独立的「设备同步」页面组件（已合并成大弹窗）");
+  ok(!syncView.includes("open-sync-settings"), "UI：弹窗里不再有「打开同步设置」的二级按钮");
+  ok(!/dialogOpen/.test(syncView), "UI：不再有「页面内再开设置对话框」的状态");
   // 2.0.2：凭据与同步设置合并进同一对话框 —— 页面上不再有独立的凭据卡
   ok(!syncView.includes("export function CredentialForm"), "UI：不再单独导出 CredentialForm（已并入对话框）");
   ok(syncView.includes('data-sync-dialog="true"'), "UI：设置表单渲染在对话框浮层里");
@@ -3509,10 +3516,16 @@ bootSync.seq = 1;
     const chipsAt = syncView.indexOf('className="wl-dialog-top"');
     const connAt = syncView.indexOf('data-block="connection-section"');
     const credAt = syncView.indexOf('data-block="credential-section"');
-    const advAt = syncView.indexOf('className="wl-form-advanced"');
+    const advAt = syncView.indexOf('data-block="advanced"');
+    const statusAt = syncView.indexOf('data-block="sync-status"');
+    const freqAt = syncView.indexOf('data-block="sync-frequency"');
+    const deviceListAt = syncView.indexOf('data-block="device-list"');
     ok(deviceRowAt > 0 && chipsAt > deviceRowAt, "UI：本机显示名在存储方式 chips 上方（一次设置对所有存储方式生效）");
     ok(/data-row="device"/.test(syncView) && /data-block="connection-section"/.test(syncView), "UI：全局设备行 / 连接参数 / 凭据分块清晰");
-    ok(connAt > chipsAt && credAt > connAt && advAt > credAt, "UI：顺序为 存储方式 → 连接参数 → 凭据 → 高级选项");
+    ok(connAt > chipsAt && credAt > connAt && statusAt > credAt && freqAt > statusAt && advAt > freqAt,
+      "UI：顺序为 存储方式 → 连接参数 → 凭据 → 连接状态 → 同步频率 → 高级选项");
+    // 2.0.3 布局 v3：已登记设备与本机显示名**并列**在第一部分
+    ok(deviceListAt > deviceRowAt && deviceListAt < chipsAt, "UI：已登记设备在第一部分、与本机显示名并列");
     // 连接参数由 connectionFields 常量渲染（JSX 里只引用一次），所以两列的检查看常量定义处
     const fieldsConstAt = syncView.indexOf("const connectionFields = (");
     const fieldsConst = syncView.slice(fieldsConstAt, syncView.indexOf("  return (\n    <div\n      className=\"wl-overlay\"", fieldsConstAt));
@@ -3527,21 +3540,27 @@ bootSync.seq = 1;
     ok(/white-space: nowrap/.test(await readFile(new URL("../src/client/styles.js", import.meta.url), "utf8")), "UI：字段标题不换行（一行一个字段）");
     ok(/data-cols=\{isRepoTransport \? "2" : "1"\}/.test(syncView), "UI：只有一列字段时铺满整行（不留半屏空白）");
     const credBlock = syncView.slice(credAt, advAt);
-    ok(credBlock.includes("data-credential") && !credBlock.includes("advancedOpen"), "UI：凭据默认展开，没被折叠进高级选项");
+    ok(credBlock.includes("data-credential"), "UI：凭据默认展开，没被折叠进高级选项");
     ok((credBlock.match(/className="wl-field-row"/g) ?? []).length === 1, "UI：凭据每个字段一行（map 渲染行式字段，非左右两列）");
     ok(!/data-col="device"/.test(syncView), "UI：不再有「这台设备」独占一列（左右比例失衡的根因已消除）");
   }
-  ok(/className="wl-form-advanced"/.test(syncView) && /data-action="toggle-advanced"/.test(syncView), "UI：高级选项默认收起（可展开）");
-  ok(syncView.indexOf('data-action="toggle-advanced"') > syncView.indexOf('className="wl-form-grid"'), "UI：高级选项排在两列表单之后");
   {
-    // 「文件路径模板」只出现在高级选项展开块里，并且排在「高级选项」按钮之后（＝表单最末尾）
-    const advancedAt = syncView.indexOf('className="wl-form-advanced"');
-    const pathAt = syncView.indexOf('text("path"');
-    ok(pathAt > advancedAt && advancedAt > 0, "UI：文件路径模板放在后面（高级选项里），不再紧跟主字段");
-    const advancedBlock = syncView.slice(advancedAt, pathAt);
-    ok(advancedBlock.includes("advancedOpen ? ("), "UI：路径模板只在展开高级选项时才渲染");
-    ok(advancedBlock.includes("toggle-advanced"), "UI：路径模板在「高级选项」按钮之后（表单末尾）");
-    ok(syncView.indexOf('text("path"', pathAt + 1) < 0, "UI：路径模板只出现一次（不在主字段里重复）");
+    // 2.0.3：高级选项**不再折叠**，路径**只读展示**（用户不能改，但可以核对写到哪）
+    const advancedBlock = syncView.slice(syncView.indexOf('data-block="advanced"'), syncView.indexOf("</section>", syncView.indexOf('data-block="advanced"')));
+    ok(!syncView.includes("toggle-advanced") && !/advancedOpen/.test(syncView), "UI：高级选项不再折叠（没有展开/收起按钮）");
+    ok(advancedBlock.includes('data-row="path-readonly"'), "UI：路径以只读行展示");
+    ok(!/data-setting="path"/.test(syncView), "UI：路径没有输入框（用户不能修改）");
+    ok(advancedBlock.includes("pathPreview(") && advancedBlock.includes("prefixOf("), "UI：路径预览 + 所属目录说明都在");
+  }
+  {
+    // 2.0.3：状态区紧凑——大图标 + 结论 + 上次推送/拉取同处一行；设备数 / 上次测试已移除
+    const statusIdx = syncView.indexOf('data-block="sync-status"');
+    const freqIdx = syncView.indexOf('data-block="sync-frequency"');
+    const statusBlock = syncView.slice(statusIdx, freqIdx);
+    ok(statusBlock.includes('className="wl-status-badge"') && /"✓" : "!"|probe\.ok === true \? "✓"/.test(syncView), "UI：状态区有大号图标（✓ / !）");
+    ok(statusBlock.includes("set.lastTimes"), "UI：上次推送与上次拉取同一行显示");
+    ok(!/t\("sync\.devices"\)/.test(statusBlock), "UI：状态区不再显示已登记设备（已移到第一部分）");
+    ok(!statusBlock.includes("set.lastProbe") || !/formatProbe/.test(statusBlock), "UI：状态区不再显示上次测试时间");
   }
   ok(!syncView.includes('set.redact') && !syncView.includes("redactPaths"), "UI：不再展示「抹掉路径」（用户看不懂，配置项仍保留在 YAML）");
   ok(syncView.includes('data-kind="primary" data-action="save-all"'), "UI：对话框只有一个保存按钮（一次提交设置 + 凭据）");
@@ -3549,7 +3568,9 @@ bootSync.seq = 1;
   ok(syncView.indexOf("/sync/settings") < syncView.indexOf("/sync/credentials"), "UI：同一次保存先写设置、再写凭据");
   ok(syncView.includes("set.savedCredFail"), "UI：凭据连接失败时用「设置已生效但连接失败」文案（不误报整次保存失败）");
   ok(syncView.includes('data-action="cred-clear"') && syncView.includes("cred.clearPending"), "UI：清除凭据改为「保存后生效」的待办状态");
-  ok(syncView.includes('data-action="open-sync-settings"'), "UI：设备同步页用按钮打开设置对话框");
+  ok(clientIndex.includes("syncOpen ? (") && clientIndex.includes("<SyncSettingsDialog"), "UI：看板直接挂载「设备同步」弹窗（无中间页面）");
+  ok(/onOpenSync=\{\(\) => setSyncOpen\(true\)\}/.test(clientIndex), "UI：设备筛选行右侧按钮直接打开弹窗");
+  ok(!clientIndex.includes("BySyncView"), "UI：看板不再渲染同步页面组件");
   ok(syncView.includes('type="password"'), "UI：凭据输入框是 password（不露字）");
   ok(syncView.includes("setDraft({})"), "UI：提交后清空输入框（值不留在界面）");
   ok(syncView.includes("/sync/credentials"), "UI：凭据走 /sync/credentials 接口");
@@ -3560,20 +3581,20 @@ bootSync.seq = 1;
   ok(!/wl-chip-[a-z]+/.test(syncView), "UI：没有自造 chip 变体 class");
   // 凭据绝不回显
   ok(!/secretKey\s*[:=]\s*[^,]*(?:<\/|value=)/.test(syncView), "UI：不回显 secretKey");
-  ok(syncView.includes('data-enabled="false"'), "UI：同步关闭时渲染独立的关闭态容器");
+  ok(syncView.includes('data-block="sync-status"'), "UI：弹窗内含连接与同步状态区（不再靠单独页面显示）");
 
   // 「设备同步」入口：设备筛选行右侧（不再占顶部页签位，也不在 AI 画像之后）
   ok(syncView.includes('data-sync-entry="true"'), "UI：「设备同步」入口渲染在 DeviceFilter 内部");
   ok(/onOpenSync/.test(syncView) && /t\("tab\.deviceSync"\)/.test(syncView), "UI：入口用「设备同步」文案并回调打开");
   ok(!clientIndex.includes('data-sync-tab="true"'), "UI：顶部页签行不再有「设备同步」页签");
   ok(!/wl-tab[^>]*deviceSync/.test(clientIndex), "UI：设备同步不再是 wl-tab 页签");
-  ok(clientIndex.includes("onOpenSync={() => setTab(\"deviceSync\")}"), "UI：看板把入口接到设备同步页");
+  ok(!clientIndex.includes('setTab("deviceSync")'), "UI：看板不再用页签承载设备同步（改为弹窗）");
 
-  ok((syncView.match(/onSaved=\{settingsSaved\}/g) ?? []).length === 1, "UI：对话框保存后刷新本页 + 通知看板重拉快照（唯一一处 onSaved）");
-  ok(/const settingsSaved = useCallback\(\(\) => \{[\s\S]*?onChanged\(\);/.test(syncView), "UI：settingsSaved 里确实调用了 onChanged（联动看板快照）");
+  ok(/if \(typeof onSaved === "function"\) onSaved\(\);/.test(syncView), "UI：弹窗保存后通知看板重拉快照（onSaved 由看板传入 setRefreshKey）");
+  ok(clientIndex.includes("onSaved={() => setRefreshKey((value) => value + 1)}"), "UI：看板把 onSaved 接到快照刷新");
 
   // 挂载条件
-  ok(clientIndex.includes("BySyncView"), "UI：看板挂载 BySyncView");
+  ok(!clientIndex.includes("BySyncView"), "UI：看板不再挂载旧的同步页面");
   ok(clientIndex.includes("DeviceFilter"), "UI：看板挂载 DeviceFilter");
   ok(clientIndex.includes('query.append("machine"'), "UI：设备筛选通过 machine 参数传给宿主");
 
@@ -3585,6 +3606,56 @@ bootSync.seq = 1;
   ok(clientIndex.includes('className="wl-foot"'), "UI：版本号挂在页脚栏（不占内容区布局）");
   // 版本号只放在面板外壳（版本号是应用级信息，不混进画像/同步等功能卡）
   ok(!profileCard.includes("wl-version"), "UI：功能卡片里不重复渲染版本号（只有面板右下角一处）");
+
+  // —— 2.0.3 交互改造：测试连接进弹窗 / 配置状态图标 / 同步频率预留 ——
+  ok(syncView.includes('data-action="probe-now"'), "UI：弹窗头部有「测试连接」按钮（不再放在页面外）");
+  ok(/if \(savedView\?\.enabled === true\) await runProbe\(/.test(syncView), "UI：保存配置后立即自动测试连接");
+  ok(/data-state=\{iconState\}/.test(syncView) && syncView.includes("configured") , "UI：标题旁有配置状态图标（对号 / 圆圈 / 感叹号）");
+  ok(syncView.includes('data-action="sync-now-push"') && syncView.includes('data-action="sync-now-pull"'), "UI：手动推送 / 拉取已迁入弹窗");
+  ok(syncView.includes("FREQUENCY_OPTIONS") && syncView.includes('data-block="sync-frequency"'), "UI：预留「同步频率」区域");
+  {
+    const freq = (id) => FREQUENCY_OPTIONS.find((item) => item.id === id);
+    eq(freq("6h")?.hours, 6, "频率：默认每 6 小时");
+    eq(freq("6h")?.ready, true, "频率：6 小时已就绪（默认选中）");
+    eq(freq("12h")?.ready, false, "频率：12 小时本版置灰（预留）");
+    eq(freq("boot")?.ready, false, "频率：开机同步本版置灰（预留）");
+    // 图标语义
+    eq(configureIconState({ enabled: true, configured: true, probeOk: true }), "configured", "图标：已配置 + 自检通过 = 对号");
+    eq(configureIconState({ enabled: true, configured: true, probeOk: false }), "failed", "图标：自检失败 = 感叹号");
+    eq(configureIconState({ enabled: false, configured: true, probeOk: null }), "off", "图标：已配置但未开启 = 圆圈");
+    eq(configureIconState({ enabled: true, configured: true, probeOk: null }), "unchecked", "图标：已开启未测试 = 虚线圆圈");
+    eq(configureIconState({ enabled: false, configured: false }), "none", "图标：未配置 = 圆圈");
+    // 图标文案键齐全（对号 / 圆圈 / 感叹号 三态都有话说）
+    for (const state of ["configured", "failed", "off", "unchecked", "none"]) {
+      ok(ICON_TEXT_KEYS[state] in zh && ICON_TEXT_KEYS[state] in en, `图标：${state} 有中英文案`);
+    }
+    for (const item of FREQUENCY_OPTIONS) {
+      ok(FREQUENCY_TEXT_KEYS[item.id] in zh && FREQUENCY_TEXT_KEYS[item.id] in en, `频率：${item.id} 有中英文案`);
+    }
+  }
+
+  // —— 2.0.3：设备身份与路径（改名不断数据的保障）——
+  {
+    const devices = [{ key: "local", id: "3e5e4690-2749-4362-998e-c9a49897e17c", name: "Mac-mini-A", local: true }];
+    const report = deviceRenameReport(devices, "Mac-mini-A", "Mac-mini-B");
+    eq(report.renamed, true, "改名说明：识别出发生过改名");
+    eq(report.local?.id, "3e5e4690-2749-4362-998e-c9a49897e17c", "改名说明：本机设备 id 原样带出（不随名字变）");
+    eq(deviceRenameReport(devices, "Mac-mini-A", "Mac-mini-A").renamed, false, "改名说明：没改名字时不提示");
+    eq(shortDeviceId("3e5e4690-2749-4362"), "3e5e4690…", "设备 id 缩略为前 8 位");
+    eq(shortDeviceId("short"), "short", "短 id 原样显示");
+    // 身份防回归
+    eq(checkMachineIdentity("abc", "abc").ok, true, "身份校验：id 未变 → 允许保存");
+    eq(checkMachineIdentity("abc", "def").ok, false, "身份校验：id 变了 → 拦下保存");
+    eq(checkMachineIdentity("", "def").ok, true, "身份校验：无基准（首次保存）不拦");
+    // 路径预览与目录
+    eq(pathPreview("machines/{machineId}.json", { machineId: "3e5e4690" }), "machines/3e5e4690.json", "路径预览：填入设备 id 前缀");
+    eq(prefixOfPure("machines/{machineId}.json"), "machines/", "路径目录：machines/");
+    eq(prefixOfPure("dsh-workload-sync/machines/{machineId}.json"), "dsh-workload-sync/machines/", "路径目录：支持二级前缀（dsh-workload-sync/machines/）");
+    eq(prefixOfPure(""), "machines/", "路径目录：空模板回落默认 machines/");
+    // 宿主侧复用同一实现（保证界面显示与实际写到的位置一致）
+    eq(prefixOf("dsh-workload-sync/machines/{machineId}.json"), "dsh-workload-sync/machines/", "宿主 prefixOf 与客户端同一实现");
+    ok(SYNC_DEFAULTS.path === "machines/{machineId}.json", "默认路径是机器目录下的单文件（不含 dsh-workload-report 这类二级前缀）");
+  }
 
   // 报告不含同步 UI（报告是自包含快照，不暴露设备管理）
   const reportSource = await readFile(new URL("../src/report-html.js", import.meta.url), "utf8");
@@ -3605,12 +3676,12 @@ bootSync.seq = 1;
   const enKeys = Object.keys(en).sort();
   eq(JSON.stringify(zhKeys), JSON.stringify(enKeys), "文案：zh / en 键集逐键对齐");
   ok(!("set.redact" in zh) && !("set.redact" in en), "文案：已删除「抹掉路径」文案（不再展示）");
-  for (const key of ["set.dialogTitle", "set.colConnection", "set.advanced", "set.advancedHide", "set.cancel", "set.savedCredFail", "cred.clearPending", "cred.afterEnable"]) {
+  for (const key of ["set.dialogTitle", "set.colConnection", "set.advanced", "set.cancel", "set.savedCredFail", "cred.clearPending", "cred.afterEnable"]) {
     ok(key in zh && key in en, `文案：新增 ${key} 中英都有`);
   }
   // 每个新增键都真的被用到（不留死键）
   const syncView = await readFile(new URL("../src/client/sync-view.jsx", import.meta.url), "utf8");
-  for (const key of ["set.dialogTitle", "set.colConnection", "set.advanced", "set.advancedHide", "set.cancel", "set.savedCredFail", "cred.clearPending", "cred.afterEnable", "set.path", "set.pathHint"]) {
+  for (const key of ["set.dialogTitle", "set.colConnection", "set.advanced", "set.cancel", "set.savedCredFail", "cred.clearPending", "cred.afterEnable", "set.path", "set.pathReadonlyHint", "set.pathLocation", "set.registeredDevices", "set.deviceIdHint", "set.lastTimes"]) {
     ok(syncView.includes(`t("${key}")`) || syncView.includes(`t("${key}",`) || syncView.includes(`"${key}"`), `文案：${key} 在界面里被使用`);
   }
 }

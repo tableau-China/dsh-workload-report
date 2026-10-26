@@ -15,7 +15,7 @@ import { MetricBarCell } from "./bar-cell.jsx";
 import { Chip, ChipGroup } from "./chips.jsx";
 import { CardHead } from "./card-head.jsx";
 import { ProfileCard } from "./profile-card.jsx";
-import { BySyncView, DeviceFilter } from "./sync-view.jsx";
+import { DeviceFilter, SyncSettingsDialog } from "./sync-view.jsx";
 import { SESSION_PAGE_SECTIONS } from "./session-layout.js";
 import { hourTokensNote } from "./hour-status.js";
 import { sectorPath } from "../sector-path.js";
@@ -1682,6 +1682,8 @@ function Overlay({ control }) {
   const [scope, setScope] = useState("all");
   const [refreshKey, setRefreshKey] = useState(0);
   const [tab, setTab] = useState("byDay");
+  /** 「设备同步」现在是**大弹窗**（合并了原来的页面与同步设置）；入口是设备筛选行右侧的按钮。 */
+  const [syncOpen, setSyncOpen] = useState(false);
   // 设备筛选：空数组 = 全部设备（同步关闭时设备清单为 null → 只剩「设备同步」入口）
   const [machines, setMachines] = useState([]);
   // 关闭时不请求，避免白跑一次接口
@@ -1770,8 +1772,7 @@ function Overlay({ control }) {
                 value={machines}
                 onChange={setMachines}
                 t={t}
-                syncOpen={tab === "deviceSync"}
-                onOpenSync={() => setTab("deviceSync")}
+                onOpenSync={() => setSyncOpen(true)}
               />
               <Kpis data={state.data} t={t} />
               <div className="wl-tabs">
@@ -1799,9 +1800,6 @@ function Overlay({ control }) {
               {tab === "aiProfile" ? (
                 <ByProfileView t={t} lang={lang} days={days} scope={scope} allTime={allTime} />
               ) : null}
-              {tab === "deviceSync" ? (
-                <BySyncView t={t} onChanged={() => setRefreshKey((value) => value + 1)} />
-              ) : null}
               <p className="wl-note">
                 <strong>{t("note.title")}</strong>：{t("note.body")}
                 {state.data.diagnostics?.missing > 0 ? t("note.unavailable", { count: formatInt(state.data.diagnostics.missing) }) : ""}
@@ -1815,6 +1813,14 @@ function Overlay({ control }) {
             <span className="wl-version" data-plugin-version={version} title={`${t("panel.title")} v${version}`}>v{version}</span>
           )}
         </footer>
+        {/* 「设备同步」大弹窗：与看板同属一个 overlay 层，点遮罩关闭；保存后让看板重拉快照 */}
+        {syncOpen ? (
+          <SyncSettingsDialog
+            t={t}
+            onSaved={() => setRefreshKey((value) => value + 1)}
+            onClose={() => setSyncOpen(false)}
+          />
+        ) : null}
       </div>
     </div>
   );

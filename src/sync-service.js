@@ -19,6 +19,7 @@
  */
 
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { checkMachineIdentity, prefixOf, shortMachineId } from "./client/sync-state.js";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
@@ -485,14 +486,7 @@ export function createTransport(config, { vault = null } = {}) {
  * @param path - key 模板，如 `machines/{machineId}.json` / `dsh/machines/{machineName}.json`。
  * @returns 目录前缀，如 `machines/` / `dsh/machines/`；模板无目录段时返回 ""。
  */
-export function prefixOf(path) {
-  const template = typeof path === "string" && path.trim().length > 0 ? path.trim() : SYNC_DEFAULTS.path;
-  const withoutPlaceholders = template.replace(/\{machineId\}/g, "_").replace(/\{machineName\}/g, "_");
-  const cut = withoutPlaceholders.lastIndexOf("/");
-  if (cut < 0) return "";
-  const directory = withoutPlaceholders.slice(0, cut + 1).replace(/^\/+/, "");
-  return directory;
-}
+export { checkMachineIdentity, prefixOf, shortMachineId };
 
 /** cwd 抹权：能配别名就显示别名，否则用「目录名#短哈希」（不可逆，不暴露完整路径）。 */
 function redactCwd(cwd, aliases) {

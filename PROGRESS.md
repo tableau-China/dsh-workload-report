@@ -37,6 +37,51 @@
 - profile 的插件依赖已由 `github:…#v2.0.1` 改为 `link:` 指向本工作区（备份在
   `~/.dsh/profiles/desktop/*.bak-before-local-link`），所以本地改动只需重建 + 重启即可生效。
 
+## 2026-10-25 v2.0.4：状态紧凑化 + 设备身份显式化
+
+### 事实
+
+- 状态区一行：大徽标（26px）+ 结论 + 「上次推送 X · 上次拉取 Y」；设备数 / 上次测试移出（设备数移到第一部分）。
+- 第一部分：本机显示名 ∥ 已登记设备 chips，下面常驻「设备身份按安装 ID 识别（xxxxxxxx…）」。
+- **设备身份**：`machineIdOf()` = `<DSH_HOME>/.anonymous-user-id`，与名字无关；
+  新增 `checkMachineIdentity()` 在保存时拦截 id 变化（换账户 / 换 DSH_HOME / 删文件），
+  并给出「继续保存会把历史数据拆成两台设备」的说明。
+- 端到端验证（local 传输）：改名 A→B 后磁盘上仍是同一个 `<uuid>.json`，`devices[0].id` 不变。
+- **路径**：默认 `machines/{machineId}.json` 位于**同步存储根**（桶根 / 仓库根）下的 `machines/`，
+  与 `dsh-workload-report` 目录无关；`prefixOf` 已抽到 `src/client/sync-state.js` 供宿主与客户端共用
+  （`sync-service.js` 改为导入再转发，避免两处规则漂移）。
+- 坑：客户端**不能** import `sync-service.js`（会带进 `node:fs/promises` 等），纯逻辑必须放 `sync-state.js`。
+  另外 `export { x } from "..."` 只转发不产生局部绑定——宿主内部还要用就得先 `import`。
+
+### 验证
+
+- 离线断言 **1407 项**通过（新增设备身份 4 项、路径 5 项、布局顺序与只读路径等）。
+- e2e：新增「设备行并列」「ID 保障说明」「大图标 ≥24px」「推送/拉取同一行」「状态区 ≤60px」
+  「状态区不再重复设备数与上次测试」「高级选项直接显示且路径只读」「目录说明」全部通过。
+
+## 2026-10-25 v2.0.3：设备同步 = 一个大弹窗
+
+### 事实
+
+- 用户要求：①「设备同步」页面改为完全弹窗并与同步设置合并；②「测试连接」放进弹窗内、配置后立即测试，
+  并用「对号 / 圆圈」表达配置状态；③ 手动推送/拉取下一版改为同步频率（默认 6 小时，可选 12 小时 / 开机），
+  **本版先预留位置**。
+- 结构：`BySyncView` 页面删除 → 看板直接挂载 `SyncSettingsDialog`（`syncOpen` state）。
+  弹窗顺序：本机显示名 → 存储方式 → 连接参数 → 凭据 → 连接与同步状态 → 同步频率 → 高级选项。
+- 保存 `enabled=true` 时**自动 probe 一次**（真打 GitHub API 验证过：NO_CREDENTIALS → 填假 token → UNAUTHORIZED，
+  图标 `failed`、状态区带错误码；手动「测试连接」按钮可重复触发）。
+- 图标语义集中在 `sync-state.js` 的 `configureIconState()`（configured / failed / off / unchecked / none），
+  文案键放 `ICON_TEXT_KEYS`（显式表，否则模板拼接会被 i18n 死键检查误判——这次踩过，`t(\`set.icon.${x}\`)` 导致 19 个键被判死键）。
+- 同步频率：`FREQUENCY_OPTIONS` 里 `6h.ready=true`，`12h` / `boot` 置灰；下一版把 `ready` 打开 + 后台按该周期跑
+  （宿主已有 `pushEveryMs` / `pullEveryMs`，接上即可）。
+
+### 验证
+
+- `node build.mjs && node test/verify.mjs`：**1407 项**通过。
+- e2e：新增「点入口直接打开唯一大弹窗（无中间页面 / 无二层弹窗）」「测试连接在弹窗内」「状态图标 ✓/!/○」
+  「同步频率默认 6 小时 + 12h/boot 置灰」「立即推送/拉取已迁入」等断言全绿；
+  唯一失败仍是既有的「首页环形图上下居中」。
+
 ## 2026-10-25 v2.0.2：同步设置布局重做（用户反馈 5 条）
 
 ### 事实

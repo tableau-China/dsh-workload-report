@@ -1,7 +1,7 @@
 # TimeMirror for DSH · Workload Report
 
 > **See your effort and your token spend on the same picture** — by **date** and by **workspace**: a calendar heatmap, time-of-day analysis, workspace share, model usage, and a **one-click self-contained HTML report** you can send straight to a client.
-> A DeepSeek Harness (DSH) plugin. Current version: **2.0.3**.
+> A DeepSeek Harness (DSH) plugin. Current version: **2.0.4**.
 
 > TimeMirror is a macOS time-distribution app I published on the Mac App Store; this plugin brings the same idea to AI-assisted work. The package/repo keeps the descriptive name `dsh-workload-report` so it can be found in the DSH ecosystem; the brand stays TimeMirror.
 
@@ -165,16 +165,16 @@ The default model prices are built in and offline; `pricing.overrides`, `pricing
 
 Running DSH on several machines? Merge their usage into one report. **Disabled by default** — with no `sync` config the plugin behaves exactly as before and makes zero outbound requests.
 
-**No YAML needed.** Open the dashboard → **Device sync** → **Sync settings**: settings *and* credentials live in **one dialog**, filled in one pass and saved once.
+**No YAML needed.** Open the dashboard → **Device sync** (right end of the device-filter row) → **one large dialog opens directly** (the old sync page is merged into it, there is no second layer):
 
-1. **Device name** sits at the very top — set once, used by all four backends.
-2. **Storage + enable switch**: Tencent COS / GitHub / Gitea / shared folder.
-3. **Connection details in two columns, one field per row**: COS needs bucket + region; GitHub/Gitea need repo + API base + branch; shared folder needs a directory (when only one column has fields, it spans the full width).
-4. **Credentials are expanded by default** (never collapsed), one field per row: SecretId/SecretKey or a token. While sync is *off* the host refuses credential writes, so the section first says "enable sync and save to fill these in".
-5. **Advanced options** (collapsed): only the object path template, whose default `machines/{machineId}.json` is fine for most people.
-6. One **"Save settings"** button writes the profile config first (applied immediately; transport, device name and the push/pull timers follow), then the credentials, and probes the connection once.
-   Credentials go to the **DSH credential store**: `<DSH_HOME>/.credentials.yaml`, **0600 permissions and a file lock** (not application-level encryption — at-rest protection comes from FileVault / BitLocker). They never enter the profile config, git, or the browser, and the UI only ever shows "configured".
-7. The page itself stays read-only: transport, last push/pull, errors, device list, plus test / push / pull now.
+1. **Status icon next to the title**: `✓` configured and reachable, `!` configured but failing, `○` not configured / disabled / untested.
+2. **Device name** at the top (global — set once, used by all four backends).
+3. **Storage + enable switch**: Tencent COS / GitHub / Gitea / shared folder.
+4. **Connection details** as "label on the left, input on the right", one field per row; **credentials** expanded by default.
+5. **Connection & sync status**: probe result, last push / pull, registered devices, last test.
+6. **"Test connection" lives inside the dialog** and saving runs a probe automatically, so the icon and status update immediately.
+7. **Sync frequency (reserved in this release)**: "every 6 hours" is the default; "every 12 hours" and "on every boot" are greyed out and marked *next release*. Manual push / pull remain available until automatic sync ships.
+8. One **"Save settings"** button writes the profile config, then the credentials, then probes once.
 
 Prefer a config file (servers / CI)? That works too — see section 4 of [docs/sync.md](./docs/sync.md).
 
@@ -291,7 +291,7 @@ All statistics stay on your machine. The plugin registers **read-only** HTTP rou
 | --- | --- |
 | `pnpm add -D esbuild puppeteer-core` | Install build and browser-test dependencies (or point `ESBUILD_PATH` / `WL_PUPPETEER_DIR` at existing installs) |
 | `node build.mjs` | Bundle `src/client/` into `lib/client.js` (ModuleLoader factory format) with esbuild |
-| `node test/verify.mjs` | **1360 offline assertions**: aggregation semantics with one shared range rule, time zones, turn-based hour bucketing and conservation, hourly tokens by message time, human-message density, wait exclusion (all three rules + long-task exemption + `excludeWait:false` regression), index/read fallbacks, report structure parity, the AI-profile tab as a right-aligned navigation entry, the 30-day profile window, multi-device sync (payload / merge / credentials / settings / device filter), zero model calls on first open, i18n key alignment, and balance states |
+| `node test/verify.mjs` | **1407 offline assertions**: aggregation semantics with one shared range rule, time zones, turn-based hour bucketing and conservation, hourly tokens by message time, human-message density, wait exclusion (all three rules + long-task exemption + `excludeWait:false` regression), index/read fallbacks, report structure parity, the AI-profile tab as a right-aligned navigation entry, the 30-day profile window, multi-device sync (payload / merge / credentials / settings / device filter), zero model calls on first open, i18n key alignment, and balance states |
 | `./test/e2e-boot.sh 3299` | Boot an **isolated instance** (own DSH_HOME and port) without touching your running GUI |
 | `node test/e2e-ui.mjs` | Real-browser E2E: calendar/bar switching, geometry, donuts, report export, time-of-day card |
 

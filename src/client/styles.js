@@ -467,6 +467,100 @@ export const STYLES = `
 /* 全局行（本机显示名）：在存储方式 chips 上方，横跨整行，一次设置对所有存储方式生效 */
 .wl-form-global { display: flex; flex-direction: column; gap: 10px; padding-bottom: 14px; border-bottom: 1px solid var(--dsw-alias-border-l2, #eceef1); }
 .wl-form-block { display: flex; flex-direction: column; gap: 10px; }
+/* 标题 + 状态图标（✓ / ! / ○）：标题行左侧一组的排版 */
+.wl-dialog-title { display: flex; align-items: center; gap: 8px; }
+.wl-state-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 999px;
+  font-size: 12px; line-height: 1; font-weight: 700;
+  border: 1.5px solid var(--dsw-alias-border-l2, #d7dbe0);
+  color: var(--dsw-alias-label-tertiary, #6b7280);
+  background: transparent;
+}
+/* 已配置且自检通过：主题绿实心 + 白对号 */
+.wl-state-icon[data-state="configured"] {
+  border-color: var(--dsw-static-green-600, #059669);
+  background: var(--dsw-static-green-600, #059669);
+  color: var(--dsw-alias-label-primary-inverted, #fff);
+}
+/* 连接失败：琥珀色描边 + 感叹号 */
+.wl-state-icon[data-state="failed"] {
+  border-color: var(--dsw-static-amber-600, #b45309);
+  color: var(--dsw-static-amber-600, #b45309);
+  background: color-mix(in srgb, var(--dsw-static-amber-500, #f59e0b) 12%, transparent);
+}
+/* 已开启但还没测过：虚线圈，暗示"待测试" */
+.wl-state-icon[data-state="unchecked"] { border-style: dashed; }
+.wl-state-icon-text { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); }
+/* 状态条：一行放「大图标 + 结论 + 上次推送/拉取」，尽量紧凑（一行高度 ≈ 44px） */
+.wl-sync-status {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px; border-radius: 10px;
+  border: 1px solid var(--dsw-alias-border-l2, #e5e7eb);
+  background: var(--dsw-alias-bg-layer-2, #fafbfc);
+}
+.wl-sync-status-text { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; min-width: 0; }
+.wl-sync-status-main { font-size: 12.5px; font-weight: 600; line-height: 1.4; color: var(--dsw-alias-label-secondary, #4b5563); }
+.wl-sync-status-last { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); }
+/* 明显的大号状态徽标：绿 ✓ / 琥珀 ! / 灰 ○ / 转圈 …（比标题旁的小图标更醒目） */
+.wl-status-badge {
+  flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 999px;
+  font-size: 15px; line-height: 1; font-weight: 700;
+  border: 2px solid var(--dsw-alias-border-l2, #d7dbe0);
+  color: var(--dsw-alias-label-tertiary, #6b7280);
+  background: var(--dsw-alias-bg-layer-1, #fff);
+}
+.wl-status-badge[data-state="configured"] {
+  border-color: var(--dsw-static-green-600, #059669);
+  background: var(--dsw-static-green-600, #059669);
+  color: var(--dsw-alias-label-primary-inverted, #fff);
+}
+.wl-status-badge[data-state="failed"] {
+  border-color: var(--dsw-static-red-600, #dc2626);
+  background: color-mix(in srgb, var(--dsw-static-red-500, #e5484d) 14%, transparent);
+  color: var(--dsw-static-red-600, #dc2626);
+}
+.wl-status-badge[data-state="probing"] { border-style: dashed; }
+/* 已登记设备：一行小圆点 + 名字（本机用强调色圆点） */
+.wl-device-chips { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.wl-device-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 24px; padding: 0 9px; border-radius: 999px;
+  font-size: 12px; color: var(--dsw-alias-label-secondary, #4b5563);
+  border: 1px solid var(--dsw-alias-border-l2, #e5e7eb);
+  background: color-mix(in srgb, var(--dsw-static-deepseek-500, #4d6bfe) 5%, var(--dsw-alias-bg-layer-2, #f2f3f5));
+  max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.wl-device-chip[data-local="true"] {
+  border-color: color-mix(in srgb, var(--dsw-static-deepseek-500, #4d6bfe) 35%, var(--dsw-alias-border-l2, #e5e7eb));
+  color: var(--dsw-alias-label-primary, #111);
+}
+.wl-dot-mini { width: 6px; height: 6px; border-radius: 999px; background: var(--dsw-alias-label-tertiary, #9ca3af); flex: 0 0 auto; }
+.wl-dot-mini[data-local="true"] { background: var(--dsw-static-deepseek-500, #4d6bfe); }
+/* 只读路径：等宽字体 + 可选中复制，一眼看出写到哪 */
+.wl-path-preview {
+  flex: 1 1 auto; min-width: 0;
+  padding: 6px 10px; border-radius: 8px;
+  font-family: var(--dsw-font-family-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px; line-height: 1.5;
+  color: var(--dsw-alias-label-primary, #111);
+  background: var(--dsw-alias-bg-layer-2, #f6f7f9);
+  border: 1px dashed var(--dsw-alias-border-l2, #d7dbe0);
+  overflow-wrap: anywhere; user-select: all;
+}
+/* 同步频率：标题右侧的「下一版」徽标 + 手动同步按钮组 */
+.wl-form-badge {
+  margin-left: 8px; padding: 1px 6px; border-radius: 999px;
+  font-size: 10px; font-weight: 600; letter-spacing: .2px;
+  color: var(--dsw-static-amber-700, #92400e);
+  background: color-mix(in srgb, var(--dsw-static-amber-500, #f59e0b) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--dsw-static-amber-500, #f59e0b) 35%, transparent);
+}
+.wl-sync-manual { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* 对话框放大：现在它是「设备同步」的唯一入口，一屏要放下 设备 / 连接 / 凭据 / 状态 / 频率 */
+.wl-dialog { width: min(920px, 100%); max-height: min(92vh, calc(100vh - 6vh)); }
 .wl-form-section {
   font-size: 12px; font-weight: 600; margin: 0;
   color: var(--dsw-alias-label-secondary, #4b5563);

@@ -665,26 +665,32 @@ try {
   ok(versionInfo?.dataVersion === versionInfo?.text.replace(/^v/, ""), "版本号来自宿主 package.json（data-plugin-version 一致）", JSON.stringify(versionInfo));
   ok(Number(versionInfo?.zIndex) >= 240, "版本号层级高于看板浮层（不会被面板遮住）", versionInfo?.zIndex);
 
-  // 打开发备同步页 → 打开同步设置对话框
+  // 2.0.3：点「设备同步」**直接**出现大弹窗（原页面已并入），没有中间页面、也没有二层弹窗
   await page.evaluate(() => document.querySelector('[data-sync-entry="true"]')?.click());
-  await page.waitForSelector('[data-action="open-sync-settings"]', { timeout: 15000 });
-  await page.evaluate(() => document.querySelector('[data-action="open-sync-settings"]')?.click());
   await page.waitForSelector('[data-sync-dialog="true"]', { timeout: 15000 });
-  await sleep(800);
+  await sleep(1200);
+  const entryFlow = await page.evaluate(() => ({
+    dialogs: document.querySelectorAll('[data-sync-dialog="true"]').length,
+    innerPage: document.querySelector(".wl-panel .wl-sync") !== null,
+    secondLevel: document.querySelector('[data-action="open-sync-settings"]') !== null,
+    width: Math.round(document.querySelector('[data-sync-dialog="true"] .wl-dialog').getBoundingClientRect().width),
+  }));
+  ok(entryFlow.dialogs === 1 && !entryFlow.innerPage && !entryFlow.secondLevel, "点「设备同步」直接打开唯一的大弹窗（无中间页面 / 无二层弹窗）", JSON.stringify(entryFlow));
+  ok(entryFlow.width >= 880, "弹窗足够宽以容纳全套配置", String(entryFlow.width));
   const dialog = await page.evaluate(() => {
     const root = document.querySelector('[data-sync-dialog="true"]');
     if (root === null || root === undefined) return { error: "dialog-missing", cols: [], hasAdvanced: false, pathHiddenByDefault: false, saveButtons: 0, redactShown: false };
     const grid = root.querySelector(".wl-form-grid");
     const cols = grid === null || grid === undefined ? [] : [...grid.children].map((node) => node.getBoundingClientRect());
-    const advanced = root?.querySelector(".wl-form-advanced");
+    const advanced = root?.querySelector('[data-block="advanced"]');
     const pathInput = root?.querySelector('[data-setting="path"]');
     const save = root?.querySelector('[data-action="save-all"]');
     const credInputs = [...(root?.querySelectorAll("[data-credential]") ?? [])];
     return {
       cols: cols.map((r) => ({ left: Math.round(r.left), top: Math.round(r.top), width: Math.round(r.width) })),
       hasAdvanced: advanced !== null && advanced !== undefined,
-      // 高级选项默认收起：展开前不应渲染路径模板输入框
-      pathHiddenByDefault: pathInput === null || pathInput === undefined,
+      // 2.0.3：路径只读展示，没有输入框（用户不能修改）
+      pathHiddenByDefault: pathInput !== null && pathInput !== undefined,
       saveButtons: root === null ? 0 : root.querySelectorAll('[data-action="save-all"]').length,
       redactShown: (root?.innerText ?? "").includes("抹掉路径") || (root?.innerText ?? "").toLowerCase().includes("redact"),
       credentialInputs: credInputs.map((node) => node.getAttribute("type")),
@@ -704,7 +710,9 @@ try {
       chipsTop: top(".wl-dialog-top"),
       connTop: top('[data-block="connection-section"]'),
       credTop: top('[data-block="credential-section"]'),
-      advTop: top(".wl-form-advanced"),
+      advTop: top('[data-block="advanced"]'),
+      statusTop: top('[data-block="sync-status"]'),
+      freqTop: top('[data-block="sync-frequency"]'),
       cols, colsAttr: grid?.getAttribute("data-cols"),
       credRows: credFields,
       credSectionInsideAdvanced: root.querySelector(".wl-form-advanced [data-block=\"credential-section\"]") !== null,
@@ -712,12 +720,28 @@ try {
     };
   });
   ok(layout.machineTop !== null && layout.machineTop < layout.chipsTop, "本机显示名在存储方式 chips 上方（一次设置对所有方式生效）", JSON.stringify(layout));
-  ok(layout.chipsTop < layout.connTop && layout.connTop < layout.credTop && layout.credTop < layout.advTop, "顺序：存储方式 → 连接参数 → 凭据 → 高级选项", JSON.stringify(layout));
+  ok(
+    layout.chipsTop < layout.connTop && layout.connTop < layout.credTop
+      && layout.credTop < layout.statusTop && layout.statusTop < layout.freqTop && layout.freqTop < layout.advTop,
+    "顺序：存储方式 → 连接参数 → 凭据 → 连接状态 → 同步频率 → 高级选项",
+    JSON.stringify(layout),
+  );
   ok(!layout.credSectionInsideAdvanced, "凭据没有折叠进高级选项（默认就在表单里）");
   // 字段行：每个字段一行（不并排）；COS 只有一列字段时整块铺满
   ok(layout.credRows.every((t, i, arr) => i === 0 || t > arr[i - 1]), "凭据每个字段各占一行", JSON.stringify(layout.credRows));
-  const filled = layout.cols.filter((c) => c.fields > 0);
-  ok(layout.colsAttr === "1" && filled.length === 1 && filled[0].w >= layout.dialogW - 100, "只有一列字段时铺满整行（不留半屏空白）", JSON.stringify(layout.cols));
+  // 单列铺满：显式切到 COS（默认是 GitHub，本来就该两列）
+  await page.evaluate(() => document.querySelector('[data-transport="cos"]')?.click());
+  await sleep(700);
+  const cosCols = await page.evaluate(() => {
+    const grid = document.querySelector('[data-sync-dialog="true"] .wl-form-grid[data-block="connection"]');
+    const dialogW = Math.round(document.querySelector('[data-sync-dialog="true"] .wl-dialog').getBoundingClientRect().width);
+    return {
+      colsAttr: grid?.getAttribute("data-cols"),
+      cols: [...grid.children].map((c) => ({ w: Math.round(c.getBoundingClientRect().width), fields: c.querySelectorAll(".wl-field-row").length })).filter((c) => c.fields > 0),
+      dialogW,
+    };
+  });
+  ok(cosCols.colsAttr === "1" && cosCols.cols.length === 1 && cosCols.cols[0].w >= cosCols.dialogW - 110, "COS 只有一列字段时铺满整行（不留半屏空白）", JSON.stringify(cosCols));
   // 行式字段：左标题 + 右输入框，同一行、不换行；输入框吃满剩余宽度
   const rows = await page.evaluate(() => [...document.querySelectorAll('[data-sync-dialog="true"] .wl-field-row')].map((row) => {
     const label = row.querySelector(".wl-field-label");
@@ -750,24 +774,65 @@ try {
   ok(JSON.stringify(repoLayout.labels) === JSON.stringify(["仓库", "服务地址", "分支"]), "仓库 / 服务地址 / 分支 依次排布（仓库与分支同一行）", JSON.stringify(repoLayout.labels));
   await page.evaluate(() => document.querySelector('[data-transport="cos"]')?.click());
   await sleep(600);
-  ok(dialog.hasAdvanced, "有「高级选项」折叠区");
-  ok(dialog.pathHiddenByDefault, "「文件路径模板」默认收起（普通用户不用填）");
+  ok(dialog.hasAdvanced, "高级选项直接显示（不再折叠）");
+  // 测试连接在弹窗内；配置状态图标；同步频率预留；手动推送/拉取也搬进来了
+  const inDialog = await page.evaluate(() => {
+    const root = document.querySelector('[data-sync-dialog="true"]');
+    const icon = root.querySelector(".wl-state-icon");
+    const chip = (id) => root.querySelector(`[data-frequency="${id}"]`);
+    return {
+      probeBtn: root.querySelector('[data-action="probe-now"]') !== null,
+      iconState: icon?.getAttribute("data-state"),
+      iconGlyph: icon?.textContent,
+      status: root.querySelector('[data-block="sync-status"]') !== null,
+      freq: ["6h", "12h", "boot"].map((id) => ({ id, active: chip(id)?.getAttribute("data-active"), disabled: chip(id)?.disabled })),
+      freqBadge: root.querySelector('[data-kind="soon"]')?.textContent ?? null,
+      manual: ["sync-now-push", "sync-now-pull"].map((a) => root.querySelector(`[data-action="${a}"]`) !== null),
+    };
+  });
+  ok(inDialog.probeBtn, "「测试连接」在弹窗之内");
+  ok(inDialog.iconState !== null && /^[✓!○]$/.test(inDialog.iconGlyph ?? ""), "标题旁有配置状态图标（✓ / ! / ○）", JSON.stringify(inDialog));
+  ok(inDialog.status, "弹窗内含连接与同步状态（上次推送/拉取/设备数）");
+  ok(inDialog.freq[0].active === "true" && !inDialog.freq[0].disabled, "同步频率默认「每 6 小时」", JSON.stringify(inDialog.freq));
+  ok(inDialog.freq[1].disabled && inDialog.freq[2].disabled, "12 小时 / 开机同步本版置灰（预留下一版）", JSON.stringify(inDialog.freq));
+  ok(inDialog.freqBadge !== null, "同步频率带「下一版」徽标");
+  ok(inDialog.manual.every(Boolean), "立即推送 / 立即拉取已迁入弹窗");
+  // 2.0.3 布局 v3：设备行并列 / 状态紧凑 + 大图标 / 高级选项不折叠且路径只读
+  const layoutV3 = await page.evaluate(() => {
+    const root = document.querySelector('[data-sync-dialog="true"]');
+    const row = root.querySelector('[data-row="device"]');
+    const machine = row?.querySelector('[data-setting="machineName"]')?.getBoundingClientRect();
+    const devices = row?.querySelector('[data-block="device-list"]')?.getBoundingClientRect();
+    const status = root.querySelector('[data-block="sync-status"]');
+    const badge = status?.querySelector(".wl-status-badge");
+    const statusRect = status?.querySelector(".wl-sync-status")?.getBoundingClientRect();
+    return {
+      sideBySide: machine && devices ? Math.abs(machine.top - devices.top) < 40 && machine.left < devices.left : false,
+      identityHint: root.querySelector('[data-kind="device-identity"]')?.textContent ?? "",
+      badgeGlyph: badge?.textContent ?? null,
+      badgeSize: badge === undefined || badge === null ? 0 : Math.round(badge.getBoundingClientRect().width),
+      statusHeight: statusRect === undefined || statusRect === null ? 0 : Math.round(statusRect.height),
+      lastLine: status?.querySelector('[data-block="sync-last-line"]')?.textContent ?? "",
+      statusText: status?.innerText ?? "",
+      advVisible: root.querySelector('[data-block="advanced"]') !== null,
+      pathInput: root.querySelector('[data-setting="path"]') !== null,
+      pathPreview: root.querySelector(".wl-path-preview")?.textContent ?? "",
+      pathLocation: root.querySelector('[data-kind="path-location"]')?.textContent ?? "",
+    };
+  });
+  ok(layoutV3.sideBySide, "已登记设备与「本机显示名」并列在第一部分", JSON.stringify({ sideBySide: layoutV3.sideBySide }));
+  ok(layoutV3.identityHint.includes("ID"), "设备 ID 保障说明可见（改名字不断数据）", layoutV3.identityHint);
+  ok(/^[✓!○…]$/.test(layoutV3.badgeGlyph ?? "") && layoutV3.badgeSize >= 24, "状态区有醒目大图标", JSON.stringify({ glyph: layoutV3.badgeGlyph, size: layoutV3.badgeSize }));
+  ok(layoutV3.lastLine.includes("上次推送") && layoutV3.lastLine.includes("上次拉取"), "上次推送 / 上次拉取同一行显示", layoutV3.lastLine);
+  ok(layoutV3.statusHeight <= 60, "状态区紧凑（单行高度）", String(layoutV3.statusHeight));
+  ok(!layoutV3.statusText.includes("已登记设备") && !layoutV3.statusText.includes("上次测试"), "状态区不再重复已登记设备与上次测试", layoutV3.statusText.slice(0, 80));
+  ok(layoutV3.advVisible && !layoutV3.pathInput && layoutV3.pathPreview.includes("machines/"), "高级选项直接显示且路径只读", JSON.stringify({ adv: layoutV3.advVisible, input: layoutV3.pathInput, preview: layoutV3.pathPreview }));
+  ok(layoutV3.pathLocation.includes("machines/"), "说明了文件位于同步存储的哪个目录", layoutV3.pathLocation);
+  ok(!dialog.pathHiddenByDefault, "路径以只读形式直接可见（用户不能改，但能核对）");
   ok(dialog.saveButtons === 1, "对话框只有一个保存按钮（设置 + 凭据一次提交）", String(dialog.saveButtons));
   ok(!dialog.redactShown, "不再展示「抹掉路径」");
   await page.screenshot({ path: join(ARTIFACTS, "10-sync-settings-dialog.png") });
 
-  // 展开高级选项 → 路径模板出现在表单末尾
-  await page.evaluate(() => document.querySelector('[data-action="toggle-advanced"]')?.click());
-  await sleep(400);
-  const advancedInfo = await page.evaluate(() => {
-    const root = document.querySelector('[data-sync-dialog="true"]');
-    const input = root?.querySelector('[data-setting="path"]');
-    const cred = root?.querySelector('[data-block="credential-section"]');
-    if (input === null || input === undefined || cred === null || cred === undefined) return null;
-    return { pathTop: Math.round(input.getBoundingClientRect().top), credBottom: Math.round(cred.getBoundingClientRect().bottom) };
-  });
-  ok(advancedInfo !== null && advancedInfo.pathTop >= advancedInfo.credBottom - 2, "展开后路径模板排在连接参数与凭据之后（表单末尾）", JSON.stringify(advancedInfo));
-  await page.screenshot({ path: join(ARTIFACTS, "11-sync-settings-advanced.png") });
   // 关闭对话框（取消），回到看板
   await page.evaluate(() => {
     const foot = document.querySelector(".wl-dialog-foot");
