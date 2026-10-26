@@ -1545,29 +1545,30 @@ export function apply(ctx, config = {}) {
       }
       if (route === "/sync") {
         // 多设备同步：状态 / 自检 / 手动触发。默认关闭时只回 enabled:false，不发任何请求。
+        // 无论开关都带 version：面板右下角的版本号（v2.0.2）只从这里取，客户端不写死常量。
         const action = params.get("action") ?? "status";
         if (index.deviceSync?.enabled !== true) {
-          sendJson(res, 200, { enabled: false, action, status: index.deviceSync?.diagnostics?.() ?? { enabled: false } });
+          sendJson(res, 200, { enabled: false, action, version: PLUGIN_VERSION, status: index.deviceSync?.diagnostics?.() ?? { enabled: false } });
           return;
         }
         if (action === "probe") {
           const result = await index.deviceSync.probe();
-          sendJson(res, 200, { enabled: true, action, result, status: index.deviceSync.diagnostics() });
+          sendJson(res, 200, { enabled: true, action, version: PLUGIN_VERSION, result, status: index.deviceSync.diagnostics() });
           return;
         }
         if (action === "push") {
           const result = await index.deviceSync.push(index.rows);
           index.invalidateSnapshot("sync-push");
-          sendJson(res, 200, { enabled: true, action, result, status: index.deviceSync.diagnostics() });
+          sendJson(res, 200, { enabled: true, action, version: PLUGIN_VERSION, result, status: index.deviceSync.diagnostics() });
           return;
         }
         if (action === "pull") {
           const result = await index.deviceSync.pull();
           index.invalidateSnapshot("sync-pull"); // 设备数据变了，快照缓存作废
-          sendJson(res, 200, { enabled: true, action, result, status: index.deviceSync.diagnostics() });
+          sendJson(res, 200, { enabled: true, action, version: PLUGIN_VERSION, result, status: index.deviceSync.diagnostics() });
           return;
         }
-        sendJson(res, 200, { enabled: true, action, status: index.deviceSync.diagnostics() });
+        sendJson(res, 200, { enabled: true, action, version: PLUGIN_VERSION, status: index.deviceSync.diagnostics() });
         return;
       }
       if (route === "/snapshot" || route === "/export.json") {

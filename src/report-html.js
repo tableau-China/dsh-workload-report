@@ -718,7 +718,12 @@ export function renderReport(snapshot, options = {}) {
   th, td { text-align: right; padding: 8px 10px; border-bottom: 1px solid ${palette.border}; font-variant-numeric: tabular-nums; }
   th:first-child, td:first-child { text-align: left; }
   th { color: ${palette.muted}; font-weight: 500; font-size: 12px; }
-  td.ws { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* 工作区 / 会话名列表头：原为写死的 max-width: 320px。实测该值从未生效 ——
+     table-layout:auto 下单元格的 min-content 会把列顶到 431~557px（页宽 1120→1600 时），
+     320px 上限形同虚设，且页面放宽后这一列与数字列的此消彼长完全不可控。
+     改成随视口伸缩的上限：窄屏 240px 起、宽屏最多 520px，既不挤成一条缝、
+     也不会把右侧数字列压到放不下；超出部分仍由 ellipsis 兜底。 */
+  td.ws { max-width: clamp(240px, 32vw, 520px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   tbody tr:last-child td { border-bottom: none; }
   .bar-cell { position: relative; display: block; min-width: 56px; height: 20px; border-radius: 5px; background: ${palette.barBg}; overflow: hidden; }
   .bar-cell-fill { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 5px; }
@@ -750,7 +755,11 @@ export function renderReport(snapshot, options = {}) {
   .two-col > .card { display: flex; flex-direction: column; }
   .two-col > .card > .card-body { flex: 1 1 auto; }
   .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-    .bars li { display: grid; grid-template-columns: 168px minmax(0, 1fr); column-gap: 14px; row-gap: 4px; align-items: start; }
+    /* 左列（工作区名 + 活跃天数 + 最近使用）原为定宽 168px：页宽 1120→1600 后
+       左列纹丝不动（实测 li 1143→1474px，左列始终 168px），多出来的宽度全给了指标列。
+       改成随卡片宽度伸缩：22% 在 1600 页宽下约 280px、1240 下约 200px，
+       clamp 下限 140px 保证窄屏放得下省略号、上限 280px 避免超宽屏把名称区拉得过散。 */
+    .bars li { display: grid; grid-template-columns: clamp(140px, 22%, 280px) minmax(0, 1fr); column-gap: 14px; row-gap: 4px; align-items: start; }
     .bars li > .ws-head { grid-column: 1; grid-row: 1 / span 2; display: flex; flex-direction: column; gap: 3px; }
     .bars li > .ws-metrics { grid-column: 2; }
     .bars li > .ws-foot { grid-column: 2; }

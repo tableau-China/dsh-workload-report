@@ -83,7 +83,8 @@ try {
   await sleep(4000);
 
   // 关掉遮罩类弹窗（Preview Notice 的 Continue、Configure later 等）
-  for (let attempt = 0; attempt < 4; attempt += 1) {
+  // 找不到带按钮的 dialog 时，退一步：按文字点「稍后 / 关闭 / Configure later」这类按钮
+  for (let attempt = 0; attempt < 6; attempt += 1) {
     const dismissed = await page.evaluate(() => {
       const dialog = document.querySelector('[role="dialog"]');
       if (!dialog) return false;
@@ -95,10 +96,38 @@ try {
       target.click();
       return true;
     });
-    if (!dismissed) break;
+    if (!dismissed) {
+      // 「登录已超时 / 等待登录」这类**只有关闭按钮、没有文字按钮**的提示：
+      // 它不属于本次要验证的 UI，留着会挡住看板的所有点击 → 直接移除整块 presentation 容器。
+      // （只点 ✕ 无效：宿主会把标题为空、带 role="dialog" 的壳留在 DOM 里。）
+      const fallback = await page.evaluate(() => {
+        let removed = 0;
+        for (const mask of document.querySelectorAll('[class*="_mask_"]')) {
+          const root = mask.parentElement ?? null;
+          if (root !== null && !root.querySelector('[data-wl-overlay="true"]')) {
+            root.remove();
+            removed += 1;
+          }
+        }
+        return removed > 0;
+      });
+      if (!fallback) break;
+    }
     await sleep(1500);
   }
-  ok((await page.evaluate(() => document.querySelectorAll('[class*="_mask_"]').length)) === 0, "无遮罩层阻挡交互");
+  // 兜底清扫：宿主弹窗（登录已超时 / 等待登录，只有关闭按钮、点了也不消失）不属于本次要验证的 UI，
+  // 留着会让之后所有 .click() 命中遮罩 → 直接移除其 presentation 容器。
+  await page.evaluate(() => {
+    for (const mask of document.querySelectorAll('[class*="_mask_"]')) {
+      const root = mask.parentElement ?? null;
+      if (root !== null && !root.querySelector('[data-wl-overlay="true"]')) root.remove();
+    }
+  });
+  // 2.0.2：应用了自己的浮层（.wl-overlay / .wl-dialog）是正常的，只排除宿主的登录遮罩
+  ok(
+    (await page.evaluate(() => document.querySelectorAll('[class*="_mask_"]:not([data-wl-overlay="true"]):not(:has([data-wl-overlay="true"]))').length)) === 0,
+    "无宿主遮罩层阻挡交互（插件自己的浮层不算）",
+  );
 
   // 首次引导（仅在出现 Choose workspace 时）
   const needsOnboarding = await page.evaluate(() => document.body.innerText.includes("Choose workspace"));
@@ -243,11 +272,12 @@ try {
     workspaceValue: document.querySelector(".wl-metrics .wl-metric-value")?.textContent ?? "",
     weekdayTips: [...document.querySelectorAll('[data-kind="weekday-bar"] title')].map((node) => node.textContent ?? ""),
     hints: [...document.querySelectorAll(".wl-hint, .wl-metric-sub, .wl-note")].map((n) => n.textContent ?? ""),
-    bodyHasChineseHour: document.body.innerText.includes("小时"),
+    // 只看**插件自己的节点**：宿主侧（侧边栏会话列表的「1小时」时间戳等）不归本插件管
+    pluginHasChineseHour: [...document.querySelectorAll('[class^="wl-"], [class*=" wl-"]')].some((node) => (node.innerText ?? "").includes("小时")),
   }));
   ok(/\d+(\.\d+)?\s*[hms]\b|^0$/i.test(copyCheck.kpiActive.trim()), "活跃时长 KPI 用小写 h/m/s 单位", copyCheck.kpiActive);
   ok(copyCheck.weekdayTips.some((tip) => /[hms]\b/i.test(tip)), "周几条 tooltip 用小写 h/m/s 单位（至少一个有活动的周几）", JSON.stringify(copyCheck.weekdayTips));
-  ok(copyCheck.bodyHasChineseHour === false, "界面上不再出现「小时」字样");
+  ok(copyCheck.pluginHasChineseHour === false, "看板界面上不再出现「小时」字样（宿主侧时间戳不算）");
   const longestHint = copyCheck.hints.reduce((max, text) => Math.max(max, text.length), 0);
   ok(longestHint <= 90, "备注文案已压短（最长 ≤ 90 字）", `最长 ${longestHint} 字`);
 
@@ -612,6 +642,154 @@ try {
   const sessionRows = await page.evaluate(() => document.querySelectorAll(".wl-card .wl-table tbody tr").length);
   ok(sessionRows > 0, "主要会话有数据", String(sessionRows));
   await page.screenshot({ path: join(ARTIFACTS, "04-dashboard-by-session.png") });
+
+  // —— 2.0.2 布局：面板右下角版本号 + 同步设置对话框（设置与凭据合并、两列、路径模板收进高级选项）——
+  const versionInfo = await page.evaluate(() => {
+    const node = document.querySelector(".wl-version");
+    if (node === null) return null;
+    const panel = document.querySelector(".wl-panel").getBoundingClientRect();
+    const rect = node.getBoundingClientRect();
+    const style = getComputedStyle(node);
+    return {
+      text: node.textContent ?? "",
+      dataVersion: node.getAttribute("data-plugin-version") ?? "",
+      // 右下角：节点右下角距离面板右下角的偏移
+      gapRight: Math.round(panel.right - rect.right),
+      gapBottom: Math.round(panel.bottom - rect.bottom),
+      insidePanel: rect.right <= panel.right + 1 && rect.bottom <= panel.bottom + 1,
+      zIndex: style.zIndex,
+    };
+  });
+  ok(versionInfo !== null && /^v\d+\.\d+\.\d+$/.test(versionInfo.text), "右下角显示版本号（vX.Y.Z）", JSON.stringify(versionInfo?.text));
+  ok(versionInfo !== null && versionInfo.gapRight <= 24 && versionInfo.gapBottom <= 24 && versionInfo.insidePanel, "版本号确实落在面板右下角", JSON.stringify(versionInfo));
+  ok(versionInfo?.dataVersion === versionInfo?.text.replace(/^v/, ""), "版本号来自宿主 package.json（data-plugin-version 一致）", JSON.stringify(versionInfo));
+  ok(Number(versionInfo?.zIndex) >= 240, "版本号层级高于看板浮层（不会被面板遮住）", versionInfo?.zIndex);
+
+  // 打开发备同步页 → 打开同步设置对话框
+  await page.evaluate(() => document.querySelector('[data-sync-entry="true"]')?.click());
+  await page.waitForSelector('[data-action="open-sync-settings"]', { timeout: 15000 });
+  await page.evaluate(() => document.querySelector('[data-action="open-sync-settings"]')?.click());
+  await page.waitForSelector('[data-sync-dialog="true"]', { timeout: 15000 });
+  await sleep(800);
+  const dialog = await page.evaluate(() => {
+    const root = document.querySelector('[data-sync-dialog="true"]');
+    if (root === null || root === undefined) return { error: "dialog-missing", cols: [], hasAdvanced: false, pathHiddenByDefault: false, saveButtons: 0, redactShown: false };
+    const grid = root.querySelector(".wl-form-grid");
+    const cols = grid === null || grid === undefined ? [] : [...grid.children].map((node) => node.getBoundingClientRect());
+    const advanced = root?.querySelector(".wl-form-advanced");
+    const pathInput = root?.querySelector('[data-setting="path"]');
+    const save = root?.querySelector('[data-action="save-all"]');
+    const credInputs = [...(root?.querySelectorAll("[data-credential]") ?? [])];
+    return {
+      cols: cols.map((r) => ({ left: Math.round(r.left), top: Math.round(r.top), width: Math.round(r.width) })),
+      hasAdvanced: advanced !== null && advanced !== undefined,
+      // 高级选项默认收起：展开前不应渲染路径模板输入框
+      pathHiddenByDefault: pathInput === null || pathInput === undefined,
+      saveButtons: root === null ? 0 : root.querySelectorAll('[data-action="save-all"]').length,
+      redactShown: (root?.innerText ?? "").includes("抹掉路径") || (root?.innerText ?? "").toLowerCase().includes("redact"),
+      credentialInputs: credInputs.map((node) => node.getAttribute("type")),
+      title: root?.querySelector(".wl-title")?.textContent ?? "",
+    };
+  });
+  // 2.0.2 布局 v2：本机显示名在最上方（全局项）→ 存储方式 → 连接参数（两列/单列自适应）→ 凭据（展开）→ 高级选项
+  const layout = await page.evaluate(() => {
+    const root = document.querySelector('[data-sync-dialog="true"]');
+    const top = (sel) => { const n = root.querySelector(sel); return n === null ? null : Math.round(n.getBoundingClientRect().top); };
+    const grid = root.querySelector('.wl-form-grid[data-block="connection"]');
+    // 行式字段后，统计每列里的字段行（.wl-field-row）而不是旧的 .wl-cred-field
+    const cols = grid === null ? [] : [...grid.children].map((c) => { const r = c.getBoundingClientRect(); return { left: Math.round(r.left), top: Math.round(r.top), w: Math.round(r.width), fields: c.querySelectorAll(".wl-field-row").length }; });
+    const credFields = [...root.querySelectorAll('[data-block="credential-section"] .wl-cred-field')].map((f) => Math.round(f.getBoundingClientRect().top));
+    return {
+      machineTop: top('[data-setting="machineName"]'),
+      chipsTop: top(".wl-dialog-top"),
+      connTop: top('[data-block="connection-section"]'),
+      credTop: top('[data-block="credential-section"]'),
+      advTop: top(".wl-form-advanced"),
+      cols, colsAttr: grid?.getAttribute("data-cols"),
+      credRows: credFields,
+      credSectionInsideAdvanced: root.querySelector(".wl-form-advanced [data-block=\"credential-section\"]") !== null,
+      dialogW: Math.round(root.querySelector(".wl-dialog").getBoundingClientRect().width),
+    };
+  });
+  ok(layout.machineTop !== null && layout.machineTop < layout.chipsTop, "本机显示名在存储方式 chips 上方（一次设置对所有方式生效）", JSON.stringify(layout));
+  ok(layout.chipsTop < layout.connTop && layout.connTop < layout.credTop && layout.credTop < layout.advTop, "顺序：存储方式 → 连接参数 → 凭据 → 高级选项", JSON.stringify(layout));
+  ok(!layout.credSectionInsideAdvanced, "凭据没有折叠进高级选项（默认就在表单里）");
+  // 字段行：每个字段一行（不并排）；COS 只有一列字段时整块铺满
+  ok(layout.credRows.every((t, i, arr) => i === 0 || t > arr[i - 1]), "凭据每个字段各占一行", JSON.stringify(layout.credRows));
+  const filled = layout.cols.filter((c) => c.fields > 0);
+  ok(layout.colsAttr === "1" && filled.length === 1 && filled[0].w >= layout.dialogW - 100, "只有一列字段时铺满整行（不留半屏空白）", JSON.stringify(layout.cols));
+  // 行式字段：左标题 + 右输入框，同一行、不换行；输入框吃满剩余宽度
+  const rows = await page.evaluate(() => [...document.querySelectorAll('[data-sync-dialog="true"] .wl-field-row')].map((row) => {
+    const label = row.querySelector(".wl-field-label");
+    const control = row.querySelector("input, select");
+    if (label === null || control === null) return null;
+    const l = label.getBoundingClientRect();
+    const c = control.getBoundingClientRect();
+    return {
+      text: (label.textContent || "").trim().slice(0, 10),
+      sameLine: Math.abs((l.top + l.height / 2) - (c.top + c.height / 2)) <= 6,
+      labelLeftOfControl: l.right <= c.left + 1,
+      controlWidth: Math.round(c.width),
+      rowWidth: Math.round(row.getBoundingClientRect().width),
+    };
+  }).filter(Boolean));
+  ok(rows.length >= 2 && rows.every((r) => r.sameLine && r.labelLeftOfControl), "每个字段是「左标题 + 右输入框」且不换行", JSON.stringify(rows.slice(0, 4)));
+  ok(rows.every((r) => r.controlWidth >= r.rowWidth * 0.55), "输入框吃满该行剩余宽度（不会被挤成窄条）", JSON.stringify(rows.map((r) => `${r.text}:${r.controlWidth}/${r.rowWidth}`)));
+  // GitHub 仓库类：仓库与服务地址在左列、分支在右列，且左列没有空行
+  await page.evaluate(() => document.querySelector('[data-transport="github"]')?.click());
+  await sleep(700);
+  const repoLayout = await page.evaluate(() => {
+    const grid = document.querySelector('[data-sync-dialog="true"] .wl-form-grid[data-block="connection"]');
+    return {
+      colsAttr: grid?.getAttribute("data-cols"),
+      colRows: [...grid.children].map((c) => c.querySelectorAll(".wl-field-row").length),
+      labels: [...grid.querySelectorAll(".wl-field-label")].map((n) => (n.textContent || "").trim().split("\n")[0].slice(0, 6)),
+    };
+  });
+  ok(repoLayout.colsAttr === "2" && repoLayout.colRows.every((n) => n > 0), "仓库类两列都有内容（没有空列）", JSON.stringify(repoLayout));
+  ok(JSON.stringify(repoLayout.labels) === JSON.stringify(["仓库", "服务地址", "分支"]), "仓库 / 服务地址 / 分支 依次排布（仓库与分支同一行）", JSON.stringify(repoLayout.labels));
+  await page.evaluate(() => document.querySelector('[data-transport="cos"]')?.click());
+  await sleep(600);
+  ok(dialog.hasAdvanced, "有「高级选项」折叠区");
+  ok(dialog.pathHiddenByDefault, "「文件路径模板」默认收起（普通用户不用填）");
+  ok(dialog.saveButtons === 1, "对话框只有一个保存按钮（设置 + 凭据一次提交）", String(dialog.saveButtons));
+  ok(!dialog.redactShown, "不再展示「抹掉路径」");
+  await page.screenshot({ path: join(ARTIFACTS, "10-sync-settings-dialog.png") });
+
+  // 展开高级选项 → 路径模板出现在表单末尾
+  await page.evaluate(() => document.querySelector('[data-action="toggle-advanced"]')?.click());
+  await sleep(400);
+  const advancedInfo = await page.evaluate(() => {
+    const root = document.querySelector('[data-sync-dialog="true"]');
+    const input = root?.querySelector('[data-setting="path"]');
+    const cred = root?.querySelector('[data-block="credential-section"]');
+    if (input === null || input === undefined || cred === null || cred === undefined) return null;
+    return { pathTop: Math.round(input.getBoundingClientRect().top), credBottom: Math.round(cred.getBoundingClientRect().bottom) };
+  });
+  ok(advancedInfo !== null && advancedInfo.pathTop >= advancedInfo.credBottom - 2, "展开后路径模板排在连接参数与凭据之后（表单末尾）", JSON.stringify(advancedInfo));
+  await page.screenshot({ path: join(ARTIFACTS, "11-sync-settings-advanced.png") });
+  // 关闭对话框（取消），回到看板
+  await page.evaluate(() => {
+    const foot = document.querySelector(".wl-dialog-foot");
+    const cancel = foot === null ? null : [...foot.querySelectorAll("button")].find((node) => node.getAttribute("data-action") !== "save-all");
+    cancel?.click();
+  });
+  await sleep(500);
+  const dialogClosed = await page.evaluate(() => document.querySelector('[data-sync-dialog="true"]') === null);
+  ok(dialogClosed, "「取消」关闭对话框");
+  // 同步页是设备筛选行的入口页（不是顶部页签）：回「按日期」继续后续断言
+  await page.evaluate(() => {
+    const tab = [...document.querySelectorAll(".wl-tab")].find((node) => /按日期|By date/.test(node.textContent || ""));
+    tab?.click();
+  });
+  await sleep(800);
+
+  // 回到按日期页，继续后面的断言
+  await page.evaluate(() => {
+    const tab = [...document.querySelectorAll(".wl-tab")].find((node) => /按日期|By date/.test(node.textContent || ""));
+    tab?.click();
+  });
+  await sleep(800);
 
   // 切换范围到「近 90 天」，验证会重新拉数据
   await page.evaluate(() => {

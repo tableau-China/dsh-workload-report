@@ -196,6 +196,29 @@ function FooterAction({ control, wide }) {
 const BALANCE_POLL_MS = 5 * 60 * 1000;
 
 /**
+ * 插件版本号（面板右下角的 `v2.0.2`）。
+ *
+ * 来源只有一个：宿主 `/sync` 路由返回的 `version`（index.js 从 package.json 读，见 PLUGIN_VERSION），
+ * 客户端**不另写常量**——避免 lib/client.js 打包后与 package.json 漂移。
+ * 拉取失败 / 宿主旧版本没有该字段时返回 null → 不渲染（不显示假版本）。
+ */
+function usePluginVersion() {
+  const [version, setVersion] = useState(null);
+  useEffect(() => {
+    const abort = new AbortController();
+    fetch(`${API_PATH}/sync`, { signal: abort.signal, headers: { accept: "application/json" } })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((body) => {
+        const value = typeof body?.version === "string" ? body.version.trim() : "";
+        if (value !== "") setVersion(value);
+      })
+      .catch(() => { /* 拿不到就不显示，避免出现 "v0.0.0" 这类假版本 */ });
+    return () => abort.abort();
+  }, []);
+  return version;
+}
+
+/**
  * 顶部工具栏余额数据：只打宿主本机 /balance。
  * 默认关闭时宿主立即返回 enabled:false → balanceChip 返回 null → 完全不渲染；
  * 本机路由失败时保持上一次结果（不制造假状态）。
@@ -1663,6 +1686,8 @@ function Overlay({ control }) {
   const [machines, setMachines] = useState([]);
   // 关闭时不请求，避免白跑一次接口
   const state = useSnapshot({ days, scope, refreshKey, enabled: open, all: allTime, machines });
+  // 面板右下角版本号：来自宿主 /sync 的 version（不写死常量，见 usePluginVersion）
+  const version = usePluginVersion();
   const indexing = state.data?.diagnostics?.indexing === true;
 
   const close = useCallback(() => control.close(), [control]);
@@ -1701,7 +1726,7 @@ function Overlay({ control }) {
   if (!open) return null;
 
   return (
-    <div className="wl-overlay" role="dialog" aria-modal="true" aria-label={t("panel.title")} onClick={(event) => { if (event.target === event.currentTarget) close(); }}>
+    <div className="wl-overlay" data-wl-overlay="true" role="dialog" aria-modal="true" aria-label={t("panel.title")} onClick={(event) => { if (event.target === event.currentTarget) close(); }}>
       <div className="wl-panel">
         <header className="wl-head">
           <div>
@@ -1784,6 +1809,12 @@ function Overlay({ control }) {
             </>
           )}
         </div>
+        {/* 整个面板的右下角固定显示版本号（如 v2.0.2）：不占布局高度，绝对定位在页脚栏内 */}
+        <footer className="wl-foot">
+          {version === null ? null : (
+            <span className="wl-version" data-plugin-version={version} title={`${t("panel.title")} v${version}`}>v{version}</span>
+          )}
+        </footer>
       </div>
     </div>
   );

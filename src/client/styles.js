@@ -21,7 +21,11 @@ export const STYLES = `
 }
 @keyframes wl-fade { from { opacity: 0; } to { opacity: 1; } }
 .wl-panel {
-  width: min(1180px, 100%);
+  /* 上限与报告页宽（report-html.js 的 .page max-width）对齐到同一个 1600px：
+     原来固定 1180px，1728 / 1920 视口下两侧各空 274 / 370px，导出报告却是 1600 宽，
+     看板与报告两种视图的横向观感不一致。
+     100% 已经是 overlay 扣掉左右 3vw 内边距后的可用宽度，所以窄屏仍然是占满、不出现横滑。 */
+  width: min(1600px, 100%);
   /* 高度固定＝视口 92vh：四个页签（按日期 / 模型用量 / 按工作区 / 主要会话）内容长短不同，
      若让面板随内容收缩，切页签时外框会跳（内容不足一屏的页签尤其明显）。
      固定后每个页签的初始高度一致，内容超出时只在面板内部滚动。
@@ -197,18 +201,22 @@ export const STYLES = `
 .wl-footer-item:hover { background: var(--dsw-alias-interactive-bg-hover, #f2f3f5); color: var(--dsw-alias-label-primary, #111); }
 .wl-icon { flex: 0 0 auto; display: block; }
 /* AI 用户画像：正文复用 .wl-hint / .wl-status；这里只定义来源徽标与特征列表 */
-/* 特别底色：普通卡片是 bg-layer-1，这里用 bg-layer-2 叠 6% 品牌色（只走宿主 token）。
-   浅色下是极淡的蓝灰、深色下是极淡的深蓝，与普通卡片有可辨差异但不刺眼。 */
+/* 特别底色：普通卡片是 bg-layer-1，这里用 bg-layer-2 叠 6% 绿色（只走宿主 token）。
+   浅色下是极淡的绿灰、深色下是极淡的墨绿，与普通卡片有可辨差异但不刺眼。
+   v2.0.3：由蓝色（deepseek-500 品牌色）改为绿色 —— 画像卡上下相邻的都是蓝色系元素
+   （选中 chip / 主按钮 / 页签下划线 / 进度条），同色系叠在一起上下难分；
+   换成绿色后与周围蓝色控件形成明确色相区分，一眼能看出「这是一张独立的三方内容卡」。 */
 .wl-profile-card {
   margin-bottom: 14px;
-  background: color-mix(in srgb, var(--dsw-static-deepseek-500, #4d6bfe) 6%, var(--dsw-alias-bg-layer-2, #f2f3f5));
-  border-color: color-mix(in srgb, var(--dsw-static-deepseek-500, #4d6bfe) 16%, var(--dsw-alias-border-l2, #e5e7eb));
+  background: color-mix(in srgb, var(--dsw-static-green-500, #10b981) 6%, var(--dsw-alias-bg-layer-2, #f2f3f5));
+  border-color: color-mix(in srgb, var(--dsw-static-green-500, #10b981) 16%, var(--dsw-alias-border-l2, #e5e7eb));
 }
-/* 首开提示面板：三行说明 + 主按钮；面板本身不触发任何请求（点击按钮才生成）。 */
+/* 首开提示面板：三行说明 + 主按钮；面板本身不触发任何请求（点击按钮才生成）。
+   与卡片同色相（绿），保证「提示态 → 结果态」视觉连续。 */
 .wl-profile-notice {
   display: grid; gap: 7px; padding: 11px 12px; border-radius: 10px;
-  border: 1px dashed color-mix(in srgb, var(--dsw-static-deepseek-500, #4d6bfe) 24%, var(--dsw-alias-border-l2, #e5e7eb));
-  background: color-mix(in srgb, var(--dsw-static-deepseek-500, #4d6bfe) 4%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--dsw-static-green-500, #10b981) 24%, var(--dsw-alias-border-l2, #e5e7eb));
+  background: color-mix(in srgb, var(--dsw-static-green-500, #10b981) 4%, transparent);
 }
 .wl-profile-notice-line { margin: 0; font-size: 12px; line-height: 1.55; color: var(--dsw-alias-label-secondary, #4b5563); }
 .wl-profile-notice-actions { margin-top: 2px; }
@@ -222,8 +230,8 @@ export const STYLES = `
   color: var(--dsw-alias-label-secondary, #4b5563);
 }
 .wl-profile-source[data-source="llm"] {
-  background: color-mix(in srgb, var(--dsw-static-deepseek-500, #4d6bfe) 14%, var(--dsw-alias-bg-layer-1, #ffffff));
-  color: var(--dsw-static-deepseek-600, #3b57e0);
+  background: color-mix(in srgb, var(--dsw-static-green-500, #10b981) 14%, var(--dsw-alias-bg-layer-1, #ffffff));
+  color: var(--dsw-static-green-600, #059669);
 }
 /* 画像正文：顶部大字 → 维度（标题 + 含数字结论 + 灰色证据）→ 风险条 → 建议（带 why）。 */
 .wl-profile-headline {
@@ -232,12 +240,12 @@ export const STYLES = `
 }
 .wl-profile-dims { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .wl-profile-dim {
-  padding-left: 10px; border-left: 2px solid var(--dsw-static-deepseek-300, #a9b8ff);
+  padding-left: 10px; border-left: 2px solid var(--dsw-static-green-400, #34d399);
 }
 .wl-profile-dim-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .wl-profile-dim-title {
   flex: 0 0 auto; font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
-  color: var(--dsw-static-deepseek-600, #3b57e0);
+  color: var(--dsw-static-green-600, #059669);
 }
 .wl-profile-dim-insight { font-size: 12.5px; line-height: 1.55; color: var(--dsw-alias-label-primary, #1a1d21); }
 .wl-profile-dim-evidence {
@@ -256,7 +264,7 @@ export const STYLES = `
   display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
   font-size: 12px; line-height: 1.55; color: var(--dsw-alias-label-primary, #1a1d21);
 }
-.wl-profile-advice-text::before { content: "·"; margin-right: 6px; color: var(--dsw-static-deepseek-500, #4d6bfe); }
+.wl-profile-advice-text::before { content: "·"; margin-right: 6px; color: var(--dsw-static-green-500, #10b981); }
 .wl-profile-advice-why { font-size: 11px; color: var(--dsw-alias-label-secondary, #4b5563); }
 .wl-profile-card .wl-status[data-kind="profile-signin"] { margin: 0 0 8px; white-space: normal; }
 .wl-profile-card .wl-state { padding: 14px 0; text-align: left; }
@@ -388,13 +396,39 @@ export const STYLES = `
 /* —— 凭据表单 —— */
 .wl-cred { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border: 1px solid var(--dsw-alias-border-l2, #e5e7eb); border-radius: 10px; background: var(--dsw-alias-bg-layer-2, #fafbfc); }
 .wl-cred-fields { display: flex; flex-direction: column; gap: 12px; }
-.wl-cred-field { display: flex; flex-direction: column; gap: 5px; }
-.wl-cred-label { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--dsw-alias-label-primary, #111); }
-.wl-cred-label [data-kind="ok"] { font-size: 11px; color: var(--dsw-static-green-600, #059669); }
-.wl-cred-label [data-kind="missing"] { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); }
-.wl-cred-field input { font: inherit; font-size: 12px; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--dsw-alias-border-l2, #d7dbe0); background: var(--dsw-alias-bg-layer-1, #fff); color: var(--dsw-alias-label-primary, #111); }
-.wl-cred-field input:focus { outline: none; border-color: var(--dsw-static-deepseek-500, #4d6bfe); }
-.wl-cred-source { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); }
+/* —— 行式字段（2.0.2 起）：左标题 + 右输入框，一行一个、不换行 ——
+   外层 .wl-form-fields 是两列网格，每一行都是它的一个格子；同一列内所有行的
+   max-content 由该列最宽的标题决定 → 标签与输入框起点自然对齐（不需要固定宽度）。
+   标题里的灰色小字（说明 / 状态 / 来源）不参与撑宽，避免把输入框挤窄。 */
+.wl-field-row {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.wl-field-label {
+  display: inline-flex; align-items: baseline; gap: 6px;
+  font-size: 12px; line-height: 1.4;
+  color: var(--dsw-alias-label-primary, #111);
+  white-space: nowrap; /* 标题绝不换行 */
+}
+.wl-field-hint { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); }
+.wl-field-label [data-kind="ok"] { font-size: 11px; color: var(--dsw-static-green-600, #059669); }
+.wl-field-label [data-kind="missing"] { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); }
+.wl-field-row :is(input, select) {
+  width: 100%; min-width: 0; box-sizing: border-box;
+  font: inherit; font-size: 12px; padding: 7px 10px;
+  border-radius: 8px; border: 1px solid var(--dsw-alias-border-l2, #d7dbe0);
+  background: var(--dsw-alias-bg-layer-1, #fff);
+  color: var(--dsw-alias-label-primary, #111);
+}
+.wl-field-row :is(input, select):focus { outline: none; border-color: var(--dsw-static-deepseek-500, #4d6bfe); }
+@media (max-width: 720px) {
+  /* 窄屏：标题在上、输入框在下（仍是一行一个字段，只是不再并排） */
+  .wl-field-row { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .wl-field-label { white-space: normal; }
+}
 .wl-cred-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .wl-cred-field select { font: inherit; font-size: 12px; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--dsw-alias-border-l2, #d7dbe0); background: var(--dsw-alias-bg-layer-1, #fff); color: var(--dsw-alias-label-primary, #111); }
 .wl-cred-field select:focus { outline: none; border-color: var(--dsw-static-deepseek-500, #4d6bfe); }
@@ -403,6 +437,68 @@ export const STYLES = `
 .wl-sync-meta { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; font-size: 12px; }
 .wl-sync-meta dt { color: var(--dsw-alias-label-tertiary, #6b7280); }
 .wl-sync-meta dd { margin: 0; color: var(--dsw-alias-label-primary, #111); }
+/* 同步设置对话框：叠在看板之上的二级浮层（同一套 overlay 外观，弹窗更窄、更"表单"）。
+   盖住面板右下角的版本号，所以这里要把版本号抬到对话框之上（见 .wl-version 的 z-index）。 */
+.wl-dialog {
+  width: min(820px, 100%);
+  max-height: min(88vh, calc(100vh - 8vh));
+  display: flex;
+  flex-direction: column;
+  background: var(--dsw-alias-bg-layer-1, #ffffff);
+  border: 1px solid var(--dsw-alias-border-l2, #e5e7eb);
+  border-radius: var(--dsw-radius-xl, 16px);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+  animation: wl-fade 160ms ease-out;
+}
+.wl-dialog-body { display: flex; flex-direction: column; gap: 16px; }
+/* 顶部一行：存储方式 chips 在左，开启同步在右（最常用、唯一的必选项放最前） */
+.wl-dialog-top {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding-bottom: 12px; border-bottom: 1px solid var(--dsw-alias-border-l2, #eceef1);
+}
+.wl-dialog-top .wl-chips:last-child { margin-left: auto; }
+/* 两列表单：**每个字段一行、左右两列**（2.0.2 起连接参数就是这种排法）；
+   窄屏（<=720px）自动单列。两列始终 1fr，不因某列少一行而变宽。 */
+.wl-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 24px; align-items: start; }
+/* 只有一列字段时（COS / 共享目录）整块单列铺满，不留半屏空白 */
+.wl-form-grid[data-cols="1"] { grid-template-columns: 1fr; }
+.wl-form-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+/* 全局行（本机显示名）：在存储方式 chips 上方，横跨整行，一次设置对所有存储方式生效 */
+.wl-form-global { display: flex; flex-direction: column; gap: 10px; padding-bottom: 14px; border-bottom: 1px solid var(--dsw-alias-border-l2, #eceef1); }
+.wl-form-block { display: flex; flex-direction: column; gap: 10px; }
+.wl-form-section {
+  font-size: 12px; font-weight: 600; margin: 0;
+  color: var(--dsw-alias-label-secondary, #4b5563);
+  padding-bottom: 6px; border-bottom: 1px solid var(--dsw-alias-border-l2, #eceef1);
+}
+.wl-form-section[data-kind="cred-section"] { margin-top: 4px; }
+/* 两列布局里每列是一个字段容器；把行式字段直接放进这两列（每行是网格的一个格子） */
+.wl-form-fields { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.wl-form-grid > .wl-form-fields { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+/* 行式字段吃满列宽：标题按内容宽，输入框占掉剩下的全部宽度
+   （否则两列时「仓库」「分支」的输入框会缩成一半，右列反而空着） */
+.wl-form-fields { grid-auto-columns: minmax(0, 1fr); }
+.wl-form-advanced { display: flex; flex-direction: column; gap: 10px; }
+.wl-form-advanced > .wl-btn { align-self: flex-start; }
+.wl-form-advanced-body { display: flex; flex-direction: column; gap: 6px; }
+/* 对话框底栏：说明靠左，取消 / 保存靠右（保存永远在最右下角，与"右下角"手势一致） */
+.wl-dialog-foot {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 12px 20px; border-top: 1px solid var(--dsw-alias-border-l2, #e5e7eb);
+  background: var(--dsw-alias-bg-layer-2, #fafbfc);
+}
+.wl-dialog-foot > .wl-hint { flex: 1 1 auto; min-width: 0; }
+@media (max-width: 720px) { .wl-form-grid { grid-template-columns: 1fr; } }
+/* 面板右下角的版本号（如 v2.0.2）：只做标识，不参与布局（绝对定位在页脚栏里，不撑高任何容器）
+   z-index 高于同步设置对话框，否则打开对话框时版本号会被盖住 */
+.wl-version {
+  position: absolute; right: 12px; bottom: 6px; z-index: 250;
+  font-size: 11px; line-height: 1;
+  color: var(--dsw-alias-label-tertiary, #6b7280);
+  pointer-events: none; user-select: none;
+}
+.wl-foot { position: relative; }
 [data-kind="sync-ok"] { color: var(--dsw-static-green-600, #059669); }
 [data-kind="sync-fail"], [data-kind="sync-error"] { color: var(--dsw-static-red-600, #dc2626); }
 [data-kind="stale"] { color: var(--dsw-static-amber-600, #b45309); }

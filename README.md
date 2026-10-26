@@ -1,7 +1,7 @@
 # TimeMirror for DSH · Workload Report
 
 > **See your effort and your token spend on the same picture** — by **date** and by **workspace**: a calendar heatmap, time-of-day analysis, workspace share, model usage, and a **one-click self-contained HTML report** you can send straight to a client.
-> A DeepSeek Harness (DSH) plugin. Current version: **2.0.1**.
+> A DeepSeek Harness (DSH) plugin. Current version: **2.0.3**.
 
 > TimeMirror is a macOS time-distribution app I published on the Mac App Store; this plugin brings the same idea to AI-assisted work. The package/repo keeps the descriptive name `dsh-workload-report` so it can be found in the DSH ecosystem; the brand stays TimeMirror.
 
@@ -165,16 +165,16 @@ The default model prices are built in and offline; `pricing.overrides`, `pricing
 
 Running DSH on several machines? Merge their usage into one report. **Disabled by default** — with no `sync` config the plugin behaves exactly as before and makes zero outbound requests.
 
-**No YAML needed.** Open the dashboard → **Device sync**. Everything is in the UI:
+**No YAML needed.** Open the dashboard → **Device sync** → **Sync settings**: settings *and* credentials live in **one dialog**, filled in one pass and saved once.
 
-1. **Sync settings** — pick a storage backend (COS / GitHub / Gitea / shared folder), fill in what that backend needs
-   (COS: bucket + region; GitHub/Gitea: repo + branch + API base; shared folder: a directory), then **Save settings**.
-   It applies immediately (and the background push/pull timers follow the new intervals).
-2. **Credentials** — paste SecretId / SecretKey (or a token) and click **Save & test** to get an immediate connection result.
-   They go to the **DSH credential store**: the host writes `<DSH_HOME>/.credentials.yaml` with **0600 permissions and a file lock**.
-   This is *not* application-level encryption — at-rest protection comes from full-disk encryption (FileVault / BitLocker).
-   Values never enter the profile config, git, or the browser, and the UI only ever shows "configured".
-3. **Devices** — see when other machines last synced, and push/pull on demand.
+1. **Device name** sits at the very top — set once, used by all four backends.
+2. **Storage + enable switch**: Tencent COS / GitHub / Gitea / shared folder.
+3. **Connection details in two columns, one field per row**: COS needs bucket + region; GitHub/Gitea need repo + API base + branch; shared folder needs a directory (when only one column has fields, it spans the full width).
+4. **Credentials are expanded by default** (never collapsed), one field per row: SecretId/SecretKey or a token. While sync is *off* the host refuses credential writes, so the section first says "enable sync and save to fill these in".
+5. **Advanced options** (collapsed): only the object path template, whose default `machines/{machineId}.json` is fine for most people.
+6. One **"Save settings"** button writes the profile config first (applied immediately; transport, device name and the push/pull timers follow), then the credentials, and probes the connection once.
+   Credentials go to the **DSH credential store**: `<DSH_HOME>/.credentials.yaml`, **0600 permissions and a file lock** (not application-level encryption — at-rest protection comes from FileVault / BitLocker). They never enter the profile config, git, or the browser, and the UI only ever shows "configured".
+7. The page itself stays read-only: transport, last push/pull, errors, device list, plus test / push / pull now.
 
 Prefer a config file (servers / CI)? That works too — see section 4 of [docs/sync.md](./docs/sync.md).
 
@@ -203,9 +203,17 @@ Prefer a config file (servers / CI)? That works too — see section 4 of [docs/s
 - **Conflict-free by construction**: each machine writes only its own key (`machines/{machineId}.json`).
 - **Per-device filtering**: device chips above the KPIs, or `?machine=` on the API.
 - **Built-in "Device sync" entry** at the right end of the device-filter chip row (not a top tab); it opens sync settings, credentials, device status and manual push/pull.
-- **Use a private bucket/repo**: the payload carries absolute `cwd` paths; `sync.redactPaths: true` hashes them.
+- **Use a private bucket/repo**: the payload carries absolute `cwd` paths. The UI no longer offers the "redact paths" toggle
+  (its meaning was unclear and it was already off by default); if you need it, set `sync.redactPaths: true` in the config to hash them.
 
 See [docs/sync.md](./docs/sync.md) for the full config reference and least-privilege policies.
+
+## Version in the bottom-right corner
+
+The dashboard shows its version (e.g. `v2.0.3`) in the **bottom-right corner**: once in the panel footer,
+and once in the bottom-right corner of the AI-profile card — the AI profile tab is the last page of the dashboard,
+so that card *is* the visible bottom-right corner of the app. The number comes from `package.json` via the host
+(it is sent on `/sync`), never hard-coded in the client, and is simply not rendered when unavailable.
 
 ## Style and layout changes (2.0.0)
 
@@ -283,7 +291,7 @@ All statistics stay on your machine. The plugin registers **read-only** HTTP rou
 | --- | --- |
 | `pnpm add -D esbuild puppeteer-core` | Install build and browser-test dependencies (or point `ESBUILD_PATH` / `WL_PUPPETEER_DIR` at existing installs) |
 | `node build.mjs` | Bundle `src/client/` into `lib/client.js` (ModuleLoader factory format) with esbuild |
-| `node test/verify.mjs` | **1304 offline assertions**: aggregation semantics with one shared range rule, time zones, turn-based hour bucketing and conservation, hourly tokens by message time, human-message density, wait exclusion (all three rules + long-task exemption + `excludeWait:false` regression), index/read fallbacks, report structure parity, the AI-profile tab as a right-aligned navigation entry, the 30-day profile window, multi-device sync (payload / merge / credentials / settings / device filter), zero model calls on first open, i18n key alignment, and balance states |
+| `node test/verify.mjs` | **1360 offline assertions**: aggregation semantics with one shared range rule, time zones, turn-based hour bucketing and conservation, hourly tokens by message time, human-message density, wait exclusion (all three rules + long-task exemption + `excludeWait:false` regression), index/read fallbacks, report structure parity, the AI-profile tab as a right-aligned navigation entry, the 30-day profile window, multi-device sync (payload / merge / credentials / settings / device filter), zero model calls on first open, i18n key alignment, and balance states |
 | `./test/e2e-boot.sh 3299` | Boot an **isolated instance** (own DSH_HOME and port) without touching your running GUI |
 | `node test/e2e-ui.mjs` | Real-browser E2E: calendar/bar switching, geometry, donuts, report export, time-of-day card |
 

@@ -31,7 +31,7 @@ import {
 import { hourTokensNote } from "../src/client/hour-status.js";
 import { SESSION_PAGE_SECTIONS } from "../src/client/session-layout.js";
 import { profileCardPhase, profileRouteInfo, profileSummaryDays } from "../src/client/profile-state.js";
-import { translate } from "../src/client/locales.js";
+import { en, translate, zh } from "../src/client/locales.js";
 import {
   DEFAULT_PRICING, DEFAULT_WAIT_TOOLS, allocateLlmMs, cacheHitRate, costOf, emptyModelBucket, foldSessionModels,
   groupKeyFor, isPeak, modelLabel, modelTokens, resolvePricing, UNKNOWN_MODEL,
@@ -1687,8 +1687,18 @@ console.log("\n—— AI 用户画像（payload 白名单 / 指纹 / 本地规�
   ok(localesSource.includes('"profile.title": "AI 用户画像"') && localesSource.includes('"profile.title": "AI user profile"'), "标题：zh/en 同步替换，不保留旧键");
   const profileCardCss = stylesSource.slice(stylesSource.indexOf(".wl-profile-card"), stylesSource.indexOf(".wl-profile-meta"));
   ok(
-    /background:\s*color-mix\(in srgb,\s*var\(--dsw-static-deepseek-500[^;]*var\(--dsw-alias-bg-layer-2/.test(profileCardCss),
-    "底色：画像卡用 layer-2 叠极淡品牌色（只用宿主 token）",
+    /background:\s*color-mix\(in srgb,\s*var\(--dsw-static-green-500[^;]*var\(--dsw-alias-bg-layer-2/.test(profileCardCss),
+    "底色：画像卡用 layer-2 叠极淡绿色（只用宿主 token）",
+  );
+  // v2.0.3：蓝色 → 绿色。上下相邻的 chip / 主按钮 / 页签下划线 / 进度条都是品牌蓝，
+  // 同色系叠在一起上下难分；绿色色相独立，一眼能辨认出这是单独的画像卡。
+  ok(
+    !/var\(--dsw-static-deepseek-\d+/.test(profileCardCss),
+    "底色：画像卡内不再使用品牌蓝（deepseek-*），整卡统一绿色相",
+  );
+  ok(
+    /\.wl-profile-card \{[^}]*border-color: color-mix\(in srgb, var\(--dsw-static-green-500/.test(profileCardCss),
+    "底色：卡片边框与底色同色相（绿色），不是只染底色",
   );
   ok(
     /\.wl-card \{[^}]*background: var\(--dsw-alias-bg-layer-1/.test(stylesSource) &&
@@ -3483,14 +3493,66 @@ bootSync.seq = 1;
 {
   const syncView = await readFile(new URL("../src/client/sync-view.jsx", import.meta.url), "utf8");
   const clientIndex = await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8");
+  const profileCard = await readFile(new URL("../src/client/profile-card.jsx", import.meta.url), "utf8");
 
   ok(syncView.includes("export function DeviceFilter"), "UI：导出 DeviceFilter");
   ok(syncView.includes("export function BySyncView"), "UI：导出 BySyncView");
-  ok(syncView.includes("export function CredentialForm"), "UI：导出 CredentialForm（GUI 填凭据）");
+  ok(syncView.includes("export function SyncSettingsDialog"), "UI：导出 SyncSettingsDialog（设置 + 凭据合并成一个对话框）");
+  // 2.0.2：凭据与同步设置合并进同一对话框 —— 页面上不再有独立的凭据卡
+  ok(!syncView.includes("export function CredentialForm"), "UI：不再单独导出 CredentialForm（已并入对话框）");
+  ok(syncView.includes('data-sync-dialog="true"'), "UI：设置表单渲染在对话框浮层里");
+  ok(/onClick=\{\(event\) => \{ if \(event\.target === event\.currentTarget && !busy\) onClose\(\); \}\}/.test(syncView), "UI：点遮罩关闭对话框（保存中不关）");
+  {
+    // 2.0.2 布局 v2（用户反馈）：本机显示名是**全局项**，放在存储方式 chips 上方；
+    // 连接参数左右两列、每个字段一行；凭据默认展开、每字段一行；高级选项只留路径模板。
+    const deviceRowAt = syncView.indexOf('className="wl-form-global"');
+    const chipsAt = syncView.indexOf('className="wl-dialog-top"');
+    const connAt = syncView.indexOf('data-block="connection-section"');
+    const credAt = syncView.indexOf('data-block="credential-section"');
+    const advAt = syncView.indexOf('className="wl-form-advanced"');
+    ok(deviceRowAt > 0 && chipsAt > deviceRowAt, "UI：本机显示名在存储方式 chips 上方（一次设置对所有存储方式生效）");
+    ok(/data-row="device"/.test(syncView) && /data-block="connection-section"/.test(syncView), "UI：全局设备行 / 连接参数 / 凭据分块清晰");
+    ok(connAt > chipsAt && credAt > connAt && advAt > credAt, "UI：顺序为 存储方式 → 连接参数 → 凭据 → 高级选项");
+    // 连接参数由 connectionFields 常量渲染（JSX 里只引用一次），所以两列的检查看常量定义处
+    const fieldsConstAt = syncView.indexOf("const connectionFields = (");
+    const fieldsConst = syncView.slice(fieldsConstAt, syncView.indexOf("  return (\n    <div\n      className=\"wl-overlay\"", fieldsConstAt));
+    ok(fieldsConstAt > 0 && fieldsConstAt < connAt, "UI：连接参数由 connectionFields 常量渲染");
+    ok((fieldsConst.match(/className="wl-form-grid"/g) ?? []).length === 1, "UI：连接参数用左右两列网格");
+    // 右列只在仓库类存储方式（GitHub / Gitea）下渲染；只有一列时 data-cols="1" 铺满整行
+    // 边界取「常量定义 → 它返回前的 return (」，避免把后面 JSX 里的同名 class 算进来
+    ok((fieldsConst.match(/className="wl-form-fields"/g) ?? []).length === 2 && /isRepoTransport \?/.test(fieldsConst), "UI：连接参数左右各一列（仓库类才有右列）");
+    // 行式：左标题 + 右输入框，一行一个（row 助手渲染 .wl-field-row）
+    ok(/className="wl-field-row"/.test(syncView) && /grid-template-columns: max-content minmax\(0, 1fr\)/.test(await readFile(new URL("../src/client/styles.js", import.meta.url), "utf8")), "UI：字段是「左标题 + 右输入框」的行式布局");
+    ok(/const text = \(id, label, hint, value, onChange, placeholder\) => row\(/.test(syncView) && /const select = \(id, label, hint/.test(syncView), "UI：文本 / 下拉都用同一套行式渲染");
+    ok(/white-space: nowrap/.test(await readFile(new URL("../src/client/styles.js", import.meta.url), "utf8")), "UI：字段标题不换行（一行一个字段）");
+    ok(/data-cols=\{isRepoTransport \? "2" : "1"\}/.test(syncView), "UI：只有一列字段时铺满整行（不留半屏空白）");
+    const credBlock = syncView.slice(credAt, advAt);
+    ok(credBlock.includes("data-credential") && !credBlock.includes("advancedOpen"), "UI：凭据默认展开，没被折叠进高级选项");
+    ok((credBlock.match(/className="wl-field-row"/g) ?? []).length === 1, "UI：凭据每个字段一行（map 渲染行式字段，非左右两列）");
+    ok(!/data-col="device"/.test(syncView), "UI：不再有「这台设备」独占一列（左右比例失衡的根因已消除）");
+  }
+  ok(/className="wl-form-advanced"/.test(syncView) && /data-action="toggle-advanced"/.test(syncView), "UI：高级选项默认收起（可展开）");
+  ok(syncView.indexOf('data-action="toggle-advanced"') > syncView.indexOf('className="wl-form-grid"'), "UI：高级选项排在两列表单之后");
+  {
+    // 「文件路径模板」只出现在高级选项展开块里，并且排在「高级选项」按钮之后（＝表单最末尾）
+    const advancedAt = syncView.indexOf('className="wl-form-advanced"');
+    const pathAt = syncView.indexOf('text("path"');
+    ok(pathAt > advancedAt && advancedAt > 0, "UI：文件路径模板放在后面（高级选项里），不再紧跟主字段");
+    const advancedBlock = syncView.slice(advancedAt, pathAt);
+    ok(advancedBlock.includes("advancedOpen ? ("), "UI：路径模板只在展开高级选项时才渲染");
+    ok(advancedBlock.includes("toggle-advanced"), "UI：路径模板在「高级选项」按钮之后（表单末尾）");
+    ok(syncView.indexOf('text("path"', pathAt + 1) < 0, "UI：路径模板只出现一次（不在主字段里重复）");
+  }
+  ok(!syncView.includes('set.redact') && !syncView.includes("redactPaths"), "UI：不再展示「抹掉路径」（用户看不懂，配置项仍保留在 YAML）");
+  ok(syncView.includes('data-kind="primary" data-action="save-all"'), "UI：对话框只有一个保存按钮（一次提交设置 + 凭据）");
+  ok(/const changedSettings = /.test(syncView) && /Object\.keys\(values\)\.length > 0/.test(syncView), "UI：只提交变化过的设置字段（不把空串写进配置）");
+  ok(syncView.indexOf("/sync/settings") < syncView.indexOf("/sync/credentials"), "UI：同一次保存先写设置、再写凭据");
+  ok(syncView.includes("set.savedCredFail"), "UI：凭据连接失败时用「设置已生效但连接失败」文案（不误报整次保存失败）");
+  ok(syncView.includes('data-action="cred-clear"') && syncView.includes("cred.clearPending"), "UI：清除凭据改为「保存后生效」的待办状态");
+  ok(syncView.includes('data-action="open-sync-settings"'), "UI：设备同步页用按钮打开设置对话框");
   ok(syncView.includes('type="password"'), "UI：凭据输入框是 password（不露字）");
   ok(syncView.includes("setDraft({})"), "UI：提交后清空输入框（值不留在界面）");
   ok(syncView.includes("/sync/credentials"), "UI：凭据走 /sync/credentials 接口");
-  ok(syncView.includes("wl-cred-buttons") && /className="wl-btn"[^>]*disabled=\{busy\}[^>]*onClick=\{\(\) => void submit\(false\)\}/s.test(syncView), "UI：凭据「保存 / 清除」是执行按钮（.wl-btn），不是切换控件 Chip");
   ok(!/value=\{[^}]*configured[^}]*\}/.test(syncView), "UI：已配置字段不回填值");
   // 复用统一组件（不另造样式）
   ok(syncView.includes('from "./chips.jsx"'), "UI：设备筛选复用 ChipGroup/Chip");
@@ -3507,7 +3569,7 @@ bootSync.seq = 1;
   ok(!/wl-tab[^>]*deviceSync/.test(clientIndex), "UI：设备同步不再是 wl-tab 页签");
   ok(clientIndex.includes("onOpenSync={() => setTab(\"deviceSync\")}"), "UI：看板把入口接到设备同步页");
 
-  ok((syncView.match(/onSaved=\{settingsSaved\}/g) ?? []).length === 2, "UI：同步设置保存后刷新本页 + 通知看板重拉快照（设备行即时更新）");
+  ok((syncView.match(/onSaved=\{settingsSaved\}/g) ?? []).length === 1, "UI：对话框保存后刷新本页 + 通知看板重拉快照（唯一一处 onSaved）");
   ok(/const settingsSaved = useCallback\(\(\) => \{[\s\S]*?onChanged\(\);/.test(syncView), "UI：settingsSaved 里确实调用了 onChanged（联动看板快照）");
 
   // 挂载条件
@@ -3515,9 +3577,42 @@ bootSync.seq = 1;
   ok(clientIndex.includes("DeviceFilter"), "UI：看板挂载 DeviceFilter");
   ok(clientIndex.includes('query.append("machine"'), "UI：设备筛选通过 machine 参数传给宿主");
 
+  // 面板右下角版本号：只从宿主取（不在客户端写死常量）
+  ok(clientIndex.includes("usePluginVersion"), "UI：面板读取插件版本号");
+  ok(/data-plugin-version=\{version\}/.test(clientIndex) && />v\{version\}</.test(clientIndex), "UI：右下角渲染 v{version}");
+  ok(/fetch\(`\$\{API_PATH\}\/sync`/.test(clientIndex), "UI：版本号来自宿主 /sync 路由");
+  ok(!/const PLUGIN_VERSION\s*=/.test(clientIndex), "UI：客户端不写死版本常量（避免与 package.json 漂移）");
+  ok(clientIndex.includes('className="wl-foot"'), "UI：版本号挂在页脚栏（不占内容区布局）");
+  // 版本号只放在面板外壳（版本号是应用级信息，不混进画像/同步等功能卡）
+  ok(!profileCard.includes("wl-version"), "UI：功能卡片里不重复渲染版本号（只有面板右下角一处）");
+
   // 报告不含同步 UI（报告是自包含快照，不暴露设备管理）
   const reportSource = await readFile(new URL("../src/report-html.js", import.meta.url), "utf8");
   ok(!reportSource.includes("DeviceFilter") && !reportSource.includes("BySyncView"), "UI：HTML 报告不含设备管理 UI");
+}
+
+// ---------------------------------------------------------------- 16) 版本号 / 文案对齐（布局调整后）
+{
+  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  ok(/^\d+\.\d+\.\d+$/.test(pkg.version), "版本：package.json 是语义化版本", pkg.version);
+
+  const hostSource = await readFile(new URL("../index.js", import.meta.url), "utf8");
+  ok(/PLUGIN_VERSION/.test(hostSource) && hostSource.includes('"\./package\.json"'), "版本：宿主从 package.json 读取版本");
+  ok((hostSource.match(/version: PLUGIN_VERSION/g) ?? []).length >= 4, "版本：/sync 的每个分支都回 version（关闭态也回）");
+
+  // 文案：zh / en 逐键对齐，且不再留已删除的「抹掉路径」
+  const zhKeys = Object.keys(zh).sort();
+  const enKeys = Object.keys(en).sort();
+  eq(JSON.stringify(zhKeys), JSON.stringify(enKeys), "文案：zh / en 键集逐键对齐");
+  ok(!("set.redact" in zh) && !("set.redact" in en), "文案：已删除「抹掉路径」文案（不再展示）");
+  for (const key of ["set.dialogTitle", "set.colConnection", "set.advanced", "set.advancedHide", "set.cancel", "set.savedCredFail", "cred.clearPending", "cred.afterEnable"]) {
+    ok(key in zh && key in en, `文案：新增 ${key} 中英都有`);
+  }
+  // 每个新增键都真的被用到（不留死键）
+  const syncView = await readFile(new URL("../src/client/sync-view.jsx", import.meta.url), "utf8");
+  for (const key of ["set.dialogTitle", "set.colConnection", "set.advanced", "set.advancedHide", "set.cancel", "set.savedCredFail", "cred.clearPending", "cred.afterEnable", "set.path", "set.pathHint"]) {
+    ok(syncView.includes(`t("${key}")`) || syncView.includes(`t("${key}",`) || syncView.includes(`"${key}"`), `文案：${key} 在界面里被使用`);
+  }
 }
 
 // 收尾：删掉本次的临时索引

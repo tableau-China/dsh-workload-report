@@ -25,6 +25,20 @@
 | `sectorPath` | `src/sector-path.js` | 环形图扇区几何（看板与 HTML 报告共用） | 工作区 / 模型环形图、报告 |
 | `ProfileCard` | `src/client/profile-card.jsx` | AI 用户画像卡片（CardHead + `.wl-hint` / `.wl-status`，不另造卡片头） | 主要会话页右列（与会话表同一 grid 行；<=1080px 堆叠） |
 
+## 1b. 浮层与表单与版本号（2.0.2）
+
+- **看板浮层** `.wl-overlay` + `.wl-panel`：带 `data-wl-overlay="true"`（便于区分宿主自己的遮罩层）。
+- **次级对话框** `.wl-dialog`：同一套 overlay 外观、更窄（`min(820px, 100%)`），由 `.wl-dialog-body` 滚动、
+  `.wl-dialog-foot` 放底部按钮（**主操作永远在最右下角**）。
+- **两列表单** `.wl-form-grid`（`grid-template-columns: 1fr 1fr`）→ 左「这台设备」/ 右「连接参数」；
+  `@media (max-width: 720px)` 单列。列标题用 `.wl-form-section`，字段垂直间距 12px。
+- **高级选项** `.wl-form-advanced`：默认收起（`aria-expanded` + `.wl-btn` 切换），
+  只放「默认值即可用、普通用户看不懂」的项（如文件路径模板），且**排在主字段之后**。
+- **右下角版本号** `.wl-version`：绝对定位在面板页脚栏 `.wl-foot` 右下角，`pointer-events: none`、
+  `z-index` 高于对话框；**只在面板外壳渲染一次**，不混进任何功能卡片。
+- 规则延续：任何新增表单/卡片仍复用 `CardHead` / `ChipGroup` / `.wl-btn`，不写变体 class；
+  zh/en 逐键对齐，删文案时同步删键（`test/verify.mjs` 有死键检查）。
+
 ## 2. 切换控件：只有 `ChipGroup` + `Chip`
 
 ```jsx
