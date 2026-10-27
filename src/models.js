@@ -619,14 +619,21 @@ export function costOf(bucket, pricing) {
 }
 
 /**
- * 模型展示名：显式别名优先，否则用组名（取 "/" 后段，保持简洁）。
+ * 模型展示名：显式别名优先，否则取组名的**最后一段**。
+ *
+ * 组名可能是多段：`magpie/workbuddy-ai/deepseek-v4.1-flash`
+ * （渠道 / 提供商 / 模型）——左侧都是渠道，只有最后一段是模型本身。
+ * 2.1.1 之前只去掉第一段，于是二段组名会显示成 `workbuddy-ai/deepseek-v4.1-flash`；
+ * 现在统一 `split("/").pop()`，只显示模型名。
+ *
  * @param key - 归并组名。
- * @param aliases - modelAliases 配置。
+ * @param aliases - modelAliases 配置（先按全名、再按短名查）。
  */
 export function modelLabel(key, aliases = {}) {
   if (typeof aliases[key] === "string" && aliases[key] !== "") return aliases[key];
   if (key === UNKNOWN_MODEL) return UNKNOWN_MODEL;
-  const short = key.includes("/") ? key.slice(key.indexOf("/") + 1) : key;
+  const parts = String(key).split("/").filter((part) => part !== "");
+  const short = parts.length > 0 ? parts[parts.length - 1] : String(key);
   if (typeof aliases[short] === "string" && aliases[short] !== "") return aliases[short];
   return short;
 }

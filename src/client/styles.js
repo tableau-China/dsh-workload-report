@@ -21,11 +21,10 @@ export const STYLES = `
 }
 @keyframes wl-fade { from { opacity: 0; } to { opacity: 1; } }
 .wl-panel {
-  /* 上限与报告页宽（report-html.js 的 .page max-width）对齐到同一个 1600px：
-     原来固定 1180px，1728 / 1920 视口下两侧各空 274 / 370px，导出报告却是 1600 宽，
-     看板与报告两种视图的横向观感不一致。
+  /* 上限与报告页宽（report-html.js 的 .page max-width）对齐到同一个 1450px：
+     2.1.0 起从 1600 收到 1450——大屏下内容行宽更短、更好读，同时看板与报告仍然同一口径。
      100% 已经是 overlay 扣掉左右 3vw 内边距后的可用宽度，所以窄屏仍然是占满、不出现横滑。 */
-  width: min(1600px, 100%);
+  width: min(1450px, 100%);
   /* 高度固定＝视口 92vh：四个页签（按日期 / 模型用量 / 按工作区 / 主要会话）内容长短不同，
      若让面板随内容收缩，切页签时外框会跳（内容不足一屏的页签尤其明显）。
      固定后每个页签的初始高度一致，内容超出时只在面板内部滚动。
@@ -336,6 +335,8 @@ export const STYLES = `
 .wl-pie-legend { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; flex: 1 1 220px; min-width: 200px; }
 .wl-pie-legend li { display: grid; grid-template-columns: 12px 1fr auto auto; align-items: center; gap: 8px; font-size: 12px; }
 .wl-pie-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 模型 Token 占比：完整显示模型名（允许折行，不省略号），模型名通常比工作区名长 */
+.wl-pie-name-full { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
 .wl-pie-value { font-variant-numeric: tabular-nums; }
 .wl-pie-share { color: var(--dsw-alias-label-tertiary, #6b7280); font-variant-numeric: tabular-nums; min-width: 44px; text-align: right; }
 /* 折叠的明细 */

@@ -21,7 +21,7 @@ import {
 import { balanceChip } from "../src/client/balance.js";
 import {
   FREQUENCY_OPTIONS, FREQUENCY_TEXT_KEYS, ICON_TEXT_KEYS, checkMachineIdentity, configureIconState,
-  deviceRenameReport, pathPreview, prefixOf as prefixOfPure, shortDeviceId,
+  deviceRenameReport, manualSyncState, pathPreview, prefixOf as prefixOfPure, shortDeviceId,
 } from "../src/client/sync-state.js";
 import {
   PROFILE_DIMENSION_KEYS, PROFILE_EVIDENCE_MAX, PROFILE_HEADLINE_MAX, PROFILE_INSIGHT_MAX, PROFILE_LINE_MAX,
@@ -813,7 +813,9 @@ console.log("\n—— 布局：面板高度 / 报告页宽 ——");
   );
   ok(/\.wl-body \{[^}]*flex: 1 1 auto[^}]*min-height: 0/s.test(stylesSource), "内容区填满面板并在内部滚动（flex + min-height:0）");
   const pageRule = (reportSource.match(/\.page \{[^}]*\}/s) ?? [""])[0];
-  ok(/width: 100%/.test(pageRule) && /max-width: 1600px/.test(pageRule), "报告页宽自适应视口（宽屏最多 1600px）", pageRule.slice(0, 140));
+  ok(/width: 100%/.test(pageRule) && /max-width: 1450px/.test(pageRule), "报告页宽自适应视口（宽屏最多 1450px）", pageRule.slice(0, 140));
+  // 看板面板与报告页宽必须同一口径（2.1.0 起 1450）
+  ok(/width: min\(1450px, 100%\)/.test(panelRule), "看板面板最大宽度 1450px（与报告页一致）", panelRule.slice(0, 120));
   ok(!/max-width: 1120px/.test(pageRule), "报告不再固定 1120px 宽");
   ok(/clamp\(20px, 2\.4vw, 44px\)/.test(pageRule), "报告左右留白随视口收缩（20–44px）");
 }
@@ -3549,7 +3551,10 @@ bootSync.seq = 1;
     const advancedBlock = syncView.slice(syncView.indexOf('data-block="advanced"'), syncView.indexOf("</section>", syncView.indexOf('data-block="advanced"')));
     ok(!syncView.includes("toggle-advanced") && !/advancedOpen/.test(syncView), "UI：高级选项不再折叠（没有展开/收起按钮）");
     ok(advancedBlock.includes('data-row="path-readonly"'), "UI：路径以只读行展示");
-    ok(!/data-setting="path"/.test(syncView), "UI：路径没有输入框（用户不能修改）");
+    // 路径默认只读；多设备必须同模板，所以提供一个显式的「修改路径模板」入口（展开才有输入框）
+    ok(/data-row="path-readonly"/.test(syncView) && /pathEditing \? \(/.test(syncView), "UI：路径默认只读展示");
+    ok(syncView.includes('data-action="toggle-path-edit"'), "UI：有「修改路径模板」入口（多设备对齐用）");
+    ok(syncView.indexOf('data-setting="path"') > syncView.indexOf('data-action="toggle-path-edit"') - 2000, "UI：路径输入框只在编辑态出现");
     ok(advancedBlock.includes("pathPreview(") && advancedBlock.includes("prefixOf("), "UI：路径预览 + 所属目录说明都在");
   }
   {
@@ -3655,6 +3660,70 @@ bootSync.seq = 1;
     // 宿主侧复用同一实现（保证界面显示与实际写到的位置一致）
     eq(prefixOf("dsh-workload-sync/machines/{machineId}.json"), "dsh-workload-sync/machines/", "宿主 prefixOf 与客户端同一实现");
     ok(SYNC_DEFAULTS.path === "machines/{machineId}.json", "默认路径是机器目录下的单文件（不含 dsh-workload-report 这类二级前缀）");
+  }
+
+  // —— 2.0.5：手动同步按钮只认「已生效」的开关（不能再被未保存的表单开关弄灰）——
+  {
+    eq(manualSyncState({ enabled: true }).disabled, false, "按钮：同步已开启 → 立即推送/拉取可点");
+    eq(manualSyncState({ enabled: false }).disabled, true, "按钮：同步未开启 → 置灰");
+    eq(manualSyncState({ enabled: true, busy: true }).disabled, true, "按钮：有操作在跑 → 置灰");
+    eq(manualSyncState({ enabled: true, probing: true }).disabled, false, "按钮：自检中不影响推送/拉取");
+    eq(manualSyncState({ enabled: true, probing: true, needsProbe: true }).disabled, true, "按钮：自检中「测试连接」本身置灰");
+    eq(manualSyncState({ enabled: true, busy: true }).reason, "busy", "按钮：置灰原因可区分（busy）");
+    // 关键回归：按钮**不**看未保存的表单开关
+    const view = await readFile(new URL("../src/client/sync-view.jsx", import.meta.url), "utf8");
+    ok(!/data-action="sync-now-(push|pull)"[^>]*form\?\.enabled/.test(view), "按钮：不再用未保存的 form.enabled 判断（bug 根因）");
+    ok(/manualSyncState\(\{ enabled: savedEnabled/.test(view), "按钮：统一走 manualSyncState(savedEnabled)");
+    ok(/const savedEnabled = status\?\.enabled === true/.test(view), "按钮：以宿主 status.enabled 为准");
+    ok(view.includes("set.pendingSave"), "界面：开关改了没保存时给出提示（而不是把按钮弄灰）");
+  }
+
+  // —— 2.0.5 回归：busy 必须是布尔，否则按钮会被永久置灰 ——
+  {
+    const view = await readFile(new URL("../src/client/sync-view.jsx", import.meta.url), "utf8");
+    ok(!/setBusy\(null\)/.test(view), "busy：不再写 setBusy(null)（会把 busy 变成 false→按钮永久灰）");
+    ok(!/setBusy\(action\)/.test(view), "busy：不再把操作名塞进 busy（busy 只存布尔）");
+    ok(/const \[running, setRunning\]/.test(view), "busy：操作名单独放 running，只用于按钮文案");
+    ok(/busy \? t\("set\.saving"\)/.test(view), "busy：保存按钮仍按布尔显示「保存中…」");
+  }
+
+  // —— 2.1.0：标题 / 副标题 / 隐藏导出入口 ——
+  {
+    const clientIndex = await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8");
+    eq(zh["panel.title"], "DSH 工作量报告", "标题：中文改为「DSH 工作量报告」");
+    eq(en["panel.title"], "DSH Workload Report", "标题：英文改为「DSH Workload Report」");
+    ok(!("panel.subtitle" in zh) && !("panel.subtitle" in en), "副标题：删除「本地数据」这类备注文案键");
+    ok(/range-line/.test(clientIndex), "副标题：只渲染日期区间（如 2026-10-21 ~ 2026-10-27）");
+    ok(!/本地数据|local data only/.test(JSON.stringify(zh) + JSON.stringify(en)), "文案：字典里不再出现「本地数据 / local data only」");
+    // 导出入口：默认隐藏，但实现与路由保留
+    ok(/const EXPORT_ENTRY_VISIBLE = false/.test(clientIndex), "导出：入口默认隐藏（开关常量 = false）");
+    ok(/EXPORT_ENTRY_VISIBLE \? \(/.test(clientIndex), "导出：按钮由开关控制（置 true 即可恢复）");
+    ok(clientIndex.includes("exportReport") && clientIndex.includes("/report.html"), "导出：实现与 /report.html 路由保留（只是没有入口）");
+    eq(zh["action.export"], "导出 HTML 报告", "导出：文案键保留（恢复入口时无需补文案）");
+  }
+
+  // —— 2.1.1：最活跃模型只留模型名 / 模型占比完整显示名称 ——
+  {
+    const clientIndex = await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8");
+    // 1) 最活跃模型 KPI：副标题置空（不再有「请求占比 26.7%」）
+    ok(/\["kpi\.topModel", data\.topModel\.label, ""\]/.test(clientIndex), "KPI：最活跃模型只显示模型名（副标题为空）");
+    ok(!/metricLabelKey/.test(clientIndex), "KPI：不再拼「{metric}占比 {share}」副标题");
+    ok(!("kpi.topModel.sub" in zh) && !("kpi.topModel.sub" in en), "文案：删除「请求占比」副标题键");
+    ok(!Object.keys(en).some((k) => k.startsWith("kpi.topModel.metric.")), "文案：删除三口径副标题文案（requests/tokens/llmMs）");
+    // 2) 模型名只保留斜线右侧（左侧是渠道）
+    eq(modelLabel("workbuddy-ai/deepseek-v4.1-flash"), "deepseek-v4.1-flash", "模型名：去掉渠道前缀（workbuddy-ai/…）");
+    // 真实数据是**三段**：渠道/提供商/模型（magpie/workbuddy-ai/deepseek-v4.1-flash）
+    eq(modelLabel("magpie/workbuddy-ai/deepseek-v4.1-flash"), "deepseek-v4.1-flash", "模型名：多段组名只保留最后一段（模型本身）");
+    eq(modelLabel("magpie/workbuddy-ai/step-5-preview"), "step-5-preview", "模型名：多段组名（step-5-preview）");
+    eq(modelLabel("magpie/workbuddy/step-5-preview"), "step-5-preview", "模型名：不同渠道同名模型显示一致");
+    eq(modelLabel("magpie/workbuddy-ai/deepseek-v4.1-flash", { "magpie/workbuddy-ai/deepseek-v4.1-flash": "全名别名" }), "全名别名", "模型名：全名别名仍优先");
+    eq(modelLabel("auto/deepseek-v4.1-flash"), "deepseek-v4.1-flash", "模型名：auto/ 前缀同样去掉");
+    eq(modelLabel("deepseek-v4.1-flash"), "deepseek-v4.1-flash", "模型名：无斜线时原样");
+    eq(modelLabel("workbuddy/step-5-preview", { "workbuddy/step-5-preview": "我的别名" }), "我的别名", "模型名：显式别名优先");
+    // 3) 模型 Token 占比：完整显示（可换行、不省略）
+    ok(/fullLabels/.test(clientIndex) && /WorkspacePie items=\{models\}[^>]*fullLabels/.test(clientIndex), "饼图：模型占比使用完整显示模式");
+    const stylesText = await readFile(new URL("../src/client/styles.js", import.meta.url), "utf8");
+    ok(/\.wl-pie-name-full \{[^}]*white-space: normal/s.test(stylesText), "样式：完整显示模式允许折行、不省略");
   }
 
   // 报告不含同步 UI（报告是自包含快照，不暴露设备管理）

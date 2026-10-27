@@ -258,13 +258,23 @@ try {
     await sleep(600);
   }
 
-  // —— 问题 5：「复制 JSON」按钮已删除（工具栏只剩 刷新 / 导出 / 关闭）——
+  // —— 工具栏：2.1.0 起「导出 HTML 报告」暂时隐藏，只剩 刷新 / 关闭 ——
   const headerButtons = await page.evaluate(() => [...document.querySelectorAll(".wl-head .wl-btn")].map((node) => (node.textContent || "").trim()));
-  ok(
-    headerButtons.length === 3 && !headerButtons.some((text) => /复制|copied|copy json/i.test(text)),
-    "工具栏不再有「复制 JSON」按钮",
-    JSON.stringify(headerButtons),
-  );
+  ok(!headerButtons.some((text) => /复制|copied|copy json/i.test(text)), "工具栏不再有「复制 JSON」按钮", JSON.stringify(headerButtons));
+  ok(!headerButtons.some((text) => /导出|Export/i.test(text)), "工具栏已隐藏「导出 HTML 报告」", JSON.stringify(headerButtons));
+  // 标题与副标题
+  const head = await page.evaluate(() => ({
+    title: document.querySelector(".wl-title")?.textContent ?? "",
+    subtitle: document.querySelector(".wl-subtitle")?.textContent ?? "",
+    subtitleExists: document.querySelector(".wl-subtitle") !== null,
+    panelWidth: Math.round(document.querySelector(".wl-panel").getBoundingClientRect().width),
+    innerWidth: window.innerWidth,
+  }));
+  ok(/DSH 工作量报告|DSH Workload Report/.test(head.title), "标题为「DSH 工作量报告」", head.title);
+  ok(!/本地数据|local data/i.test(head.subtitle), "副标题不再带「本地数据」备注", head.subtitle);
+  ok(!head.subtitleExists || /^\d{4}-\d{2}-\d{2} ~ \d{4}-\d{2}-\d{2}$/.test(head.subtitle.trim()), "副标题只显示日期区间", head.subtitle);
+  // 边框与子像素取整会多出 1~2px，允许 3px 容差
+  ok(head.panelWidth <= 1450 + 3, "面板最大宽度 1450px", JSON.stringify({ width: head.panelWidth, viewport: head.innerWidth }));
 
   // ---- 单位统一小写 h/m/s + 备注足够短（降低多语言工作量）----
   const copyCheck = await page.evaluate(() => ({
@@ -797,6 +807,17 @@ try {
   ok(inDialog.freq[1].disabled && inDialog.freq[2].disabled, "12 小时 / 开机同步本版置灰（预留下一版）", JSON.stringify(inDialog.freq));
   ok(inDialog.freqBadge !== null, "同步频率带「下一版」徽标");
   ok(inDialog.manual.every(Boolean), "立即推送 / 立即拉取已迁入弹窗");
+  // 2.0.5 回归：按钮可用性必须跟**已生效**的开关一致（此前后端开了、按钮却是灰的）
+  const manualConsistency = await page.evaluate(async () => {
+    const body = await (await fetch("/workload-report/v1/sync", { headers: { accept: "application/json" } })).json();
+    const disabled = ["sync-now-push", "sync-now-pull"].map((a) => document.querySelector(`[data-action="${a}"]`)?.disabled);
+    return { savedEnabled: body?.status?.enabled === true, disabled };
+  });
+  ok(
+    manualConsistency.disabled.every((d) => d === !manualConsistency.savedEnabled),
+    "手动同步按钮可用性 = 已生效的同步开关（开启则可点、关闭则置灰）",
+    JSON.stringify(manualConsistency),
+  );
   // 2.0.3 布局 v3：设备行并列 / 状态紧凑 + 大图标 / 高级选项不折叠且路径只读
   const layoutV3 = await page.evaluate(() => {
     const root = document.querySelector('[data-sync-dialog="true"]');
@@ -900,7 +921,7 @@ try {
   ok(!/总 Token\s*\n?\s*0\b/.test(reportText) && /[KMB]/.test(reportText), "报告页 Token 非零", reportText.replace(/\n/g, " ").slice(0, 160));
   ok(!/加载失败|Failed/.test(reportText), "报告页无错误");
 
-  // —— 报告页宽自适应：窄屏占满、宽屏最多 1600px（不再固定 1120px）——
+  // —— 报告页宽自适应：窄屏占满、宽屏最多 1450px（与看板同一口径）——
   {
     const narrowReport = await reportPage.evaluate(() => ({
       innerWidth: window.innerWidth,
@@ -917,7 +938,7 @@ try {
       innerWidth: window.innerWidth,
       pageWidth: Math.round(document.querySelector("main.page")?.getBoundingClientRect().width ?? 0),
     }));
-    ok(wideReport.pageWidth === Math.min(1600, wideReport.innerWidth), "宽屏报告页宽最多 1600px（不无限拉伸）", JSON.stringify(wideReport));
+    ok(wideReport.pageWidth === Math.min(1450, wideReport.innerWidth), "宽屏报告页宽最多 1450px（与看板同一口径）", JSON.stringify(wideReport));
     await reportPage.setViewport({ width: 1240, height: 1400, deviceScaleFactor: 2 });
   }
 

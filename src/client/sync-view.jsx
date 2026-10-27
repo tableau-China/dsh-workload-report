@@ -20,7 +20,7 @@ import { formatInt } from "../format.js";
 import { Chip, ChipGroup } from "./chips.jsx";
 import { CardHead } from "./card-head.jsx";
 import {
-  FREQUENCY_OPTIONS, FREQUENCY_TEXT_KEYS, ICON_TEXT_KEYS, checkMachineIdentity, configureIconState, deviceRenameReport, pathPreview, prefixOf, shortDeviceId,
+  FREQUENCY_OPTIONS, FREQUENCY_TEXT_KEYS, ICON_TEXT_KEYS, checkMachineIdentity, configureIconState, deviceRenameReport, manualSyncState, pathPreview, prefixOf, shortDeviceId,
 } from "./sync-state.js";
 
 /** 宿主半部注册的只读接口前缀（与 index.js 的默认 apiPath 一致）。 */
@@ -170,6 +170,8 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
   const [credentials, setCredentials] = useState({ status: "loading", vault: false, fields: [], error: null });
   const [draft, setDraft] = useState({});
   const [busy, setBusy] = useState(false);
+  /** 正在执行的操作名（push / pull），只用于按钮文案；可用性判断统一看 busy。 */
+  const [running, setRunning] = useState(null);
   const [message, setMessage] = useState(null);
   /** 同步频率：**本轮只预留界面**（6 小时为默认；12 小时 / 开机同步在下一版随后台周期一起打开）。 */
   const [frequency, setFrequency] = useState("6h");
@@ -177,6 +179,8 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
   const [probe, setProbe] = useState(initialStatus?.lastProbe ?? null);
   /** 基准设备 id：本弹窗第一次看到的本机 id（后续所有保存都跟它比对）。 */
   const [savedDeviceId, setSavedDeviceId] = useState(initialStatus?.devices?.find((d) => d.local === true)?.id ?? null);
+  /** 「高级选项」里的路径是否处于编辑态（默认只读）。 */
+  const [pathEditing, setPathEditing] = useState(false);
   /** 保存前那次的本机显示名（用来提示"从 X 改成 Y，设备 id 不变"）。 */
   const [renamedFrom, setRenamedFrom] = useState(null);
   /** 自检请求进行中（按钮置灰 + 状态卡片显示"测试中…"）。 */
@@ -384,9 +388,16 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
     }
   }, [t, loadStatus]);
 
-  /** 手动推送 / 拉取（迁移自旧「设备同步」页，现在只在弹窗里出现）。 */
+  /**
+   * 手动推送 / 拉取（迁移自旧「设备同步」页，现在只在弹窗里出现）。
+   *
+   * 注意 `busy` 是**布尔**（true = 有操作在跑）。2.0.5 之前的 bug：这里把操作名塞进了 busy、
+   * 结束时空值复位，而按钮判断写的是「busy 不为空」——于是 `null` 与 `false` 语义打架，
+   * 三个按钮**永久置灰**、怎么点都没反应。现在 busy 只存布尔，操作名另存 `running`（仅用于按钮文案）。
+   */
   const runSync = useCallback(async (action) => {
-    setBusy(action);
+    setBusy(true);
+    setRunning(action);
     setMessage(null);
     try {
       const response = await fetch(`${API_PATH}/sync?action=${action}`, { headers: { accept: "application/json" } });
@@ -401,13 +412,26 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
     } catch (error) {
       setMessage({ kind: "fail", text: t("sync.failed", { message: String(error?.message ?? error) }) });
     } finally {
-      setBusy(null);
+      setRunning(null);
+      setBusy(false);
     }
   }, [t, onSaved, loadStatus]);
 
   const canSave = state.canSave === true && form !== null;
   /** 仓库类（GitHub / Gitea）才有右列（仓库 / 服务地址 / 分支）。 */
   const isRepoTransport = transport === "github" || transport === "gitea";
+  /**
+   * **已生效**的同步开关：来自宿主 /sync 的 status.enabled（= SyncService.canPush/canPull 的依据）。
+   * 「立即推送 / 立即拉取」必须按它判断，而不是按表单里**还没保存**的 form.enabled——
+   * 否则"同步早就开着、只是打开弹窗又点了一下开关看起来是关的"时，按钮会莫名其妙置灰。
+   */
+  const savedEnabled = status?.enabled === true || initialStatus?.enabled === true;
+  /** 三个按钮的可用态统一由 manualSyncState 推导（只认已生效配置，不认未保存的表单开关）。 */
+  const pushState = manualSyncState({ enabled: savedEnabled, busy });
+  const probeState = manualSyncState({ enabled: savedEnabled, busy, probing, needsProbe: true });
+  /** 表单与已生效配置不一致（改了没保存）→ 提示"保存后生效"，但按钮仍可点（手动同步走已生效配置）。 */
+  const pendingSave = form !== null && form.enabled !== savedEnabled;
+
   /** 已登记设备（本机 + 拉到的其它设备），以及本机设备 id —— 用于「改名字不会断数据」的说明。 */
   const deviceList = Array.isArray(status?.devices) ? status.devices : [];
   const localDeviceId = deviceList.find((device) => device.local === true)?.id ?? null;
@@ -509,9 +533,9 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
             type="button"
             className="wl-btn"
             data-action="probe-now"
-            disabled={busy || probing || form?.enabled !== true}
+            disabled={probeState.disabled}
             onClick={() => void runProbe()}
-            title={form?.enabled === true ? t("sync.probe") : t("set.probeNeedEnable")}
+            title={savedEnabled ? t("sync.probe") : t("set.probeNeedEnable")}
           >
             {probing ? t("sync.probing") : t("sync.probe")}
           </button>
@@ -587,8 +611,9 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
                   <div className="wl-form-fields" data-block="credential-fields">
                     {credentials.vault === true ? null : <p className="wl-hint" data-kind="sync-storage">{t("cred.fileFallback")}</p>}
                     {credentials.fields.map((field) => {
-                      const sourceKey = field.source === "vault" ? "cred.fromVault" : field.source === "file" ? "cred.fromFile" : field.source === "env" ? "cred.fromEnv" : null;
-                      // 与连接参数同一套行式：左标题（带已配置状态 / 来源），右输入框，一行一个
+                      // 2.0.5：不再显示「来自 DSH 凭据存储」这类来源小字（对使用者没有意义，只是噪音）。
+                      // 「已配置 / 未配置」仍然保留——那才是用户需要知道的。
+                      // 与连接参数同一套行式：左标题（带已配置状态），右输入框，一行一个
                       return (
                         <div key={field.id} className="wl-field-row">
                           <span className="wl-field-label">
@@ -596,7 +621,6 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
                             <span data-kind={field.configured ? "ok" : "missing"}>
                               {field.configured ? t("cred.configured") : t("cred.missing")}
                             </span>
-                            {sourceKey === null ? null : <span className="wl-field-hint">{t(sourceKey)}</span>}
                           </span>
                           <input
                             type="password"
@@ -683,12 +707,13 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
                   ))}
                 </ChipGroup>
                 <p className="wl-hint" data-kind="sync-frequency-note">{t("set.frequencyNote")}</p>
+                {pendingSave ? <p className="wl-hint" data-kind="sync-pending-save">{t("set.pendingSave")}</p> : null}
                 <div className="wl-sync-manual">
-                  <button type="button" className="wl-btn" data-action="sync-now-push" disabled={busy !== null || form?.enabled !== true} onClick={() => void runSync("push")}>
-                    {busy === "push" ? t("sync.pushing") : t("sync.pushNow")}
+                  <button type="button" className="wl-btn" data-action="sync-now-push" disabled={pushState.disabled} onClick={() => void runSync("push")}>
+                    {running === "push" ? t("sync.pushing") : t("sync.pushNow")}
                   </button>
-                  <button type="button" className="wl-btn" data-action="sync-now-pull" disabled={busy !== null || form?.enabled !== true} onClick={() => void runSync("pull")}>
-                    {busy === "pull" ? t("sync.pulling") : t("sync.pullNow")}
+                  <button type="button" className="wl-btn" data-action="sync-now-pull" disabled={pushState.disabled} onClick={() => void runSync("pull")}>
+                    {running === "pull" ? t("sync.pulling") : t("sync.pullNow")}
                   </button>
                 </div>
               </section>
@@ -696,13 +721,32 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
               {/* ⑤ 高级选项（默认收起）：只有普通用户不用管、默认值即可的项 */}
               <section className="wl-form-block" data-block="advanced" aria-label={t("set.advanced")}>
                 <h4 className="wl-form-section">{t("set.advanced")}</h4>
-                {/* 路径只读：用户不需要改，但可以自己核对"文件到底写到哪"，便于在桶 / 仓库里安全排查 */}
-                <div className="wl-field-row" data-row="path-readonly">
-                  <span className="wl-field-label">{t("set.path")}</span>
-                  <code className="wl-path-preview" data-path-template={form.path ?? ""}>{pathPreview(form.path, { machineId: localDeviceId ? shortDeviceId(localDeviceId).replace("…", "") : "" })}</code>
-                </div>
+                {/* 路径默认只读（普通用户不用改），但**多台机器必须用同一个模板**才能互相看到——
+                    所以给一个明确的「修改路径」入口：展开后可填，保存时宿主会校验必须含 {machineId}。 */}
+                {pathEditing ? (
+                  <div className="wl-field-row" data-row="path-edit">
+                    <span className="wl-field-label">{t("set.path")}</span>
+                    <input
+                      type="text"
+                      data-setting="path"
+                      value={form.path ?? ""}
+                      placeholder="dsh-workload-sync/machines/{machineId}.json"
+                      onChange={(event) => setField("path", event.target.value)}
+                    />
+                  </div>
+                ) : (
+                  <div className="wl-field-row" data-row="path-readonly">
+                    <span className="wl-field-label">{t("set.path")}</span>
+                    <code className="wl-path-preview" data-path-template={form.path ?? ""}>{pathPreview(form.path, { machineId: localDeviceId ? shortDeviceId(localDeviceId).replace("…", "") : "" })}</code>
+                  </div>
+                )}
                 <p className="wl-hint" data-kind="path-hint">{t("set.pathReadonlyHint")}</p>
                 <p className="wl-hint" data-kind="path-location">{t("set.pathLocation", { dir: prefixOf(form.path) })}</p>
+                {/* 这是最常见的"一台机器看不到另一台"的原因：路径模板不一致 → 各自写到不同目录 */}
+                <p className="wl-hint" data-kind="path-shared">{t("set.pathSharedHint")}</p>
+                <button type="button" className="wl-btn" data-action="toggle-path-edit" aria-expanded={pathEditing} onClick={() => setPathEditing((v) => !v)}>
+                  {pathEditing ? t("set.pathEditDone") : t("set.pathEdit")}
+                </button>
               </section>
 
               {state.canSave === true ? null : <p className="wl-hint" data-kind="sync-error">{t("set.noEditor")}</p>}

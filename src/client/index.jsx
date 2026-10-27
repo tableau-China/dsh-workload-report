@@ -31,6 +31,9 @@ import {
 /** 宿主半部注册的只读接口前缀（与 index.js 的默认 apiPath 一致）。 */
 const API_PATH = "/workload-report/v1";
 
+/** 「导出 HTML 报告」入口开关：2.1.0 起暂时隐藏（路由与实现保留，随时可恢复）。 */
+const EXPORT_ENTRY_VISIBLE = false;
+
 /** 时间范围预设（近 N 天 / 全部）。 */
 const RANGES = [
   { days: 7, key: "range.7" },
@@ -534,7 +537,7 @@ export { sectorPath };
  * 环形占比图（Top N + others）：工作区按时长 / Token 可切换；模型固定 Token（不切换）。
  * 首页「模型 Token 占比」直接复用本组件——几何、色板、描边只有这一份实现。
  */
-function WorkspacePie({ items, t, metric = "activeMs", ariaLabel = null }) {
+function WorkspacePie({ items, t, metric = "activeMs", ariaLabel = null, fullLabels = false }) {
   const slices = useMemo(() => {
     const valueOf = (item) => (metric === "activeMs" ? item.activeMs : item.tokensTotal);
     const sorted = [...items].filter((item) => valueOf(item) > 0).sort((a, b) => valueOf(b) - valueOf(a));
@@ -598,7 +601,8 @@ function WorkspacePie({ items, t, metric = "activeMs", ariaLabel = null }) {
           {arcs.map((arc) => (
             <li key={arc.label}>
               <i className="wl-dot" style={{ background: arc.color }} />
-              <span className="wl-pie-name" title={arc.item?.path}>{arc.label}</span>
+              {/* 模型占比要**完整显示**模型名（可换行、不省略号截断）；工作区名仍单行省略 + title 全文 */}
+              <span className={fullLabels ? "wl-pie-name wl-pie-name-full" : "wl-pie-name"} title={arc.item?.path ?? arc.label}>{arc.label}</span>
               <span className="wl-pie-value">{formatValue(arc.value)}</span>
               <span className="wl-pie-share">{formatPercent(arc.share)}</span>
             </li>
@@ -1171,12 +1175,6 @@ function Kpis({ data, t }) {
     costed.total > 0
       ? t("kpi.modelCost.sub", { covered: formatInt(costed.covered), total: formatInt(costed.total), asOf: pricing?.asOf ?? "\u2014" })
       : t("kpi.modelCost.none");
-  // 动态拼接会让"引用键必须存在 / 无死键"的静态校验看不到这些键，所以用字面量映射
-  const metricLabelKey = {
-    requests: "kpi.topModel.metric.requests",
-    tokens: "kpi.topModel.metric.tokens",
-    llmMs: "kpi.topModel.metric.llmMs",
-  };
   // KPI 里的时长统一走「一位小数的小时 / 整数分钟 / 整数秒」（223.2 h），比明细表更短更好扫。
   // 活跃时长展示**净活跃**（totals.activeMs 是官方值，含等待用户）；等待单独写在副标题里。
   const netActive = totals.netActiveMs ?? totals.activeMs;
@@ -1207,14 +1205,8 @@ function Kpis({ data, t }) {
     // 第 8 张：最活跃模型（默认按请求数口径，可在配置里切换 tokens / activeMs）
     data.topModel === null || data.topModel === undefined
       ? ["kpi.topModel", "\u2014", t("kpi.topModel.none")]
-      : [
-          "kpi.topModel",
-          data.topModel.label,
-          t("kpi.topModel.sub", {
-            share: formatPercent(data.topModel.metricShare),
-            metric: t(metricLabelKey[data.topModel.metric] ?? "kpi.topModel.metric.requests"),
-          }),
-        ],
+      // 只显示模型名：不再带「请求占比 26.7%」这类副标题（用户要求，2.1.1）
+      : ["kpi.topModel", data.topModel.label, ""],
   ];
   return (
     <div className="wl-kpis">
@@ -1222,7 +1214,7 @@ function Kpis({ data, t }) {
         <div className="wl-kpi" key={key} data-kpi={key}>
           <div className="wl-kpi-label">{t(key)}</div>
           <div className="wl-kpi-value">{value}</div>
-          <div className="wl-kpi-sub">{sub}</div>
+          {sub === "" || sub === null || sub === undefined ? null : <div className="wl-kpi-sub">{sub}</div>}
         </div>
       ))}
     </div>
@@ -1344,7 +1336,7 @@ function ByDayView({ data, t }) {
         {models.length === 0 ? (
           <p className="wl-state">{isModelFolding(data) ? t("model.folding") : t("state.empty")}</p>
         ) : (
-          <WorkspacePie items={models} t={t} metric="tokens" ariaLabel={t("pie.model")} />
+          <WorkspacePie items={models} t={t} metric="tokens" ariaLabel={t("pie.model")} fullLabels />
         )}
       </div>
       </div>
@@ -1733,9 +1725,12 @@ function Overlay({ control }) {
         <header className="wl-head">
           <div>
             <h2 className="wl-title">{t("panel.title")}</h2>
-            <p className="wl-subtitle">
-              {state.data === null ? t("panel.subtitle") : `${state.data.range.from} ~ ${state.data.range.to} · ${t("panel.subtitle")}`}
-            </p>
+            {/* 副标题只显示日期区间（2.1.0 起删除「· 本地数据」这类备注） */}
+            {state.data === null ? null : (
+              <p className="wl-subtitle" data-kind="range-line">
+                {`${state.data.range.from} ~ ${state.data.range.to}`}
+              </p>
+            )}
           </div>
           <div className="wl-spacer" />
           <ChipGroup label={t("panel.title")}>
@@ -1751,7 +1746,13 @@ function Overlay({ control }) {
             ))}
           </select>
           <button type="button" className="wl-btn" onClick={() => setRefreshKey((value) => value + 1)}>{t("action.refresh")}</button>
-          <button type="button" className="wl-btn" data-kind="primary" onClick={exportReport}>{t("action.export")}</button>
+          {/* 导出 HTML 报告：2.1.0 起**暂时隐藏**（功能与 /report.html 路由都保留，只去掉入口）。
+              恢复时把 EXPORT_ENTRY_VISIBLE 改回 true 即可。 */}
+          {EXPORT_ENTRY_VISIBLE ? (
+            <button type="button" className="wl-btn" data-kind="primary" data-action="export-report" onClick={exportReport}>
+              {t("action.export")}
+            </button>
+          ) : null}
           <button type="button" className="wl-btn" onClick={close} aria-label={t("action.close")}>✕</button>
         </header>
         <div className="wl-body">

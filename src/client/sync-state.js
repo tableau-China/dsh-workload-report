@@ -124,3 +124,23 @@ export function checkMachineIdentity(previousId, currentId) {
 export function shortMachineId(id) {
   return shortDeviceId(id);
 }
+
+/**
+ * 手动同步按钮（立即推送 / 立即拉取 / 测试连接）到底能不能点。
+ *
+ * 判断依据必须是**已生效**的配置（宿主 /sync 的 `status.enabled`），
+ * 而不是弹窗里还没保存的表单开关 `form.enabled`——
+ * 否则用户会遇到「同步明明已经开着，按钮却是灰的」这种不可理喻的状态（2.0.5 修复的 bug）。
+ *
+ * @param input.enabled - 已生效的同步开关（status.enabled）。
+ * @param input.busy - 当前是否有别的操作在跑。
+ * @param input.probing - 自检进行中。
+ * @param input.needsProbe - 这个按钮是否受 probing 影响（测试连接按钮为 true）。
+ * @returns {{ disabled: boolean, reason: "busy" | "probing" | "disabled" | null }}
+ */
+export function manualSyncState({ enabled = false, busy = false, probing = false, needsProbe = false } = {}) {
+  if (busy) return { disabled: true, reason: "busy" };
+  if (needsProbe && probing) return { disabled: true, reason: "probing" };
+  if (enabled !== true) return { disabled: true, reason: "disabled" };
+  return { disabled: false, reason: null };
+}
