@@ -79,6 +79,9 @@ export function emptyModelBucket() {
   return {
     requests: 0,
     turns: 0,
+    // 速度：逐 assistant/message 累加，只统计能确定首字时间的请求（不猜）
+    ttftMs: 0, ttftSteps: 0,
+    decodeMs: 0, decodeTokens: 0,
     inOff: 0, inPeak: 0,
     outOff: 0, outPeak: 0,
     crOff: 0, crPeak: 0,
@@ -102,6 +105,10 @@ export function mergeModelBuckets(a, b) {
   out.cwOff += b.cwOff ?? 0; out.cwPeak += b.cwPeak ?? 0;
   out.streamMs += b.streamMs ?? 0;
   out.llmMs += b.llmMs ?? 0;
+  out.ttftMs += b.ttftMs ?? 0;
+  out.ttftSteps += b.ttftSteps ?? 0;
+  out.decodeMs += b.decodeMs ?? 0;
+  out.decodeTokens += b.decodeTokens ?? 0;
   for (const [k, v] of Object.entries(b.efforts ?? {})) out.efforts[k] = (out.efforts[k] ?? 0) + v;
   for (const [k, v] of Object.entries(b.raw ?? {})) out.raw[k] = (out.raw[k] ?? 0) + v;
   return out;
@@ -138,6 +145,50 @@ function streamWeight(stream, fallbackTime) {
   if (span > 0) return span;
   // 单包（非流式）：给一个最小值，避免权重为 0 导致该模型分不到时间
   return typeof fallbackTime === "number" && fallbackTime > 0 ? 1 : 0;
+}
+
+/** 单个流记录是否携带"token"（官方 isTokenDelta 的简化口径）。 */
+function isTokenChunk(chunk) {
+  switch (chunk?.type) {
+    case "text-delta":
+    case "reasoning-delta": return typeof chunk.text === "string" && chunk.text !== "";
+    case "tool-call-delta":
+      return (typeof chunk.argumentsDelta === "string" && chunk.argumentsDelta !== "") || chunk.name !== undefined;
+    default: return false;
+  }
+}
+
+/** 打包 run（text-chunks / tool-call-chunks）里第一个非空片段的时间：time0 + 前缀 dt。 */
+function firstRunTokenTime(record) {
+  if (record.type === "tool-call-chunks" && record.name !== undefined) return record.time0;
+  const frags = record.type === "tool-call-chunks" ? record.args : record.texts;
+  if (!Array.isArray(frags)) return undefined;
+  let time = record.time0;
+  for (let i = 0; i < frags.length; i += 1) {
+    if (i > 0) time += (record.dt ?? [])[i - 1] ?? 0;
+    if (frags[i] !== "" && frags[i] !== undefined) return time;
+  }
+  return undefined;
+}
+
+/**
+ * 一条 assistant/message 的**首字时间**（首个 token 的绝对时间）。
+ *
+ * 与官方 `assistantStreamFirstTokenTime` 同口径：非空 text / reasoning 片段，
+ * 或带 name 的 tool-call run 起点。取不到就返回 undefined —— 调用方据此跳过该请求的速度统计，
+ * 而不是用 0 冒充。
+ * @param stream - 消息的 stream 记录数组。
+ * @returns 首字时间（epoch 毫秒）或 undefined。
+ */
+export function streamFirstTokenTime(stream) {
+  if (!Array.isArray(stream)) return undefined;
+  for (const record of stream) {
+    const time = record?.type === "chunk"
+      ? (isTokenChunk(record.chunk) ? record.time : undefined)
+      : firstRunTokenTime(record);
+    if (typeof time === "number" && Number.isFinite(time)) return time;
+  }
+  return undefined;
 }
 
 /* ------------------------------------------------- 时刻分布（事件时间戳） */
@@ -413,6 +464,15 @@ export function foldSessionModels(events, {
   let unknownRequests = 0;
   let totalStreamMs = 0;
   const list = Array.isArray(events) ? events : [];
+  // 步起始时间（turn/step → time）：TTFT = 首字时间 − step/start，与官方 sessionStats 同口径
+  const stepStarts = new Map();
+  for (const event of list) {
+    if (event?.type !== "step/start") continue;
+    const turn = event.data?.turn;
+    const step = event.data?.step;
+    if (typeof turn !== "number" || typeof step !== "number" || typeof event.time !== "number") continue;
+    stepStarts.set(`${turn}/${step}`, event.time);
+  }
 
   for (const event of list) {
     if (event?.type !== "assistant/message") continue;
@@ -423,6 +483,16 @@ export function foldSessionModels(events, {
     const key = groupKeyFor(provider, model, groups);
     const bucket = (models[key] ??= emptyModelBucket());
     const tier = isPeak(event.time) ? "Peak" : "Off";
+    // 首字延迟（TTFT）**不依赖 usage**：官方口径里只要拿到首字时间就计 TTFT；
+    // decode 才要求同时有 usage。所以先算 TTFT（缺 usage 也要算），再走 usage 分支。
+    const firstToken = streamFirstTokenTime(event.data?.stream);
+    if (firstToken !== undefined && typeof event.time === "number") {
+      const stepStart = stepStarts.get(`${event.data?.turn}/${event.data?.step}`);
+      if (stepStart !== undefined && firstToken >= stepStart) {
+        bucket.ttftMs += firstToken - stepStart;
+        bucket.ttftSteps += 1;
+      }
+    }
     if (usage === null || usage === undefined) {
       // 缺 usage：计入该模型的请求数，但不计 token（口径：缺字段不猜）
       bucket.requests += 1;
@@ -440,6 +510,16 @@ export function foldSessionModels(events, {
     const weight = streamWeight(event.data?.stream, event.time);
     bucket.streamMs += weight;
     totalStreamMs += weight;
+    // decode 窗口 = 消息完成 − 首字时间；只有首字时间与合法 usage 同时具备才计（与官方一致）。
+    if (firstToken !== undefined && typeof event.time === "number") {
+      const outputTokens = typeof usage.outputTokens === "number" && Number.isFinite(usage.outputTokens) && usage.outputTokens >= 0
+        ? usage.outputTokens
+        : null;
+      if (outputTokens !== null && event.time >= firstToken) {
+        bucket.decodeMs += event.time - firstToken;
+        bucket.decodeTokens += outputTokens;
+      }
+    }
   }
 
   // 思考强度分布（来自 request/header，按同一归并规则计数）
@@ -636,4 +716,23 @@ export function modelLabel(key, aliases = {}) {
   const short = parts.length > 0 ? parts[parts.length - 1] : String(key);
   if (typeof aliases[short] === "string" && aliases[short] !== "") return aliases[short];
   return short;
+}
+
+/**
+ * 模型的**供应商**（渠道 / 提供方）：归并组名里**除最后一段（模型）之外**的整段路径。
+ *
+ * 组名形如 `magpie/workbuddy-ai/deepseek-v4.1-flash`（渠道 / 厂商 / 模型），
+ * 供应商 = `magpie/workbuddy-ai`。只取首段会把同渠道下的不同厂商并成一个（例如
+ * `magpie/workbuddy-ai` 与 `magpie/workbuddy` 都变成 `magpie`），失去"换哪条链路"的诊断价值。
+ * 没有分隔段时（如内置归并组 `deepseek-v4-flash`）判断不出渠道，归入 `(未标注供应商)` —— 不猜。
+ *
+ * @param key - 归并组名。
+ * @returns 供应商名。
+ */
+export function providerOf(key) {
+  const text = typeof key === "string" ? key.trim() : "";
+  if (text === "" || text === UNKNOWN_MODEL) return "(未标注供应商)";
+  const parts = text.split("/").filter((part) => part !== "");
+  if (parts.length <= 1) return "(未标注供应商)";
+  return parts.slice(0, -1).join("/");
 }

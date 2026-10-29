@@ -13,10 +13,12 @@
  * 本插件默认零外发；可选功能（余额 / AI 画像）开启后才会请求。数据默认全部留在本机。
  */
 
+import { readFileSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { PROJECTION_KEYS, aggregate, present, rowFromSession, tokensTotal } from "./src/aggregate.js";
 import { AI_PROFILE_DEFAULTS, ProfileService, buildProfileDiagnostic, profileCodeOf } from "./src/profile-service.js";
@@ -25,9 +27,42 @@ import { renderReport } from "./src/report-html.js";
 import { DEFAULT_WAIT_MIN_MS, DEFAULT_WAIT_TOOLS, foldSessionModels, resolvePricing } from "./src/models.js";
 import { SYNC_DEFAULTS, SyncService, TRANSPORTS } from "./src/sync-service.js";
 import { COS_REGIONS, PLATFORM_PRESETS, TRANSPORT_META, applySettingsPatch, editableView, saveViaConfigEditor } from "./src/sync-settings.js";
+import { frequencyPlan } from "./src/client/sync-state.js";
 
 /** 插件版本：getBalance 的客户端元数据（x-client-version）用它，避免手写常量与 package.json 漂移。 */
 const PLUGIN_VERSION = createRequire(import.meta.url)("./package.json").version ?? "0.0.0";
+
+/**
+ * 构建标识（版本 + 提交短哈希），用于面板右下角的 `v2.2.0 · 2b0d02f`。
+ *
+ * 为什么需要它：右下角版本号只来自 package.json，所以"版本号忘了改"这种情况本身看不出来。
+ * 带上构建短哈希后，界面上一眼就能判断当前页面跑的是哪个提交 —— 
+ * 升级后如果还是旧哈希，说明浏览器用了缓存的客户端 bundle（重启 / 硬刷新即可）。
+ *
+ * 来源优先级：DSH_BUILD_ID 环境变量 → git 提交 → 只显示版本。
+ */
+function resolveBuildId(version) {
+  const fromEnv = typeof process.env.DSH_BUILD_ID === "string" ? process.env.DSH_BUILD_ID.trim() : "";
+  if (fromEnv !== "") return fromEnv.slice(0, 12);
+  try {
+    const gitDir = dirname(fileURLToPath(import.meta.url));
+    const head = readFileSync(join(gitDir, ".git", "HEAD"), "utf8").trim();
+    // 打包后（无 .git）会抛错，回落到纯版本号
+    if (head.startsWith("ref: ")) {
+      const ref = head.slice(5).trim();
+      // refs/heads/main → .git/refs/heads/main；packed-refs 里则是另一条路径
+      const refFile = join(gitDir, ".git", ref);
+      const sha = readFileSync(refFile, "utf8").trim();
+      return sha.slice(0, 7);
+    }
+    return head.slice(0, 7);
+  } catch {
+    return "";
+  }
+}
+
+/** 界面上展示的版本串：`2.2.0`（有构建哈希时是 `2.2.0 · 2b0d02f`）。 */
+const PLUGIN_BUILD = resolveBuildId(PLUGIN_VERSION);
 
 export const name = "workload-report";
 
@@ -304,9 +339,11 @@ function sendHtml(res, status, html) {
  * 语义已作废；不换代会把旧桶当成「净活跃分布」复用，所以必须 5 → 6。
  * v7：行上新增 `hourTokens` / `hourHumanMsgs`（按消息时间落 UTC 小时的 Token 与人类消息），
  * `byHour.tokensTotal` 改为取自 `hourTokens`（不再复用「会话开始小时」的 token）。
- * v6 的行没有这两个字段，不换代会把时间图 Token 显示成全 0 且无法补折，所以必须 6 → 7。
+ * v8：行上新增 `decodeMs` / `ttftMs` / `ttftSteps`（输出速度与首字延迟）。
+ * v7 的行没有这三个字段，不换代会让速度恒为 0，且无法区分「真的很慢」与「没上报」，
+ * 所以必须 7 → 8（与 waitMs / hourTokens 同例：新增行字段即换代）。
  */
-const INDEX_VERSION = 7;
+const INDEX_VERSION = 8;
 
 /** 限制并发，避免几百个会话同时冷读把服务器压住。 */
 async function mapLimit(items, limit, worker) {
@@ -1368,6 +1405,14 @@ export function apply(ctx, config = {}) {
     stop: null,
     start() {
       if (this.stop !== null) return;
+      /**
+       * 频率（2.2.0）：`syncFrequency` 是用户可见的开关，换算成：
+       *   · 6h / 12h —— 周期推送 + 每 30 分钟拉取
+       *   · boot     —— 只在进程启动时同步一次（不建定时器）
+       *   · manual   —— 完全手动（不建定时器、启动也不跑）
+       * 三者都会在启动后先跑一次（manual 除外），保证开机就对齐。
+       */
+      const plan = frequencyPlan(index.deviceSync.config.syncFrequency);
       const pullMs = Math.max(60 * 1000, Number(index.deviceSync.config.pullEveryMs) || DEFAULTS.sync.pullEveryMs);
       const pushMs = Math.max(60 * 1000, Number(index.deviceSync.config.pushEveryMs) || DEFAULTS.sync.pushEveryMs);
       let cancelled = false;
@@ -1382,17 +1427,26 @@ export function apply(ctx, config = {}) {
         if (cancelled || index.deviceSync.enabled !== true) return;
         void index.deviceSync.push(index.rows);
       };
-      const pullTimer = setInterval(runPull, pullMs);
-      const pushTimer = setInterval(runPush, pushMs);
-      pullTimer.unref?.();
-      pushTimer.unref?.();
-      // 首次：索引就绪后拉一次，避免刚开机面板空着
-      ready.then(() => {
-        if (cancelled) return;
-        runPull();
-      }).catch(() => {});
+      // 只有周期型频率才建定时器；boot / manual 不建（boot 只在启动时跑一次）
+      const pullTimer = plan.timer ? setInterval(runPull, pullMs) : null;
+      const pushTimer = plan.timer && plan.pushEveryMs > 0 ? setInterval(runPush, pushMs) : null;
+      pullTimer?.unref?.();
+      pushTimer?.unref?.();
+      // 首次：索引就绪后先对齐一次（boot 频率的"开机同步"就是这一次）
+      if (plan.runOnStart) {
+        ready.then(() => {
+          if (cancelled) return;
+          runPull();
+          runPush();
+        }).catch(() => {});
+      }
+      const cycleText = plan.frequency === "manual"
+        ? "仅手动"
+        : plan.frequency === "boot"
+          ? "每次启动同步一次"
+          : `推送 ${Math.round(pushMs / 60000)} 分钟 · 拉取 ${Math.round(pullMs / 60000)} 分钟`;
       ctx.logger.info(
-        `[workload-report] 多设备同步已启用：${index.deviceSync.config.transport} · 推送 ${Math.round(pushMs / 60000)} 分钟 · 拉取 ${Math.round(pullMs / 60000)} 分钟`,
+        `[workload-report] 多设备同步已启用：${index.deviceSync.config.transport} · 同步频率 ${plan.frequency}（${cycleText}）`,
       );
       this.stop = () => {
         cancelled = true;
@@ -1548,12 +1602,12 @@ export function apply(ctx, config = {}) {
         // 无论开关都带 version：面板右下角的版本号（v2.0.2）只从这里取，客户端不写死常量。
         const action = params.get("action") ?? "status";
         if (index.deviceSync?.enabled !== true) {
-          sendJson(res, 200, { enabled: false, action, version: PLUGIN_VERSION, status: index.deviceSync?.diagnostics?.() ?? { enabled: false } });
+          sendJson(res, 200, { enabled: false, action, version: PLUGIN_VERSION, build: PLUGIN_BUILD, status: index.deviceSync?.diagnostics?.() ?? { enabled: false } });
           return;
         }
         if (action === "probe") {
           const result = await index.deviceSync.probe();
-          sendJson(res, 200, { enabled: true, action, version: PLUGIN_VERSION, result, status: index.deviceSync.diagnostics() });
+          sendJson(res, 200, { enabled: true, action, version: PLUGIN_VERSION, build: PLUGIN_BUILD, result, status: index.deviceSync.diagnostics() });
           return;
         }
         if (action === "push") {
@@ -1568,7 +1622,7 @@ export function apply(ctx, config = {}) {
           sendJson(res, 200, { enabled: true, action, version: PLUGIN_VERSION, result, status: index.deviceSync.diagnostics() });
           return;
         }
-        sendJson(res, 200, { enabled: true, action, version: PLUGIN_VERSION, status: index.deviceSync.diagnostics() });
+        sendJson(res, 200, { enabled: true, action, version: PLUGIN_VERSION, build: PLUGIN_BUILD, status: index.deviceSync.diagnostics() });
         return;
       }
       if (route === "/snapshot" || route === "/export.json") {

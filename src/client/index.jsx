@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { STYLES } from "./styles.js";
 import { NS, en, languageOf, translate, zh } from "./locales.js";
-import { formatHours, formatInt, formatMoney, formatPercent, formatTokens } from "../format.js";
+import { formatHours, formatInt, formatMoney, formatPercent, formatSpeed, formatTtft, formatTokens } from "../format.js";
 import { balanceChip } from "./balance.js";
 import { MetricBarCell } from "./bar-cell.jsx";
 import { Chip, ChipGroup } from "./chips.jsx";
@@ -66,7 +66,17 @@ const DETAIL_COLUMNS = [
 export const DETAIL_PAGE_SIZE = 10;
 
 /** KPI 卡片顺序（骨架屏与真实卡片共用，卡片数量/顺序不会漂）。 */
-const KPI_KEYS = ["kpi.active", "kpi.tokens", "kpi.modelCost", "kpi.activeDays", "kpi.conversations", "kpi.turns", "kpi.cache", "kpi.topModel"];
+/**
+ * KPI 卡片（8 张，5 列栅格；tokens 跨 2 列）。
+ *
+ * 2.3.0：「模型费用」下线——内置价目表只有 DeepSeek 官方模型，实际主力模型（step-5-preview /
+ * hy4-preview / deepseek-v4.1-flash 等）都没有官方价，费用只覆盖很小一部分用量、数字严重偏低。
+ * 改为两个**不依赖价格**的模型性能指标：模型缓存命中率、平均每次请求输出 Token。
+ */
+const KPI_KEYS = [
+  "kpi.active", "kpi.tokens", "kpi.modelShare",
+  "kpi.activeDays", "kpi.conversations", "kpi.modelOutput", "kpi.cache", "kpi.topModel",
+];
 
 /** 需要 inject 的服务：插槽注册表 + 国际化。 */
 export const inject = ["slots", "locale"];
@@ -206,19 +216,21 @@ const BALANCE_POLL_MS = 5 * 60 * 1000;
  * 拉取失败 / 宿主旧版本没有该字段时返回 null → 不渲染（不显示假版本）。
  */
 function usePluginVersion() {
-  const [version, setVersion] = useState(null);
+  // { version, build }：build 是宿主提交短哈希，用来分辨"页面是不是升级前的旧 bundle"
+  const [info, setInfo] = useState(null);
   useEffect(() => {
     const abort = new AbortController();
     fetch(`${API_PATH}/sync`, { signal: abort.signal, headers: { accept: "application/json" } })
       .then((response) => (response.ok ? response.json() : null))
       .then((body) => {
-        const value = typeof body?.version === "string" ? body.version.trim() : "";
-        if (value !== "") setVersion(value);
+        const version = typeof body?.version === "string" ? body.version.trim() : "";
+        const build = typeof body?.build === "string" ? body.build.trim() : "";
+        if (version !== "") setInfo({ version, build });
       })
       .catch(() => { /* 拿不到就不显示，避免出现 "v0.0.0" 这类假版本 */ });
     return () => abort.abort();
   }, []);
-  return version;
+  return info;
 }
 
 /**
@@ -992,9 +1004,9 @@ function ModelSection({ data, t }) {
       <table className="wl-table wl-model-table">
         <thead>
           <tr>
-            <th>{t("model.col.model")}</th><th>{t("model.col.share")}</th><th>{t("model.col.requests")}</th>
+            <th>{t("model.col.model")}</th><th>{t("model.col.provider")}</th><th>{t("model.col.share")}</th><th>{t("model.col.requests")}</th>
             <th>{t("table.input")}</th><th>{t("table.output")}</th><th>{t("table.cache")}</th>
-            <th>{t("model.col.hitRate")}</th><th>{t("model.col.cost")}</th>
+            <th>{t("model.col.hitRate")}</th><th>{t("model.col.speed")}</th><th>{t("model.col.ttft")}</th><th>{t("model.col.cost")}</th>
           </tr>
         </thead>
         <tbody>
@@ -1009,12 +1021,15 @@ function ModelSection({ data, t }) {
                   <span className="wl-hint wl-hint-block">{t("model.merged", { list: Object.keys(item.raw).map((k) => k.split("/").pop()).join(" + ") })}</span>
                 ) : null}
               </td>
+              <td>{item.provider ?? "\u2014"}</td>
               <td>{formatPercent(item.share)}</td>
               <td>{formatInt(item.requests)}</td>
               <td>{formatTokens(item.tokens.input)}</td>
               <td>{formatTokens(item.tokens.output)}</td>
               <td>{formatTokens(item.tokens.cacheRead)}</td>
               <td>{item.cacheHitRate === null || item.cacheHitRate === undefined ? "\u2014" : formatPercent(item.cacheHitRate)}</td>
+              <td>{formatSpeed(item.speed)}</td>
+              <td>{formatTtft(item.ttft)}</td>
               <td>{fmtCost(item.cost)}</td>
             </tr>
           ))}
@@ -1167,14 +1182,28 @@ function Kpis({ data, t }) {
   }
   const totals = data.totals;
   const derived = data.derived;
-  // 模型费用：只统计有官方单价的模型；一个都没有时显示 —（不编数字），副标题给出覆盖度与价目日期
-  const pricing = data.pricing;
-  const costed = pricing?.costed ?? { covered: 0, total: 0 };
-  const costValue = formatCost(pricing?.totalCost, pricing?.currency);
-  const costSub =
-    costed.total > 0
-      ? t("kpi.modelCost.sub", { covered: formatInt(costed.covered), total: formatInt(costed.total), asOf: pricing?.asOf ?? "\u2014" })
-      : t("kpi.modelCost.none");
+  /**
+   * 模型性能 KPI（替代已下线的「模型费用」）：
+   *   · 缓存命中率 = cacheRead / (input + cacheRead)，**按模型维度汇总**（不含子代理请求头空桶；
+   *     与「缓存读取占比」不同，那张卡是本机整体口径）；
+   *   · 平均每次输出 = 模型输出 Token / 模型请求数，反映"一次请求产出多少"。
+   * 两者都不依赖价目表，所以不会像费用那样失真。
+   */
+  const modelPerf = (() => {
+    const list = (data.byModel ?? []).filter((item) => (item.requests ?? 0) > 0);
+    const requests = list.reduce((sum, item) => sum + (item.requests ?? 0), 0);
+    const output = list.reduce((sum, item) => sum + (item.tokens?.output ?? 0), 0);
+    // 模型耗时占「活跃时长」的比例：与 Token 维度互补，说明时间花在模型推理上还是工具调用上
+    const llmMs = list.reduce((sum, item) => sum + (item.llmMs ?? 0), 0);
+    const activeMs = data.totals.activeMs ?? 0;
+    return {
+      models: list.length,
+      requests,
+      llmMs,
+      outputPerRequest: requests > 0 ? output / requests : 0,
+      llmShare: activeMs > 0 ? llmMs / activeMs : 0,
+    };
+  })();
   // KPI 里的时长统一走「一位小数的小时 / 整数分钟 / 整数秒」（223.2 h），比明细表更短更好扫。
   // 活跃时长展示**净活跃**（totals.activeMs 是官方值，含等待用户）；等待单独写在副标题里。
   const netActive = totals.netActiveMs ?? totals.activeMs;
@@ -1187,8 +1216,14 @@ function Kpis({ data, t }) {
     ],
     // 总 Token 直接给完整整数（可核对的真实值），小字里才用 K/M/B 缩写
     ["kpi.tokens", formatInt(totals.tokensTotal), t("kpi.tokens.sub", { input: formatTokens(totals.tokens.input), output: formatTokens(totals.tokens.output), cache: formatTokens(totals.tokens.cacheRead) })],
-    // 第 8 张：模型费用（插在活跃天数前，与 Tokens 卡一样跨 2 列，两行正好排满）
-    ["kpi.modelCost", costValue, costSub],
+    // 第 3 张：模型耗时（模型推理占活跃时长的比例；与 Token / 费用无关，不会失真）
+    [
+      "kpi.modelShare",
+      modelPerf.requests > 0 ? formatPercent(modelPerf.llmShare) : "\u2014",
+      modelPerf.requests > 0
+        ? t("kpi.modelShare.sub", { llm: formatHours(modelPerf.llmMs), models: formatInt(modelPerf.models) })
+        : t("kpi.modelShare.none"),
+    ],
     ["kpi.activeDays", `${formatInt(totals.activeDays)} / ${formatInt(data.range.days)}`, t("kpi.activeDays.sub", { workspaces: formatInt(totals.workspaces) })],
     ["kpi.conversations", formatInt(totals.conversations), t("kpi.conversations.sub", { sessions: formatInt(totals.sessions), empty: formatInt(totals.emptySessions) })],
     // 步骤数字比轮次小 2px，整行不换行（与 Tokens 卡一样靠栅格给足宽度）
@@ -1201,7 +1236,16 @@ function Kpis({ data, t }) {
       ),
       t("kpi.turns.sub", { main: formatInt(totals.mainSessions), subagent: formatInt(totals.subagentSessions) }),
     ],
-    ["kpi.cache", formatPercent(derived.cacheHitRate), t("kpi.cache.sub", { output: formatTokens(derived.outputPerActiveHour) })],
+    // 模型性能之二：平均每次请求的输出 Token（产出效率）
+    [
+      "kpi.modelOutput",
+      modelPerf.requests > 0 ? formatInt(Math.round(modelPerf.outputPerRequest)) : "\u2014",
+      modelPerf.requests > 0
+        ? t("kpi.modelOutput.sub", { requests: formatInt(modelPerf.requests) })
+        : t("kpi.modelOutput.none"),
+    ],
+    // 缓存命中率的副文本改成"速度 + 首字延迟"：这两项才是体感性能的直接来源
+    ["kpi.cache", formatPercent(derived.cacheHitRate), t("kpi.cache.sub", { speed: formatSpeed(derived.outputSpeed), ttft: formatTtft(derived.ttftMean) })],
     // 第 8 张：最活跃模型（默认按请求数口径，可在配置里切换 tokens / activeMs）
     data.topModel === null || data.topModel === undefined
       ? ["kpi.topModel", "\u2014", t("kpi.topModel.none")]
@@ -1680,8 +1724,8 @@ function Overlay({ control }) {
   const [machines, setMachines] = useState([]);
   // 关闭时不请求，避免白跑一次接口
   const state = useSnapshot({ days, scope, refreshKey, enabled: open, all: allTime, machines });
-  // 面板右下角版本号：来自宿主 /sync 的 version（不写死常量，见 usePluginVersion）
-  const version = usePluginVersion();
+  // 面板右下角版本号：来自宿主 /sync 的 version + build（不写死常量，见 usePluginVersion）
+  const versionInfo = usePluginVersion();
   const indexing = state.data?.diagnostics?.indexing === true;
 
   const close = useCallback(() => control.close(), [control]);
@@ -1724,13 +1768,8 @@ function Overlay({ control }) {
       <div className="wl-panel">
         <header className="wl-head">
           <div>
+            {/* 标题区只留标题：日期区间移到日期筛选器后面（2.3.1） */}
             <h2 className="wl-title">{t("panel.title")}</h2>
-            {/* 副标题只显示日期区间（2.1.0 起删除「· 本地数据」这类备注） */}
-            {state.data === null ? null : (
-              <p className="wl-subtitle" data-kind="range-line">
-                {`${state.data.range.from} ~ ${state.data.range.to}`}
-              </p>
-            )}
           </div>
           <div className="wl-spacer" />
           <ChipGroup label={t("panel.title")}>
@@ -1740,6 +1779,12 @@ function Overlay({ control }) {
               </Chip>
             ))}
           </ChipGroup>
+          {/* 实际区间紧跟在日期筛选器后面（2.3.1 从标题下方移过来，标题区只留标题） */}
+          {state.data === null ? null : (
+            <span className="wl-range-line" data-kind="range-line">
+              {`${state.data.range.from} ~ ${state.data.range.to}`}
+            </span>
+          )}
           <select className="wl-select" value={scope} onChange={(event) => setScope(event.target.value)} aria-label={t("scope.all")}>
             {SCOPES.map((item) => (
               <option key={item} value={item}>{t(`scope.${item}`)}</option>
@@ -1801,19 +1846,26 @@ function Overlay({ control }) {
               {tab === "aiProfile" ? (
                 <ByProfileView t={t} lang={lang} days={days} scope={scope} allTime={allTime} />
               ) : null}
+              {/* 底部口径说明；版本号顺在句末（不再单独占一行/浮在右下角） */}
               <p className="wl-note">
                 <strong>{t("note.title")}</strong>：{t("note.body")}
                 {state.data.diagnostics?.missing > 0 ? t("note.unavailable", { count: formatInt(state.data.diagnostics.missing) }) : ""}
+                {versionInfo === null ? null : (
+                  <span
+                    className="wl-version"
+                    data-plugin-version={versionInfo.version}
+                    data-plugin-build={versionInfo.build || undefined}
+                    title={`${t("panel.title")} v${versionInfo.version}${versionInfo.build ? ` · ${versionInfo.build}` : ""}`}
+                  >
+                    {" · "}
+                    v{versionInfo.version}
+                    {versionInfo.build ? ` · ${versionInfo.build}` : ""}
+                  </span>
+                )}
               </p>
             </>
           )}
         </div>
-        {/* 整个面板的右下角固定显示版本号（如 v2.0.2）：不占布局高度，绝对定位在页脚栏内 */}
-        <footer className="wl-foot">
-          {version === null ? null : (
-            <span className="wl-version" data-plugin-version={version} title={`${t("panel.title")} v${version}`}>v{version}</span>
-          )}
-        </footer>
         {/* 「设备同步」大弹窗：与看板同属一个 overlay 层，点遮罩关闭；保存后让看板重拉快照 */}
         {syncOpen ? (
           <SyncSettingsDialog

@@ -63,6 +63,30 @@ export function formatMoney(value, currency) {
   return `${currency === "USD" ? "$" : "\u00a5"}${n < 1 ? n.toFixed(4) : n.toFixed(2)}`;
 }
 
+/**
+ * 输出速度（tok/s）：≥100 取整，<100 保留 1 位小数。
+ * null / 非数字 → "—"：官方没上报 decode 窗口时不能显示 0（那会被读成「真的很慢」）。
+ * @param tps - 每秒输出 token 数。
+ * @returns 例如 "121" / "98.4" / "—"。
+ */
+export function formatSpeed(tps) {
+  const n = Number(tps);
+  if (tps === null || tps === undefined || !Number.isFinite(n) || n <= 0) return "\u2014";
+  return n >= 100 ? String(Math.round(n)) : trimZero(n.toFixed(1));
+}
+
+/**
+ * 首字延迟（毫秒）：不足 1 分钟用秒（1 位小数），1 分钟以上交给 formatHours。
+ * @param ms - 毫秒；null / 非数字 → "—"。
+ * @returns 例如 "6.5 s" / "1.2 m" / "—"。
+ */
+export function formatTtft(ms) {
+  const n = Number(ms);
+  if (ms === null || ms === undefined || !Number.isFinite(n) || n <= 0) return "\u2014";
+  if (n >= MINUTE_MS) return formatHours(n);
+  return `${trimZero((n / 1000).toFixed(1))} s`;
+}
+
 /** HTML 转义（报告是字符串拼接生成，必须转义一切外部文本）。 */
 export function escapeHtml(value) {
   return String(value ?? "")

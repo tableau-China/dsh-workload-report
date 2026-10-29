@@ -20,7 +20,8 @@ import {
 } from "../src/sync-settings.js";
 import { balanceChip } from "../src/client/balance.js";
 import {
-  FREQUENCY_OPTIONS, FREQUENCY_TEXT_KEYS, ICON_TEXT_KEYS, checkMachineIdentity, configureIconState,
+  FREQUENCY_NOTE_KEYS, FREQUENCY_OPTIONS, FREQUENCY_TEXT_KEYS, SYNC_FREQUENCY_OPTIONS, ICON_TEXT_KEYS,
+  checkMachineIdentity, configureIconState, frequencyPlan, normalizeFrequency,
   deviceRenameReport, manualSyncState, pathPreview, prefixOf as prefixOfPure, shortDeviceId,
 } from "../src/client/sync-state.js";
 import {
@@ -952,8 +953,63 @@ console.log("\n—— 时刻卡片（默认 Tokens / chips / 顶部密度点）�
   ok(/\.wl-hour-legend \{[^}]*justify-content: space-between/s.test(stylesSource), "图例行 space-between（左侧图例、右侧状态）");
   ok(/\.wl-hour-legend \.wl-status \{[^}]*margin-left: auto/s.test(stylesSource), "状态提示靠右对齐");
   ok(reportSource.includes("hourDotRadius") && reportSource.includes("人类消息密度") && reportSource.includes("Token 产出"), "报告时刻图同步 Tokens 口径与密度点");
-  ok(/const INDEX_VERSION = 7\b/.test(hostSource), "INDEX_VERSION 6 → 7（新增字段必须重折）");
+  ok(/const INDEX_VERSION = 8\b/.test(hostSource), "INDEX_VERSION 7 → 8（新增速度字段必须重折）");
   ok(hostSource.includes('"hourTokens"') && hostSource.includes('"hourHumanMsgs"') && /MODEL_ROW_FIELDS[\s\S]{0,400}hourTokens/.test(hostSource), "hourTokens / hourHumanMsgs 随行持久化并由 carryModelFields 搬运");
+}
+
+// —— 速度指标（2.2.0）：输出速度 tok/s / 平均 TTFT / 模型时间拆解 / 供应商维度 ——
+{
+  const aggSource = await readFile(new URL("../src/aggregate.js", import.meta.url), "utf8");
+  const modelsSource = await readFile(new URL("../src/models.js", import.meta.url), "utf8");
+  const t0 = Date.parse("2026-10-01T00:00:00Z");
+  const row = rowFromSession({ id: "s1", cwd: "/p/a", createdAt: t0 }, {
+    sessionStats: { turns: 2, steps: 10, llmMs: 10000, toolMs: 5000, decodeTokens: 1000, decodeMs: 5000, ttftMs: 4000, ttftSteps: 10 },
+    tokenUsage: { totals: { uncachedInputTokens: 100, outputTokens: 1000, cacheReadTokens: 9000, cacheWriteTokens: 0 } },
+    title: "t",
+  });
+  eq(row.decodeMs, 5000, "rowFromSession 读取 decodeMs");
+  eq(row.ttftMs, 4000, "rowFromSession 读取 ttftMs");
+  eq(row.ttftSteps, 10, "rowFromSession 读取 ttftSteps");
+
+  const snap = present(aggregate([row], { timeZone: "UTC", now: Date.parse("2026-10-02T00:00:00Z") }));
+  eq(snap.derived.outputSpeed, 200, "输出速度 = decodeTokens / (decodeMs/1000)：加权（先求和再相除），不是各会话速度的平均");
+  eq(snap.derived.ttftMean, 400, "平均 TTFT = ttftMs / ttftSteps");
+  eq(snap.derived.llmComposition.ttftShare, 0.4, "模型时间拆解：等首字占比");
+  eq(snap.derived.llmComposition.decodeShare, 0.5, "模型时间拆解：吐字占比");
+  eq(snap.derived.llmComposition.otherMs, 1000, "模型时间拆解：其它（排队 / 重试 / 空转）守恒");
+  eq(snap.derived.speedCoverage.speedSteps, 10, "速度覆盖度：有首字时间的步数");
+
+  // 无上报（旧会话缺字段）必须是 null：不能用 0 冒充「真的很慢」
+  const empty = present(aggregate([rowFromSession({ id: "s2", cwd: "/p/a", createdAt: t0 }, {
+    sessionStats: { turns: 1, steps: 3, llmMs: 3000, toolMs: 0 },
+    tokenUsage: { totals: { uncachedInputTokens: 10, outputTokens: 30, cacheReadTokens: 0, cacheWriteTokens: 0 } },
+    title: "old",
+  })], { timeZone: "UTC", now: Date.parse("2026-10-02T00:00:00Z") }));
+  eq(empty.derived.outputSpeed, null, "无 decodeMs 上报 → 速度 null（不显示 0，避免被误读成「很慢」）");
+  eq(empty.derived.ttftMean, null, "无 ttftSteps 上报 → 平均 TTFT null");
+  eq(empty.derived.speedCoverage.speedSteps, 0, "无上报时覆盖步数为 0（界面据此提示数据不足）");
+
+  // 供应商维度
+  const rowM = rowFromSession({ id: "s3", cwd: "/p/b", createdAt: t0 }, {
+    sessionStats: { turns: 1, steps: 4, llmMs: 4000, toolMs: 0, decodeTokens: 400, decodeMs: 2000, ttftMs: 1000, ttftSteps: 4 },
+    tokenUsage: { totals: { uncachedInputTokens: 10, outputTokens: 400, cacheReadTokens: 100, cacheWriteTokens: 0 } },
+    title: "m",
+  });
+  rowM.models = {
+    "magpie/workbuddy-ai/deepseek-v4.1-flash": { requests: 3, inOff: 10, inPeak: 0, outOff: 300, outPeak: 0, crOff: 100, crPeak: 0, cwOff: 0, cwPeak: 0, streamMs: 1, llmMs: 3000, efforts: {}, raw: {} },
+    "deepseek-account/deepseek-flash": { requests: 1, inOff: 0, inPeak: 0, outOff: 100, outPeak: 0, crOff: 0, crPeak: 0, cwOff: 0, cwPeak: 0, streamMs: 1, llmMs: 1000, efforts: {}, raw: {} },
+  };
+  const snapM = present(aggregate([rowM], { timeZone: "UTC", now: Date.parse("2026-10-02T00:00:00Z") }));
+  eq(snapM.byProvider.length, 2, "供应商维度：按归并组名首段汇总出 2 个供应商");
+  eq(snapM.byProvider[0].key, "magpie/workbuddy-ai", "供应商取「除模型外的整段路径」（magpie/workbuddy-ai/... → magpie/workbuddy-ai）");
+  eq(snapM.byProvider[0].requests, 3, "供应商请求数汇总正确");
+  ok(modelsSource.includes("export function providerOf"), "providerOf 由 models.js 提供（无分隔段时归为未标注，不猜）");
+  ok(aggSource.includes("byProvider: buildByProvider(modelMap)"), "快照带 byProvider");
+
+  // 同步载荷必须带上新字段，否则多机合并后对端速度恒为 0
+  const syncSource = await readFile(new URL("../src/sync-service.js", import.meta.url), "utf8");
+  ok(syncSource.includes("decodeMs: row.decodeMs") && syncSource.includes("ttftMs: row.ttftMs") && syncSource.includes("ttftSteps: row.ttftSteps"), "同步出向载荷带 decodeMs / ttftMs / ttftSteps");
+  ok(syncSource.includes("decodeMs: safeCount") && syncSource.includes("ttftSteps: safeCount"), "同步入向载荷对新字段做边界收敛");
 }
 
 console.log("\n—— 宿主路由（stub ctx）——");
@@ -1290,9 +1346,10 @@ ok(reportWithModels.includes("按日模型趋势"), "按日趋势带小标题（
 ok(reportWithModels.includes("api-docs.deepseek.com"), "报告 footer 给出官方计费链接");
 ok(reportWithModels.includes("官方计费标准"), "报告 footer 标注官方计费标准");
 ok(reportWithModels.includes("deepseek-v4-flash"), "报告列出模型名");
-ok(reportWithModels.includes(">模型费用<"), "报告 KPI 增加「模型费用」（与看板同标签）");
+ok(reportWithModels.includes(">模型耗时占比<") && reportWithModels.includes(">平均每次输出<"), "报告 KPI 含两张模型性能卡（模型耗时占比 / 平均每次输出）");
+ok(!reportWithModels.includes("模型费用"), "报告不再有「模型费用」（价目覆盖不足，数字失真）");
 ok(reportWithModels.includes("最活跃模型") && reportWithModels.includes("请求占比"), "报告 KPI 增加「最活跃模型」（与看板同口径）");
-ok(reportWithModels.includes("个模型有官方价"), "模型费用 KPI 副标题给出价目覆盖度");
+ok(/模型耗时 [\d.]+ ?[hms]/.test(reportWithModels), "模型耗时占比副标题给出耗时与模型数");
 ok(reportWithModels.includes('aria-label="模型 Token 占比"'), "报告右侧＝模型 Token 占比环形图（与看板首页同口径）");
 ok(reportWithModels.includes("模型 Token 占比"), "报告小标题为「模型 Token 占比」");
 ok(!reportWithModels.includes("柱状图（当前区间）"), "报告不再出现「柱状图（当前区间）」");
@@ -1777,6 +1834,8 @@ console.log("\n—— 报告结构对齐（看板 → 报告）——");
     const external = new Set([
       "escapeHtml", "formatHours", "formatInt", "formatTokens", "formatPercent", "translate",
       "sectorPath", "String",
+      // 2.2.0 新增：速度与首字延迟的格式化（同样来自 ./format.js）
+      "formatSpeed", "formatTtft",
     ]);
     const missing = [...called].filter((name) => !defined.has(name) && !external.has(name));
     eq(missing.length, 0, "结构：模板调用的辅助函数都有定义（防 rangeFilter is not defined 回归）", missing.join(", "));
@@ -1784,7 +1843,7 @@ console.log("\n—— 报告结构对齐（看板 → 报告）——");
   }
   ok(parityHtml.includes("data-bar-cell") && /class="bar-cell-fill"[^>]*style="width:[0-9.]+%;background:/.test(parityHtml), "结构：表格比例条与看板同规则（宽度百分比 + 内联背景条）");
   ok(parityHtml.includes("模型占比 · 面积 = Token") && parityHtml.includes("按日模型趋势"), "结构：模型 treemap / 按日趋势都有小标题");
-  ok(parityHtml.includes("最活跃模型") && parityHtml.includes("请求占比") && parityHtml.includes("模型费用"), "结构：KPI 含「模型费用」与「最活跃模型」");
+  ok(parityHtml.includes("最活跃模型") && parityHtml.includes("模型耗时占比") && parityHtml.includes("平均每次输出"), "结构：KPI 含两张模型性能卡与「最活跃模型」");
   ok(parityHtml.includes("等待 ") && parityHtml.includes("净活跃"), "结构：KPI / footer 写清净活跃与等待口径");
   ok(!parityHtml.includes("用户画像") && !parityHtml.includes('data-kind="ai-profile"') && !parityHtml.includes("本地规则版"), "结构：报告不展示 AI 画像（有意不同，见 report-parity）");
   {
@@ -3255,6 +3314,27 @@ bootSync.seq = 1;
     eq(cfg.local.dir, "~/sync/dsh", "设置：可切到共享目录");
   }
 
+  // 15.2b 自动同步频率：保存后同步写 pushEveryMs / pullEveryMs（热应用后定时器据此重建）
+  {
+    const base = applySettingsPatch({ enabled: true, transport: "cos", cos: { bucket: "b", region: "r" } }, { syncFrequency: "12h" });
+    eq(base.syncFrequency, "12h", "频率：可保存为 12 小时");
+    eq(base.pushEveryMs, 12 * 3600 * 1000, "频率：12 小时写入推送周期");
+    eq(base.pullEveryMs, 30 * 60 * 1000, "频率：拉取周期被统一为 30 分钟");
+    const boot = applySettingsPatch(base, { syncFrequency: "boot" });
+    eq(boot.syncFrequency, "boot", "频率：可保存为每次开机");
+    eq(boot.pullEveryMs, 30 * 60 * 1000, "频率：开机模式拉取周期不变");
+    const manual = applySettingsPatch(base, { syncFrequency: "manual" });
+    eq(manual.syncFrequency, "manual", "频率：可保存为仅手动");
+    let freqErr = null;
+    try { applySettingsPatch({}, { syncFrequency: "weekly" }); } catch (error) { freqErr = reasonOfForTest(error); }
+    ok(/不支持的同步频率/.test(freqErr ?? ""), "频率：未知值被拒", freqErr);
+    eq(editableView({ enabled: true, syncFrequency: "boot" }).syncFrequency, "boot", "频率：设置视图带出当前频率");
+    eq(editableView({ enabled: true }).syncFrequency, "6h", "频率：未配置时视图给默认 6h");
+    // slimConfig：默认频率不写进 YAML（保持配置干净）
+    eq(slimConfig({ enabled: true, syncFrequency: "6h" }).syncFrequency, undefined, "频率：默认值不落盘");
+    eq(slimConfig({ enabled: true, syncFrequency: "12h" }).syncFrequency, "12h", "频率：非默认值落盘");
+  }
+
   // 15.3 校验：路径必须含 {machineId}
   let err = null;
   try { applySettingsPatch({ enabled: false }, { path: "machines/fixed.json" }); } catch (error) { err = reasonOfForTest(error); }
@@ -3582,6 +3662,28 @@ bootSync.seq = 1;
   ok(!/value=\{[^}]*configured[^}]*\}/.test(syncView), "UI：已配置字段不回填值");
   // 复用统一组件（不另造样式）
   ok(syncView.includes('from "./chips.jsx"'), "UI：设备筛选复用 ChipGroup/Chip");
+  // 2.3.2：设备筛选行改成「小标签 + chips + 右侧按钮」一行，不再用 CardHead（中间空白太大）
+  ok(/className="wl-device-row"/.test(syncView), "UI：设备筛选行用专用容器（wl-device-row）");
+  ok(/className="wl-device-label"[\s\S]{0,200}devices\.all/.test(syncView), "UI：「设备」小标签在「全部设备」左侧且同属 chips 组");
+  // 2.3.3：左＝应用说明，右＝标签 + chips + 按钮
+  {
+    const stylesText = await readFile(new URL("../src/client/styles.js", import.meta.url), "utf8");
+    // 截取 device-row 的 JSX 区块：从容器开始到紧跟其后的 "  );"（函数返回结束），
+    // 否则会被内层 {{/* … */}} 或子 div 的 </div> 提前截断。
+    const rowStart = syncView.indexOf('className="wl-device-row"');
+    const rowEnd = syncView.indexOf("\n  );", rowStart);
+    const row = rowStart >= 0 && rowEnd > rowStart ? syncView.slice(rowStart, rowEnd) : "";
+    ok(row.includes('data-kind="app-desc"') && row.includes('data-kind="device-controls"'), "UI：设备行分左右两块（应用说明 / 设备控件）");
+    ok(row.indexOf('data-kind="app-desc"') < row.indexOf('data-kind="device-controls"'), "UI：应用说明在左、设备控件在右");
+    // entry 是 JSX 变量名，打包后不可见；检查渲染语句 {entry === null ? null : entry}
+    ok(row.indexOf('data-kind="device-controls"') < row.indexOf("{entry"), "UI：「设备同步」按钮与 chips 同属右侧控件簇（紧挨）");
+    const descRule = /\.wl-app-desc-body \{[^}]*\}/s.exec(stylesText)?.[0] ?? "";
+    ok(/font-size: 11px/.test(descRule), "样式：应用说明用 11px 弱化小字", descRule);
+    const controlsRule = /\.wl-device-controls \{[^}]*\}/s.exec(stylesText)?.[0] ?? "";
+    ok(/margin-left: auto/.test(controlsRule), "样式：右侧控件簇靠右（margin-left:auto）");
+    ok(zh["panel.descTitle"].length > 0 && zh["panel.descBody"].length > 0, "文案：应用说明中英文案齐全");
+  }
+  ok(/data-kind="devices-label"/.test(syncView), "UI：标签带 data-kind 便于断言定位");
   ok(syncView.includes('from "./card-head.jsx"'), "UI：卡片头复用 CardHead");
   ok(!/wl-chip-[a-z]+/.test(syncView), "UI：没有自造 chip 变体 class");
   // 凭据绝不回显
@@ -3605,10 +3707,13 @@ bootSync.seq = 1;
 
   // 面板右下角版本号：只从宿主取（不在客户端写死常量）
   ok(clientIndex.includes("usePluginVersion"), "UI：面板读取插件版本号");
-  ok(/data-plugin-version=\{version\}/.test(clientIndex) && />v\{version\}</.test(clientIndex), "UI：右下角渲染 v{version}");
+  ok(/data-plugin-version=\{versionInfo\.version\}/.test(clientIndex) && /v\{versionInfo\.version\}/.test(clientIndex), "UI：右下角渲染 v{版本}");
   ok(/fetch\(`\$\{API_PATH\}\/sync`/.test(clientIndex), "UI：版本号来自宿主 /sync 路由");
   ok(!/const PLUGIN_VERSION\s*=/.test(clientIndex), "UI：客户端不写死版本常量（避免与 package.json 漂移）");
-  ok(clientIndex.includes('className="wl-foot"'), "UI：版本号挂在页脚栏（不占内容区布局）");
+  // 2.3.1：版本号不再是右下角浮层，而是顺在底部「口径」说明句末
+  ok(!clientIndex.includes('className="wl-foot"'), "UI：不再有独立的版本号页脚栏");
+  ok(/className="wl-note"[\s\S]{0,600}className="wl-version"/.test(clientIndex), "UI：版本号在底部说明文本之后");
+  ok(!/\.wl-version \{[^}]*position: absolute/s.test(await readFile(new URL("../src/client/styles.js", import.meta.url), "utf8")), "样式：版本号不再是绝对定位浮层");
   // 版本号只放在面板外壳（版本号是应用级信息，不混进画像/同步等功能卡）
   ok(!profileCard.includes("wl-version"), "UI：功能卡片里不重复渲染版本号（只有面板右下角一处）");
 
@@ -3617,13 +3722,30 @@ bootSync.seq = 1;
   ok(/if \(savedView\?\.enabled === true\) await runProbe\(/.test(syncView), "UI：保存配置后立即自动测试连接");
   ok(/data-state=\{iconState\}/.test(syncView) && syncView.includes("configured") , "UI：标题旁有配置状态图标（对号 / 圆圈 / 感叹号）");
   ok(syncView.includes('data-action="sync-now-push"') && syncView.includes('data-action="sync-now-pull"'), "UI：手动推送 / 拉取已迁入弹窗");
+  {
+    const view = await readFile(new URL("../src/client/sync-view.jsx", import.meta.url), "utf8");
+    const group = /data-block="sync-status-frequency"[\s\S]*?data-block="sync-frequency"/.exec(view);
+    ok(group !== null, "布局：状态与频率放在同一个两列容器里（左右并排）");
+    ok(/className="wl-form-grid wl-sync-two-col"/.test(view), "布局：该容器复用两列栅格（窄屏自动堆叠）");
+  }
   ok(syncView.includes("FREQUENCY_OPTIONS") && syncView.includes('data-block="sync-frequency"'), "UI：预留「同步频率」区域");
   {
-    const freq = (id) => FREQUENCY_OPTIONS.find((item) => item.id === id);
-    eq(freq("6h")?.hours, 6, "频率：默认每 6 小时");
-    eq(freq("6h")?.ready, true, "频率：6 小时已就绪（默认选中）");
-    eq(freq("12h")?.ready, false, "频率：12 小时本版置灰（预留）");
-    eq(freq("boot")?.ready, false, "频率：开机同步本版置灰（预留）");
+    // 2.2.0：四种频率全部可选，各自换算成推送/拉取周期
+    eq(frequencyPlan("6h").pushEveryMs, 6 * 3600 * 1000, "频率：每 6 小时 → 推送周期 6h");
+    eq(frequencyPlan("12h").pushEveryMs, 12 * 3600 * 1000, "频率：每 12 小时 → 推送周期 12h");
+    eq(frequencyPlan("6h").pullEveryMs, 30 * 60 * 1000, "频率：拉取恒为 30 分钟");
+    eq(frequencyPlan("6h").timer, true, "频率：6h 建周期定时器");
+    eq(frequencyPlan("6h").runOnStart, true, "频率：6h 启动也先同步一次");
+    eq(frequencyPlan("boot").timer, false, "频率：每次开机 → 不建定时器");
+    eq(frequencyPlan("boot").runOnStart, true, "频率：每次开机 → 启动时跑一次");
+    eq(frequencyPlan("manual").timer, false, "频率：仅手动 → 不建定时器");
+    eq(frequencyPlan("manual").runOnStart, false, "频率：仅手动 → 启动也不跑");
+    eq(frequencyPlan("whatever").frequency, "6h", "频率：非法值回落 6h");
+    eq(SYNC_FREQUENCY_OPTIONS.length, 4, "频率：界面提供 4 个选项（6h / 12h / 开机 / 手动）");
+    for (const item of SYNC_FREQUENCY_OPTIONS) {
+      ok(FREQUENCY_TEXT_KEYS[item.id] in zh && FREQUENCY_TEXT_KEYS[item.id] in en, `频率：${item.id} 有中英文案`);
+      ok(FREQUENCY_NOTE_KEYS[item.id] in zh && FREQUENCY_NOTE_KEYS[item.id] in en, `频率：${item.id} 有说明文案`);
+    }
     // 图标语义
     eq(configureIconState({ enabled: true, configured: true, probeOk: true }), "configured", "图标：已配置 + 自检通过 = 对号");
     eq(configureIconState({ enabled: true, configured: true, probeOk: false }), "failed", "图标：自检失败 = 感叹号");
@@ -3634,9 +3756,7 @@ bootSync.seq = 1;
     for (const state of ["configured", "failed", "off", "unchecked", "none"]) {
       ok(ICON_TEXT_KEYS[state] in zh && ICON_TEXT_KEYS[state] in en, `图标：${state} 有中英文案`);
     }
-    for (const item of FREQUENCY_OPTIONS) {
-      ok(FREQUENCY_TEXT_KEYS[item.id] in zh && FREQUENCY_TEXT_KEYS[item.id] in en, `频率：${item.id} 有中英文案`);
-    }
+    eq(FREQUENCY_OPTIONS, SYNC_FREQUENCY_OPTIONS, "频率：FREQUENCY_OPTIONS 与 SYNC_FREQUENCY_OPTIONS 同源");
   }
 
   // —— 2.0.3：设备身份与路径（改名不断数据的保障）——
@@ -3675,7 +3795,7 @@ bootSync.seq = 1;
     ok(!/data-action="sync-now-(push|pull)"[^>]*form\?\.enabled/.test(view), "按钮：不再用未保存的 form.enabled 判断（bug 根因）");
     ok(/manualSyncState\(\{ enabled: savedEnabled/.test(view), "按钮：统一走 manualSyncState(savedEnabled)");
     ok(/const savedEnabled = status\?\.enabled === true/.test(view), "按钮：以宿主 status.enabled 为准");
-    ok(view.includes("set.pendingSave"), "界面：开关改了没保存时给出提示（而不是把按钮弄灰）");
+    ok(view.includes("set.pendingSave"), "界面：改了频率/开关没保存时给出提示（而不是把按钮弄灰）");
   }
 
   // —— 2.0.5 回归：busy 必须是布尔，否则按钮会被永久置灰 ——
@@ -3693,7 +3813,9 @@ bootSync.seq = 1;
     eq(zh["panel.title"], "DSH 工作量报告", "标题：中文改为「DSH 工作量报告」");
     eq(en["panel.title"], "DSH Workload Report", "标题：英文改为「DSH Workload Report」");
     ok(!("panel.subtitle" in zh) && !("panel.subtitle" in en), "副标题：删除「本地数据」这类备注文案键");
-    ok(/range-line/.test(clientIndex), "副标题：只渲染日期区间（如 2026-10-21 ~ 2026-10-27）");
+    ok(/wl-range-line/.test(clientIndex), "日期区间：渲染为行内小字");
+    ok(/<\/ChipGroup>[\s\S]{0,300}wl-range-line/.test(clientIndex), "日期区间：紧跟在日期筛选器之后");
+    ok(!/className="wl-subtitle"[\s\S]{0,200}range\.from/.test(clientIndex), "日期区间：不再出现在标题下方");
     ok(!/本地数据|local data only/.test(JSON.stringify(zh) + JSON.stringify(en)), "文案：字典里不再出现「本地数据 / local data only」");
     // 导出入口：默认隐藏，但实现与路由保留
     ok(/const EXPORT_ENTRY_VISIBLE = false/.test(clientIndex), "导出：入口默认隐藏（开关常量 = false）");
@@ -3726,6 +3848,123 @@ bootSync.seq = 1;
     ok(/\.wl-pie-name-full \{[^}]*white-space: normal/s.test(stylesText), "样式：完整显示模式允许折行、不省略");
   }
 
+  // —— 2.2.0：自动同步（频率可选 + 定时器跟随 + 手动按钮兜底）——
+  {
+    const view = await readFile(new URL("../src/client/sync-view.jsx", import.meta.url), "utf8");
+    const host = await readFile(new URL("../index.js", import.meta.url), "utf8");
+    // 界面：四个频率都可点（不再有置灰 / 「下一版」徽标）
+    ok(!/item\.ready !== true/.test(view), "UI：频率选项不再有置灰逻辑");
+    ok(!view.includes("set.frequencySoon") && !view.includes("set.frequencyComing"), "UI：去掉「下一版」徽标");
+    ok(/data-frequency=\{item\.id\}/.test(view) && /onClick=\{\(\) => setFrequency\(item\.id\)\}/.test(view), "UI：点选频率即切换");
+    ok(view.includes("FREQUENCY_NOTE_KEYS[frequency]"), "UI：每个频率都有「会怎样同步」的说明");
+    // 未保存提示已并入频率说明那一行（不再单独一行）
+    ok(/savedFrequency === frequency \? null : ` \$\{t\("set\.pendingSave"\)\}`/.test(view), "UI：改了频率未保存时在同一行提示");
+    ok(/values\.syncFrequency = frequency/.test(view), "UI：保存时把频率一起提交");
+    // 宿主：定时器按频率工作
+    ok(/frequencyPlan\(index\.deviceSync\.config\.syncFrequency\)/.test(host), "宿主：按 syncFrequency 推导定时器参数");
+    ok(/plan\.timer \? setInterval/.test(host), "宿主：只有周期型频率才建定时器");
+    ok(/if \(plan\.runOnStart\)/.test(host), "宿主：启动后先同步一次（含「每次开机」）");
+    ok(/runOnStart[^;]*\{[\s\S]{0,200}runPush\(\)/.test(host), "宿主：启动同步同时包含推送与拉取");
+    // 保存设置后重建定时器（热应用）
+    ok(/syncTimers\.refresh\(\)/.test(host), "宿主：保存设置后 refresh 定时器（新频率立即生效）");
+  }
+
+  // —— 静态检查：sync-view 用到的 sync-state 导出都必须真的 import 进来 ——
+  // （2.2.0 踩过：normalizeFrequency 写进了 import 列表却漏了变量名，导致整个浮层 ReferenceError）
+  {
+    const view = await readFile(new URL("../src/client/sync-view.jsx", import.meta.url), "utf8");
+    const importBlock = view.slice(0, view.indexOf("/** 宿主半部注册的只读接口前缀"));
+    const names = ["normalizeFrequency", "frequencyPlan", "FREQUENCY_OPTIONS", "FREQUENCY_TEXT_KEYS", "FREQUENCY_NOTE_KEYS",
+      "ICON_TEXT_KEYS", "configureIconState", "deviceRenameReport", "manualSyncState", "pathPreview", "prefixOf", "shortDeviceId", "checkMachineIdentity"];
+    const missing = names.filter((name) => new RegExp(`\\b${name}\\b`).test(view) && !new RegExp(`\\b${name}\\b`).test(importBlock));
+    eq(missing.length, 0, `UI：sync-state 的导出都已 import（缺失：${missing.join(", ") || "无"}）`);
+  }
+
+  // —— 版本号一致性：右下角只读 package.json，所以三处写死版本号的地方必须同步 ——
+  {
+    const pkgJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+    const changelogText = await readFile(new URL("../CHANGELOG.md", import.meta.url), "utf8");
+    const zhReadme = await readFile(new URL("../README.zh-CN.md", import.meta.url), "utf8");
+    const enReadme = await readFile(new URL("../README.md", import.meta.url), "utf8");
+    ok(changelogText.includes(`## v${pkgJson.version}（`), "版本：CHANGELOG 有当前版本的正文条目", pkgJson.version);
+    eq(/当前版本：\*\*([\d.]+)\*\*/.exec(zhReadme)?.[1], pkgJson.version, "版本：README.zh-CN 当前版本一致");
+    eq(/Current version: \*\*([\d.]+)\*\*/.exec(enReadme)?.[1], pkgJson.version, "版本：README 当前版本一致");
+    // 宿主把 version + build 一起下发，界面右下角用它们渲染 vX.Y.Z · <sha>
+    const hostSrc = await readFile(new URL("../index.js", import.meta.url), "utf8");
+    ok(/build: PLUGIN_BUILD/.test(hostSrc), "版本：宿主 /sync 同时下发构建标识");
+    const clientSrc = await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8");
+    ok(/data-plugin-build=/.test(clientSrc) && /versionInfo\.build/.test(clientSrc), "版本：右下角显示「版本 · 构建哈希」");
+  }
+
+  // —— 2.2.0 交互：手动按钮只在「仅手动」下出现 ——
+  {
+    const view = await readFile(new URL("../src/client/sync-view.jsx", import.meta.url), "utf8");
+    ok(/frequency === "manual" \? \(/.test(view), "UI：立即推送/拉取只在选中「仅手动」时渲染");
+    ok(/data-visible=\{frequency === "manual" \? "true" : "false"\}/.test(view), "UI：手动按钮容器带 data-visible（自动同步时隐藏）");
+    // 手动按钮块要在频率 chips 之后、说明文字之前（紧跟「仅手动」）
+    const chipsAt = view.indexOf("FREQUENCY_OPTIONS.map");
+    const manualAt = view.indexOf('data-action="sync-now-push"');
+    const noteAt = view.indexOf('data-kind="sync-frequency-note"');
+    ok(chipsAt > 0 && manualAt > chipsAt && noteAt > manualAt, "UI：手动按钮紧跟频率选项之后");
+    // 配置页文案精简：副标题只剩一句
+    ok(zh["set.hint"].length <= 12, "文案：弹窗副标题很简短", zh["set.hint"]);
+    ok(!view.includes("path-shared"), "文案：路径区说明已合并为一行");
+    ok(!view.includes("cred.why") && !view.includes("sync-footnote"), "文案：去掉底部重复的凭据说明");
+  }
+
+  // —— 2.3.0：「模型费用」下线，改为两个不依赖价格的模型性能 KPI ——
+  {
+    const clientIndex = await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8");
+    const reportSrc = await readFile(new URL("../src/report-html.js", import.meta.url), "utf8");
+    // 1) 费用 KPI 彻底移除（看板 / 报告 / 文案）
+    ok(!clientIndex.includes("kpi.modelCost"), "KPI：看板不再有「模型费用」");
+    ok(!reportSrc.includes("kpi.modelCost"), "KPI：报告不再有「模型费用」");
+    ok(!("kpi.modelCost" in zh) && !("kpi.modelCost" in en), "KPI：删除「模型费用」文案键");
+    const keysBlock = /const KPI_KEYS = \[([\s\S]*?)\];/.exec(clientIndex)?.[1] ?? "";
+    const keys = [...keysBlock.matchAll(/"(kpi\.[A-Za-z]+)"/g)].map((m) => m[1]);
+    eq(keys.length, 8, "KPI：仍是 8 张卡");
+    ok(keys.includes("kpi.modelShare") && keys.includes("kpi.modelOutput"), "KPI：换成模型耗时占比 + 平均每次输出");
+    // 不与已有的「缓存读取占比」重复（曾用命中率，实测两者数值完全相同）
+    ok(!keys.includes("kpi.modelCacheHit") || keys.includes("kpi.cache"), "KPI：不与「缓存读取占比」重复计指标");
+    // 2) 为什么下线：内置价目表只覆盖 DeepSeek 官方模型，实际主力模型没有价 → 费用必然偏低
+    const pricing = resolvePricing({});
+    const priced = Object.keys(pricing.table);
+    ok(priced.length <= 2 && priced.every((k) => k.startsWith("deepseek-v4")), "价目：内置表只覆盖 DeepSeek 官方模型", priced.join(","));
+    for (const real of ["step-5-preview", "hy4-preview", "deepseek-v4.1-flash"]) {
+      const bucket = { ...emptyModelBucket(real), key: real, group: real, inOff: 1e6, outOff: 1e6 };
+      eq(costOf(bucket, pricing), null, `价目：${real} 没有官方价 → 费用算不出来（这就是失真的原因）`);
+    }
+    // 3) 新指标口径：缓存命中率 = cacheRead/(input+cacheRead)，平均输出 = output/requests（均不依赖价格）
+    const byModel = [
+      { requests: 100, tokens: { input: 10_000, cacheRead: 90_000, output: 5_000 } },
+      { requests: 50, tokens: { input: 5_000, cacheRead: 15_000, output: 3_000 } },
+    ];
+    const list = byModel.filter((item) => item.requests > 0);
+    const requests = list.reduce((sum, item) => sum + item.requests, 0);
+    const input = list.reduce((sum, item) => sum + item.tokens.input, 0);
+    const cacheRead = list.reduce((sum, item) => sum + item.tokens.cacheRead, 0);
+    const output = list.reduce((sum, item) => sum + item.tokens.output, 0);
+    eq(requests, 150, "模型指标：请求数汇总");
+    // 模型耗时占比 = 模型耗时 / 活跃时长（与价格无关）
+    eq(Math.round((2 * 3600 * 1000 / (4 * 3600 * 1000)) * 1000) / 10, 50, "模型指标：耗时占比 = llmMs/activeMs");
+    eq(Math.round(output / requests), 53, "模型指标：平均每次输出 = output/requests");
+    // 4) 看板与报告一致
+    ok(/kpi\.modelShare/.test(clientIndex) && /kpi\.modelShare/.test(reportSrc), "一致性：看板与报告都有模型耗时占比");
+    ok(/kpi\.modelOutput/.test(clientIndex) && /kpi\.modelOutput/.test(reportSrc), "一致性：看板与报告都有平均每次输出");
+  }
+
+  // —— 2.3.2 版式微调：设备标签字号 + 标题字号 ——
+  {
+    const stylesText = await readFile(new URL("../src/client/styles.js", import.meta.url), "utf8");
+    const labelRule = /\.wl-device-label \{[^}]*\}/s.exec(stylesText)?.[0] ?? "";
+    ok(/font-size: 12px/.test(labelRule), "样式：「设备」标签字号 12px（比卡片标题 13px 小）", labelRule);
+    ok(/color: var\(--dsw-alias-label-secondary/.test(labelRule), "样式：「设备」标签用次级文字色（弱化）");
+    const titleRule = /\.wl-title \{[^}]*\}/s.exec(stylesText)?.[0] ?? "";
+    ok(/font-size: 17px/.test(titleRule), "样式：标题字号 17px（16 → +1px）", titleRule);
+    // 版本号不变
+    eq(JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version, "2.3.1", "版本：本次为纯样式微调，版本号不变");
+  }
+
   // 报告不含同步 UI（报告是自包含快照，不暴露设备管理）
   const reportSource = await readFile(new URL("../src/report-html.js", import.meta.url), "utf8");
   ok(!reportSource.includes("DeviceFilter") && !reportSource.includes("BySyncView"), "UI：HTML 报告不含设备管理 UI");
@@ -3750,7 +3989,7 @@ bootSync.seq = 1;
   }
   // 每个新增键都真的被用到（不留死键）
   const syncView = await readFile(new URL("../src/client/sync-view.jsx", import.meta.url), "utf8");
-  for (const key of ["set.dialogTitle", "set.colConnection", "set.advanced", "set.cancel", "set.savedCredFail", "cred.clearPending", "cred.afterEnable", "set.path", "set.pathReadonlyHint", "set.pathLocation", "set.registeredDevices", "set.deviceIdHint", "set.lastTimes"]) {
+  for (const key of ["set.dialogTitle", "set.colConnection", "set.advanced", "set.cancel", "set.savedCredFail", "cred.clearPending", "cred.afterEnable", "set.path", "set.pathLocation", "set.registeredDevices", "set.deviceIdHint", "set.lastTimes"]) {
     ok(syncView.includes(`t("${key}")`) || syncView.includes(`t("${key}",`) || syncView.includes(`"${key}"`), `文案：${key} 在界面里被使用`);
   }
 }

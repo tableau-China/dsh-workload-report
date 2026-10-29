@@ -48,7 +48,7 @@ export const STYLES = `
   border-bottom: 1px solid var(--dsw-alias-border-l2, #e5e7eb);
   flex-wrap: wrap;
 }
-.wl-title { font-size: 16px; font-weight: 600; margin: 0; }
+.wl-title { font-size: 17px; font-weight: 600; margin: 0; }
 .wl-subtitle { font-size: 12px; color: var(--dsw-alias-label-tertiary, #6b7280); margin: 2px 0 0; }
 .wl-spacer { flex: 1 1 auto; }
 /* 切换控件唯一实现（src/client/chips.jsx）：默认浅底 + 边框，选中主题强调色实底 + 白字。
@@ -95,7 +95,7 @@ export const STYLES = `
 .wl-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
 .wl-kpi { background: var(--dsw-alias-bg-layer-2, #f7f8fa); border: 1px solid var(--dsw-alias-border-l2, #eceef1); border-radius: 12px; padding: 12px 14px; min-width: 0; }
 .wl-kpi[data-kpi="kpi.tokens"] { grid-column: span 2; }
-.wl-kpi[data-kpi="kpi.modelCost"] { grid-column: span 2; }
+/* 模型性能两张卡（替换原来的「模型费用」宽度）：普通宽度即可，不再跨列 */
 .wl-kpi-label { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); margin-bottom: 6px; }
 .wl-kpi-value { font-size: 20px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* 模型名可能很长，只有这张卡允许换行 */
@@ -350,7 +350,7 @@ export const STYLES = `
 .wl-pager-info { font-size: 12px; color: var(--dsw-alias-label-tertiary, #6b7280); font-variant-numeric: tabular-nums; }
 .wl-pager .wl-btn[disabled] { opacity: 0.45; cursor: not-allowed; }
 @media (max-width: 1080px) { .wl-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } .wl-grid-2 { grid-template-columns: 1fr; } }
-@media (max-width: 720px) { .wl-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .wl-kpi[data-kpi="kpi.tokens"], .wl-kpi[data-kpi="kpi.modelCost"] { grid-column: auto; } .wl-name { max-width: 160px; } .wl-bar-cell { min-width: 44px; } }
+@media (max-width: 720px) { .wl-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .wl-kpi[data-kpi="kpi.tokens"] { grid-column: auto; } .wl-name { max-width: 160px; } .wl-bar-cell { min-width: 44px; } }
 
 
 /* ── 每日用量趋势（左）与模型用量（右）并排 ── */
@@ -433,6 +433,32 @@ export const STYLES = `
 .wl-cred-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .wl-cred-field select { font: inherit; font-size: 12px; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--dsw-alias-border-l2, #d7dbe0); background: var(--dsw-alias-bg-layer-1, #fff); color: var(--dsw-alias-label-primary, #111); }
 .wl-cred-field select:focus { outline: none; border-color: var(--dsw-static-deepseek-500, #4d6bfe); }
+/* —— 设备筛选行（2.3.3）：左＝应用说明，右＝「设备」标签 + chips + 「设备同步」按钮（紧挨） —— */
+.wl-device-row {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap; margin-bottom: 10px;
+}
+/* 左：应用是什么、能做什么（两行，第二行是弱化的说明） */
+.wl-app-desc { min-width: 0; flex: 0 1 auto; }
+.wl-app-desc-title {
+  margin: 0; font-size: 13px; font-weight: 600; line-height: 1.3;
+  color: var(--dsw-alias-label-primary, #111);
+}
+.wl-app-desc-body {
+  margin: 3px 0 0; font-size: 11px; line-height: 1.5;
+  color: var(--dsw-alias-label-tertiary, #6b7280);
+}
+/* 右：标签 + chips + 按钮同一簇，靠右对齐、彼此只留 8~10px */
+.wl-device-controls {
+  display: flex; align-items: center; gap: 8px;
+  flex-wrap: wrap; margin-left: auto; flex: 0 0 auto;
+}
+.wl-device-label {
+  font-size: 12px; font-weight: 600; line-height: 1;
+  color: var(--dsw-alias-label-secondary, #4b5563);
+  cursor: help; user-select: none;
+}
+.wl-device-controls .wl-chips { gap: 6px; }
 /* —— 多设备同步（默认关闭时这些容器不渲染）—— */
 .wl-sync { display: flex; flex-direction: column; gap: 12px; }
 .wl-sync-meta { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; font-size: 12px; }
@@ -467,7 +493,9 @@ export const STYLES = `
 .wl-form-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 /* 全局行（本机显示名）：在存储方式 chips 上方，横跨整行，一次设置对所有存储方式生效 */
 .wl-form-global { display: flex; flex-direction: column; gap: 10px; padding-bottom: 14px; border-bottom: 1px solid var(--dsw-alias-border-l2, #eceef1); }
-.wl-form-block { display: flex; flex-direction: column; gap: 10px; }
+.wl-form-block { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+/* 「连接与同步状态」与「同步频率」左右并排（<=720px 时由 .wl-form-grid 的断点自动堆叠） */
+.wl-sync-two-col { align-items: start; gap: 10px 24px; }
 /* 标题 + 状态图标（✓ / ! / ○）：标题行左侧一组的排版 */
 .wl-dialog-title { display: flex; align-items: center; gap: 8px; }
 .wl-state-icon {
@@ -585,15 +613,16 @@ export const STYLES = `
 }
 .wl-dialog-foot > .wl-hint { flex: 1 1 auto; min-width: 0; }
 @media (max-width: 720px) { .wl-form-grid { grid-template-columns: 1fr; } }
-/* 面板右下角的版本号（如 v2.0.2）：只做标识，不参与布局（绝对定位在页脚栏里，不撑高任何容器）
-   z-index 高于同步设置对话框，否则打开对话框时版本号会被盖住 */
-.wl-version {
-  position: absolute; right: 12px; bottom: 6px; z-index: 250;
+/* 版本号（如 v2.3.1 · 2b0d02f）：2.3.1 起不再浮在右下角，而是顺在底部「口径」说明句末，
+   与正文同字号同色（.wl-note），可选中复制，便于报障时直接贴出来 */
+.wl-version { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); user-select: text; }
+/* 日期区间：跟在日期筛选器后面（2.3.1 从标题下方移过来） */
+.wl-range-line {
   font-size: 11px; line-height: 1;
   color: var(--dsw-alias-label-tertiary, #6b7280);
-  pointer-events: none; user-select: none;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
-.wl-foot { position: relative; }
 [data-kind="sync-ok"] { color: var(--dsw-static-green-600, #059669); }
 [data-kind="sync-fail"], [data-kind="sync-error"] { color: var(--dsw-static-red-600, #dc2626); }
 [data-kind="stale"] { color: var(--dsw-static-amber-600, #b45309); }

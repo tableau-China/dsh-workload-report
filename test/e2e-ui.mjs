@@ -201,7 +201,7 @@ try {
   await sleep(1500);
 
   const kpis = await page.evaluate(() => [...document.querySelectorAll(".wl-kpi-value")].map((node) => node.textContent));
-  ok(kpis.length === 8, "看板渲染 8 张 KPI 卡（含「模型费用」「最活跃模型」）", JSON.stringify(kpis));
+  ok(kpis.length === 8, "看板渲染 8 张 KPI 卡（含「模型缓存命中率」「平均每次输出」「最活跃模型」）", JSON.stringify(kpis));
   ok(kpis.some((value) => /[1-9]/.test(value ?? "")), "KPI 有真实数值（非全 0）", JSON.stringify(kpis));
   ok(/^[\d,]*[1-9][\d,]*$/.test(kpis[1] ?? ""), "「总 Token」KPI 非零且为完整整数（能识别官方 wire 形状）", kpis[1]);
   ok(/[1-9]/.test(kpis[0] ?? ""), "「活跃时长」KPI 非零", kpis[0]);
@@ -211,12 +211,12 @@ try {
   const kpiLabels = await page.evaluate(() => [...document.querySelectorAll(".wl-kpi-label")].map((n) => n.textContent));
   ok(
     /活跃|active/i.test(kpiLabels[0] ?? "") && /token/i.test(kpiLabels[1] ?? "") && /费用|cost/i.test(kpiLabels[2] ?? "") && /天|day/i.test(kpiLabels[3] ?? "") && /对话|conversation/i.test(kpiLabels[4] ?? ""),
-    "KPI 顺序：活跃时长 → 总 Token → 模型费用 → 活跃天数 → 对话次数",
+    "KPI 顺序：活跃时长 → 总 Token → 模型缓存命中率 → 活跃天数 → 对话次数",
     JSON.stringify(kpiLabels),
   );
   ok(/^[\d,]+$/.test(kpis[1] ?? "") && (kpis[1] ?? "").length >= 6, "总 Token 是完整整数（非 K/M/B 缩写）", kpis[1]);
   ok(/模型|model/i.test(kpiLabels[7] ?? ""), "第 8 张 KPI 是「最活跃模型」", JSON.stringify(kpiLabels[7]));
-  // 8 张卡正好 2 行排满：Tokens / 模型费用各跨 2 列，值不溢出
+  // 8 张卡正好 2 行排满：Tokens 跨 2 列，值不溢出
   const kpiLayout = await page.evaluate(() => {
     const cards = [...document.querySelectorAll(".wl-kpis .wl-kpi")];
     return {
@@ -229,7 +229,7 @@ try {
       }),
     };
   });
-  ok(kpiLayout.rows === 2 && kpiLayout.spans.includes("kpi.tokens") && kpiLayout.spans.includes("kpi.modelCost") && !kpiLayout.overflow, "KPI 8 张卡 2 行排满（Tokens / 模型费用跨 2 列）且值不溢出", JSON.stringify(kpiLayout));
+  ok(kpiLayout.rows === 2 && kpiLayout.spans.includes("kpi.tokens") && !kpiLayout.overflow, "KPI 8 张卡 2 行排满（Tokens 跨 2 列）且值不溢出", JSON.stringify(kpiLayout));
 
   // —— 四个页签初始高度一致：面板固定 92vh，切页签时外框不跳 ——
   {
@@ -942,7 +942,7 @@ try {
     await reportPage.setViewport({ width: 1240, height: 1400, deviceScaleFactor: 2 });
   }
 
-  // —— 问题 4：导出报告与看板对齐（模型用量一节 + 模型费用 KPI + 去折线 / 周末异色）——
+  // —— 问题 4：导出报告与看板对齐（模型用量一节 + 模型性能 KPI + 去折线 / 周末异色）——
   const reportDom = await reportPage.evaluate(() => {
     const treemap = document.querySelector("svg.treemap");
     const parent = treemap?.parentElement ?? null;
@@ -964,7 +964,7 @@ try {
     };
   });
   ok(/模型用量/.test(reportDom.text), "报告含「模型用量」一节（模型区不再为空）");
-  ok(reportDom.kpis.some((text) => /模型费用/.test(text)), "报告 KPI 含「模型费用」", JSON.stringify(reportDom.kpis));
+  ok(reportDom.kpis.some((text) => /模型缓存命中率/.test(text)) && reportDom.kpis.some((text) => /平均每次输出/.test(text)), "报告 KPI 含两张模型性能卡", JSON.stringify(reportDom.kpis));
   ok(reportDom.hasTreemap && reportDom.treemapGap !== null && reportDom.treemapGap.left <= 8 && reportDom.treemapGap.right <= 8, "报告含铺满容器的 treemap", JSON.stringify(reportDom.treemapGap));
   ok(reportDom.polylines === 0, "报告每日趋势无折线（与看板一致）", String(reportDom.polylines));
   ok(reportDom.weekendBars > 0, "报告每日趋势有周末异色柱", String(reportDom.weekendBars));

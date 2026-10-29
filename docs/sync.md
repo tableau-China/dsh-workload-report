@@ -98,7 +98,7 @@
 | **连接参数**（左标题 + 右输入框） | COS：存储桶 / 地域；GitHub·Gitea：仓库 + 服务地址（左列）· 分支（右列）；共享目录：目录路径 |
 | **凭据**（默认展开，每字段一行） | COS：SecretId / SecretKey；GitHub·Gitea：Token；共享目录：不需要凭据 |
 | **连接与同步状态** | **一行**：大号状态徽标 + 结论 + 「上次推送 · 上次拉取」；失败时多一行原因。成功时保持单行 |
-| **同步频率**（本版预留） | 「每 6 小时」默认可选；「每 12 小时」「每次开机」置灰并标「下一版提供」；下方保留手动「立即推送 / 立即拉取」 |
+| **同步频率**（2.2.0 起可用） | 每 6 小时 / 每 12 小时 / 每次开机 / 仅手动；每个选项都标注"会怎样同步"；保存后定时器立即按新频率重建 |
 | **高级选项**（直接显示） | 「文件路径模板」**只读**展示实际 key（如 `machines/4fd7a959.json`），并说明文件位于同步存储的 `machines/` 目录下 |
 
 ### 1a. 设备身份：改名字不会断数据
@@ -135,6 +135,26 @@
 - 失败示例：状态区显示 `连接失败（NO_CREDENTIALS）· 未找到同步凭据`、图标变 `!`。
 
 ![连接失败时的状态](./images/sync-dialog-failed.png)
+
+### 1d. 自动同步频率（2.2.0）
+
+用户只选一个「多久同步一次」，插件内部换算成推送 / 拉取周期：
+
+| 频率 | 推送 | 拉取 | 启动时 |
+| --- | --- | --- | --- |
+| 每 6 小时（默认） | 6h | 30 分钟 | 先同步一次 |
+| 每 12 小时 | 12h | 30 分钟 | 先同步一次 |
+| 每次开机 | 仅启动一次 | 仅启动一次 | 同步一次，运行期间不跑 |
+| 仅手动 | 无定时器 | 无定时器 | 不同步 |
+
+- 配置项：`sync.syncFrequency`（`6h | 12h | boot | manual`，默认 `6h`）。
+- 换算逻辑集中在 `frequencyPlan()`（`src/client/sync-state.js`）：返回
+  `{ pushEveryMs, pullEveryMs, timer, runOnStart }`；**只有周期型频率才建定时器**。
+- **保存即生效**：`/sync/settings` 写入 `syncFrequency` 后宿主调用 `syncTimers.refresh()`
+  重建定时器，不需要重启 DSH。
+- 拉取恒为 30 分钟：拉取是只读且便宜的，但要看到别的机器的新数据，拉取必须比推送频繁。
+- **手动「立即推送 / 立即拉取」只在选中「仅手动」时出现**，就排在那四个频率选项后面（2.2.1 起）。
+  自动同步的三种频率下不显示——它们本来就会自己跑，不需要额外按钮。
 
 ### 2. 一次保存做了什么
 
@@ -312,7 +332,8 @@ config:
 | `sync.transport` | `github` | `cos` \| `github` \| `gitea` \| `local` |
 | `sync.path` | `machines/{machineId}.json` | key 模板，支持 `{machineId}` / `{machineName}` |
 | `sync.machineName` | `os.hostname()`（去 .local） | 展示名 |
-| `sync.pushEveryMs` | 6h | 推送周期（最小 60s） |
+| `sync.syncFrequency` | `6h` | 自动同步频率：`6h` \| `12h` \| `boot` \| `manual`（2.2.0） |
+| `sync.pushEveryMs` | 6h | 推送周期（最小 60s；由 `syncFrequency` 自动推导，手改仍生效） |
 | `sync.pullEveryMs` | 30m | 拉取周期（最小 60s） |
 | `sync.timeoutMs` | 15000 | 单请求超时 |
 | `sync.staleAfterMs` | 24h | 来源多久没拉到算过期（仅展示） |

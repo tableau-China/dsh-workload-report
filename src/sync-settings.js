@@ -14,6 +14,7 @@
  */
 
 import { SYNC_DEFAULTS, TRANSPORTS } from "./sync-service.js";
+import { frequencyPlan, normalizeFrequency } from "./client/sync-state.js";
 
 /** 传输方式的展示信息（GUI 用）。 */
 export const TRANSPORT_META = {
@@ -44,6 +45,7 @@ export function editableView(config) {
     transport,
     machineName: config.machineName ?? "",
     path: config.path ?? SYNC_DEFAULTS.path,
+    syncFrequency: normalizeFrequency(config.syncFrequency),
     pushEveryMs: Number(config.pushEveryMs) || SYNC_DEFAULTS.pushEveryMs,
     pullEveryMs: Number(config.pullEveryMs) || SYNC_DEFAULTS.pullEveryMs,
     redactPaths: config.redactPaths === true,
@@ -105,6 +107,15 @@ export function applySettingsPatch(current, patch = {}) {
       throw new Error("路径模板必须包含 {machineId}，否则多台设备会写到同一个文件");
     }
     if (path.length > 0) next.path = path;
+  }
+  if (patch.syncFrequency !== undefined) {
+    const freq = normalizeFrequency(patch.syncFrequency);
+    if (freq !== patch.syncFrequency) throw new Error(`不支持的同步频率：${patch.syncFrequency}`);
+    next.syncFrequency = freq;
+    // 频率决定推送周期（拉取恒 30 分钟）；两者一起写，避免出现「选了 12h 但周期还是 6h」
+    const plan = frequencyPlan(freq);
+    next.pushEveryMs = plan.pushEveryMs > 0 ? plan.pushEveryMs : next.pushEveryMs;
+    next.pullEveryMs = plan.pullEveryMs;
   }
   if (patch.pushEveryMs !== undefined) next.pushEveryMs = clampInterval(patch.pushEveryMs, next.pushEveryMs);
   if (patch.pullEveryMs !== undefined) next.pullEveryMs = clampInterval(patch.pullEveryMs, next.pullEveryMs);

@@ -45,6 +45,12 @@ export const SYNC_DEFAULTS = {
   path: "machines/{machineId}.json",
   /** 本机展示名；缺省用 hostname 去掉 .local。 */
   machineName: "",
+  /**
+   * 自动同步频率（2.2.0）：6h | 12h | boot | manual。
+   * 这是**面向用户**的开关，插件启动时据此换算成推送周期（拉取恒为 30 分钟）。
+   * pushEveryMs / pullEveryMs 仍保留为底层值（手改 YAML 的兼容路径）。
+   */
+  syncFrequency: "6h",
   /** 推送周期（毫秒）。 */
   pushEveryMs: 6 * 3600 * 1000,
   /** 拉取周期（毫秒）。 */
@@ -517,6 +523,9 @@ export function buildPayload(rows, machine, { redactPaths = false, aliases = {} 
     toolMs: row.toolMs ?? 0,
     waitMs: row.waitMs ?? 0,
     decodeTokens: row.decodeTokens ?? 0,
+    decodeMs: row.decodeMs ?? 0,
+    ttftMs: row.ttftMs ?? 0,
+    ttftSteps: row.ttftSteps ?? 0,
     tokens: row.tokens ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     lastPromptAt: row.lastPromptAt ?? null,
     asOfSeq: row.asOfSeq ?? null,
@@ -603,6 +612,9 @@ function normalizeRemoteRow(row, now) {
     toolMs: safeCount(row.toolMs, 1e12),
     waitMs: safeCount(row.waitMs, 1e12),
     decodeTokens: safeCount(row.decodeTokens, 1e15),
+    decodeMs: safeCount(row.decodeMs, 1e15),
+    ttftMs: safeCount(row.ttftMs, 1e15),
+    ttftSteps: safeCount(row.ttftSteps, 1e15),
     tokens: {
       input: safeCount(tokens.input, 1e15),
       output: safeCount(tokens.output, 1e15),

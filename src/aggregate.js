@@ -3,6 +3,7 @@
  *
  * 数据来源是 Harness 官方投影（client-visible wire 值），不是本插件自己解析日志：
  *   - sessionStats → turns / steps / llmMs(模型时间) / toolMs(工具时间) / decodeTokens
+ *     / decodeMs(decode 窗口) / ttftMs(首字延迟合计) / ttftSteps(有首字时间的步数)
  *   - tokenUsage   → uncachedInputTokens / outputTokens / cacheReadTokens / cacheWriteTokens
  *   - title        → 会话标题
  *   - row.models   → 模型维度（由 src/models.js 从官方事件日志折叠，见 docs/models.md）
@@ -19,7 +20,7 @@
  *   - 归属日期用会话创建时间在所给时区下的自然日；跨天续聊的活动仍算创建那天。
  */
 
-import { cacheHitRate, costOf, mergeModelBuckets, modelLabel, modelTokens, emptyModelBucket, UNKNOWN_MODEL } from "./models.js";
+import { cacheHitRate, costOf, mergeModelBuckets, modelLabel, modelTokens, providerOf, emptyModelBucket, UNKNOWN_MODEL } from "./models.js";
 import { scaleTokenBuckets } from "./hour-scale.js";
 
 /** 需要向投影缓存/注册表读取的键。 */
@@ -112,6 +113,11 @@ export function rowFromSession(header, values = {}, asOfSeq = null) {
     llmMs: num(stats.llmMs),
     toolMs: num(stats.toolMs),
     decodeTokens: num(stats.decodeTokens),
+    // 速度指标（2.2.0）：官方 sessionStats 的 decode 窗口与首字延迟。
+    // 旧会话缺这三个字段时按 0 处理，可用性由 derived.speedCoverage 判定 —— 不用 0 冒充「真的很慢」。
+    decodeMs: num(stats.decodeMs),
+    ttftMs: num(stats.ttftMs),
+    ttftSteps: num(stats.ttftSteps),
     tokens: {
       input: num(totals.uncachedInputTokens),
       output: num(totals.outputTokens),
@@ -425,6 +431,9 @@ function emptyBucket() {
     activeMs: 0,
     waitMs: 0,
     decodeTokens: 0,
+    decodeMs: 0,
+    ttftMs: 0,
+    ttftSteps: 0,
     tokens: emptyTokens(),
   };
 }
@@ -458,7 +467,10 @@ function addRow(bucket, row) {
   bucket.toolMs += num(row.toolMs) - wait;
   bucket.waitMs += wait;
   bucket.activeMs += activeMs(row) - wait;
-  bucket.decodeTokens += row.decodeTokens;
+  bucket.decodeTokens += num(row.decodeTokens);
+  bucket.decodeMs += num(row.decodeMs);
+  bucket.ttftMs += num(row.ttftMs);
+  bucket.ttftSteps += num(row.ttftSteps);
   bucket.tokens.input += row.tokens.input;
   bucket.tokens.output += row.tokens.output;
   bucket.tokens.cacheRead += row.tokens.cacheRead;
@@ -673,6 +685,8 @@ export function aggregate(rows, options = {}) {
     hourTokensSource,
     // 模型维度（未启用 modelUsage 时为空数组）
     byModel: buildByModel(modelMap, pricing, modelAliases, totals, activeModelMetric),
+    // 供应商维度（归并组名首段；未启用 modelUsage 时为空数组）
+    byProvider: buildByProvider(modelMap),
     modelDaily: days.map((date) => {
       const dayModels = modelDayMap.get(date);
       const values = {};
@@ -750,7 +764,11 @@ function buildByModel(modelMap, pricing, modelAliases, totals, metric) {
     return {
       key: bucket.key,
       label: modelLabel(bucket.key, modelAliases),
+      provider: providerOf(bucket.key),
       requests: num(bucket.requests),
+      // 逐模型速度：decode token / decode 窗口（秒）。缺首字时间的请求不计 —— 返回 null 而非 0。
+      speed: bucket.decodeMs > 0 ? bucket.decodeTokens / (bucket.decodeMs / 1000) : null,
+      ttft: bucket.ttftSteps > 0 ? bucket.ttftMs / bucket.ttftSteps : null,
       llmMs: num(bucket.llmMs),
       efforts: bucket.efforts ?? {},
       raw: bucket.raw ?? {},
@@ -766,6 +784,43 @@ function buildByModel(modelMap, pricing, modelAliases, totals, metric) {
   return list
     .map((item) => ({ ...item, metricShare: item.metricValue / metricSum }))
     .sort((a, b) => b.metricValue - a.metricValue || b.tokensTotal - a.tokensTotal || a.label.localeCompare(b.label));
+}
+
+/**
+ * 组装 byProvider 列表（供应商维度）。
+ *
+ * 供应商 = 归并组名里**除最后一段（模型）之外**的路径（见 models.js 的 providerOf）。同一底层模型走不同渠道时，
+ * 速度与首字延迟可能差数倍，所以这个维度比"模型"更能指导"换哪条链路"。
+ * 只汇总请求 / token / 模型耗时 / 缓存命中 —— 逐供应商的速度需要事件级折叠，暂不提供。
+ * @param modelMap - 归并组 → 模型桶。
+ * @returns 按 token 量降序的供应商列表。
+ */
+function buildByProvider(modelMap) {
+  const map = new Map();
+  for (const bucket of modelMap.values()) {
+    const key = providerOf(bucket.key);
+    let target = map.get(key);
+    if (target === undefined) {
+      target = { key, requests: 0, tokensTotal: 0, llmMs: 0, models: 0, cacheRead: 0, cacheMiss: 0 };
+      map.set(key, target);
+    }
+    target.requests += num(bucket.requests);
+    target.tokensTotal += modelTokens(bucket);
+    target.llmMs += num(bucket.llmMs);
+    target.cacheRead += num(bucket.crOff) + num(bucket.crPeak);
+    target.cacheMiss += num(bucket.inOff) + num(bucket.inPeak);
+    target.models += 1;
+  }
+  const totalTokens = [...map.values()].reduce((sum, item) => sum + item.tokensTotal, 0) || 1;
+  return [...map.values()]
+    .map((item) => ({
+      ...item,
+      share: item.tokensTotal / totalTokens,
+      cacheHitRate: item.cacheRead + item.cacheMiss > 0
+        ? item.cacheRead / (item.cacheRead + item.cacheMiss)
+        : null,
+    }))
+    .sort((a, b) => b.tokensTotal - a.tokensTotal || b.requests - a.requests || a.key.localeCompare(b.key));
 }
 
 /** 「最活跃模型」：按配置口径取第一名。 */
@@ -840,6 +895,33 @@ export function present(snapshot) {
           : 0,
       outputPerActiveHour:
         snapshot.totals.netActiveMs > 0 ? snapshot.totals.tokens.output / (snapshot.totals.netActiveMs / 3600000) : 0,
+      // 输出速度 tok/s = decode token 合计 / decode 窗口（秒）。
+      // **必须加权**（先求和再相除）：对各会话速度取平均会让短请求被过度放大。
+      // decodeMs 为 0（旧会话 / 官方未上报）时返回 null —— 不用 0 冒充「真的很慢」。
+      outputSpeed:
+        snapshot.totals.decodeMs > 0
+          ? snapshot.totals.decodeTokens / (snapshot.totals.decodeMs / 1000)
+          : null,
+      // 平均首字延迟（毫秒）= 首字延迟合计 / 有首字时间的步数。
+      ttftMean: snapshot.totals.ttftSteps > 0 ? snapshot.totals.ttftMs / snapshot.totals.ttftSteps : null,
+      // 模型时间拆解：等首字 / 真正吐字 / 其它（排队、重试、空转）。
+      // 用途：判断"优化速度有没有用"—— 等首字占大头时，提高吐字速度收益很小。
+      llmComposition: (() => {
+        const llmMs = num(snapshot.totals.llmMs);
+        const ttftMs = num(snapshot.totals.ttftMs);
+        const decodeMs = num(snapshot.totals.decodeMs);
+        const otherMs = Math.max(0, llmMs - ttftMs - decodeMs);
+        const total = llmMs || 1;
+        return {
+          llmMs, ttftMs, decodeMs, otherMs,
+          ttftShare: ttftMs / total,
+          decodeShare: decodeMs / total,
+          otherShare: otherMs / total,
+        };
+      })(),
+      // 速度覆盖度：多少 step 上报了首字时间（旧索引 / 老格式会话可能没上报）。
+      // 界面用它区分「数据不足」与「确实慢」，口径与 hourTokensSource.missing 一致。
+      speedCoverage: { steps: num(snapshot.totals.steps), speedSteps: num(snapshot.totals.ttftSteps) },
     },
   };
 }

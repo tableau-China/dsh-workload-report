@@ -15,7 +15,7 @@
 import { barPercent } from "./client/bar-width.js";
 import { hourTokensNote } from "./client/hour-status.js";
 import { translate } from "./client/locales.js";
-import { escapeHtml, formatHours, formatInt, formatPercent, formatTokens } from "./format.js";
+import { escapeHtml, formatHours, formatInt, formatPercent, formatSpeed, formatTtft, formatTokens } from "./format.js";
 import { sectorPath } from "./sector-path.js";
 import { HOUR_CHART_TOP_SPACE, HOUR_DOT_TOP, hourDotRadius } from "./hour-scale.js";
 
@@ -511,7 +511,7 @@ function modelSection(snapshot, palette) {
   const cost = (value) => (value === null || value === undefined ? "—" : symbol + (value < 1 ? value.toFixed(4) : value.toFixed(2)));
   const rows = models
     .map(
-      (item) => '<tr><td class="ws">' + escapeHtml(item.label) + "</td><td>" + formatPercent(item.share) + "</td><td>" + formatInt(item.requests) + "</td><td>" + formatTokens(item.tokens.input) + "</td><td>" + formatTokens(item.tokens.output) + "</td><td>" + formatTokens(item.tokens.cacheRead) + "</td><td>" + (item.cacheHitRate === null || item.cacheHitRate === undefined ? "—" : formatPercent(item.cacheHitRate)) + "</td><td>" + cost(item.cost) + "</td></tr>",
+      (item) => '<tr><td class="ws">' + escapeHtml(item.label) + "</td><td>" + escapeHtml(item.provider ?? "—") + "</td><td>" + formatPercent(item.share) + "</td><td>" + formatInt(item.requests) + "</td><td>" + formatTokens(item.tokens.input) + "</td><td>" + formatTokens(item.tokens.output) + "</td><td>" + formatTokens(item.tokens.cacheRead) + "</td><td>" + (item.cacheHitRate === null || item.cacheHitRate === undefined ? "—" : formatPercent(item.cacheHitRate)) + "</td><td>" + formatSpeed(item.speed) + "</td><td>" + formatTtft(item.ttft) + "</td><td>" + cost(item.cost) + "</td></tr>",
     )
     .join("");
   const links = (pricing.links ?? []).map((link) => '<a href="' + escapeHtml(link.url) + '">' + escapeHtml(link.label ?? link.provider) + "</a>").join(" · ");
@@ -523,7 +523,7 @@ function modelSection(snapshot, palette) {
     <div>${modelTrend(snapshot.modelDaily, models, palette)}</div>
   </div>
   <table>
-    <thead><tr><th>模型</th><th>占比</th><th>请求</th><th>输入</th><th>输出</th><th>缓存读</th><th>缓存命中</th><th>费用(估算)</th></tr></thead>
+    <thead><tr><th>模型</th><th>供应商</th><th>占比</th><th>请求</th><th>输入</th><th>输出</th><th>缓存读</th><th>缓存命中</th><th>速度 tok/s</th><th>首字延迟</th><th>费用(估算)</th></tr></thead>
     <tbody>${rows}</tbody>
   </table>
   <p class="note-line">费用按官方公开单价估算（as-of ${escapeHtml(String(pricing.asOf ?? ""))}，${pricing.costed?.covered ?? 0}/${pricing.costed?.total ?? 0} 个模型有官方价${totalText}）；仅 DeepSeek 有官方价。</p>
@@ -556,11 +556,13 @@ export function renderReport(snapshot, options = {}) {
   };
   const hourStatus = hourTokensNote(diagnostics, t, formatInt);
 
-  // 模型费用 KPI：与看板同口径 —— 只统计有官方单价的模型；一个都没有时显示 —（不编数字）
-  const pricing = snapshot.pricing ?? { currency: "CNY", asOf: "", links: [], costed: { covered: 0, total: 0 }, totalCost: null };
-  const symbol = pricing.currency === "USD" ? "$" : "¥";
-  const money = (value) => (value === null || value === undefined ? "—" : symbol + (value < 1 ? value.toFixed(4) : value.toFixed(2)));
-  const costed = pricing.costed ?? { covered: 0, total: 0 };
+  // 模型性能 KPI（2.3.0 起替代「模型费用」，与看板同口径、不依赖价目表）
+  const modelList = (snapshot.byModel ?? []).filter((item) => (item.requests ?? 0) > 0);
+  const modelRequests = modelList.reduce((sum, item) => sum + (item.requests ?? 0), 0);
+  const modelOutput = modelList.reduce((sum, item) => sum + (item.tokens?.output ?? 0), 0);
+  const modelLlmMs = modelList.reduce((sum, item) => sum + (item.llmMs ?? 0), 0);
+  const modelOutputPerRequest = modelRequests > 0 ? modelOutput / modelRequests : 0;
+  const modelLlmShare = (totals.activeMs ?? 0) > 0 ? modelLlmMs / totals.activeMs : 0;
 
   // 活跃时长 KPI 用净活跃（totals.activeMs 是官方值，含等待用户）；等待在副标题里单列
   const netActiveMs = totals.netActiveMs ?? totals.activeMs;
@@ -569,11 +571,20 @@ export function renderReport(snapshot, options = {}) {
   const kpis = [
     ["kpi.active", formatHours(netActiveMs), `模型 ${formatHours(totals.llmMs)} · 工具 ${formatHours(totals.toolMs)} · 等待 ${formatHours(totals.waitMs ?? 0)}`],
     ["kpi.tokens", formatInt(totals.tokensTotal), `输入 ${formatTokens(totals.tokens.input)} · 输出 ${formatTokens(totals.tokens.output)} · 缓存 ${formatTokens(totals.tokens.cacheRead)}`],
-    ["kpi.modelCost", money(pricing.totalCost), costed.total > 0 ? `${formatInt(costed.covered)}/${formatInt(costed.total)} 个模型有官方价 · as-of ${pricing.asOf ?? "—"}` : "无带官方价的模型"],
+    [
+      "kpi.modelShare",
+      modelRequests > 0 ? formatPercent(modelLlmShare) : "—",
+      modelRequests > 0 ? `模型耗时 ${formatHours(modelLlmMs)} · ${formatInt(modelList.length)} 个模型` : "该区间没有模型记录",
+    ],
     ["kpi.activeDays", `${formatInt(totals.activeDays)} / ${formatInt(range.days)}`, `覆盖 ${formatInt(totals.workspaces)} 个工作区`],
     ["kpi.conversations", formatInt(totals.conversations), `会话总数 ${formatInt(totals.sessions)}（含空会话 ${formatInt(totals.emptySessions)}）`],
     ["kpi.turns", `${formatInt(totals.turns)} / ${formatInt(totals.steps)}`, `主会话 ${formatInt(totals.mainSessions)} · 子代理 ${formatInt(totals.subagentSessions)}`],
-    ["kpi.cache", formatPercent(derived.cacheHitRate), `输出 ${formatTokens(derived.outputPerActiveHour)}/h`],
+    [
+      "kpi.modelOutput",
+      modelRequests > 0 ? formatInt(Math.round(modelOutputPerRequest)) : "—",
+      modelRequests > 0 ? `共 ${formatInt(modelRequests)} 次请求` : "该区间没有模型记录",
+    ],
+    ["kpi.cache", formatPercent(derived.cacheHitRate), `速度 ${formatSpeed(derived.outputSpeed)} tok/s · 首字 ${formatTtft(derived.ttftMean)}`],
     [
       "kpi.topModel",
       topModel === null ? "—" : topModel.label,
@@ -693,7 +704,7 @@ export function renderReport(snapshot, options = {}) {
      其它卡要跟着撑满，否则边框高度参差。flex 列 + 副标题吸底即可。 */
   .kpi { background: ${palette.surface}; border: 1px solid ${palette.border}; border-radius: 12px; padding: 12px 14px; min-width: 0; display: flex; flex-direction: column; }
   .kpi .sub { margin-top: auto; }
-  .kpi[data-kpi="kpi.tokens"], .kpi[data-kpi="kpi.modelCost"] { grid-column: span 2; }
+  .kpi[data-kpi="kpi.tokens"] { grid-column: span 2; }
   .kpi .label { font-size: 11px; color: ${palette.muted}; margin-bottom: 6px; }
   .kpi .value { font-size: 20px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .kpi[data-kpi="kpi.topModel"] .value { white-space: normal; overflow-wrap: anywhere; }
@@ -778,7 +789,7 @@ export function renderReport(snapshot, options = {}) {
   footer { color: ${palette.muted}; font-size: 12px; line-height: 1.7; margin-top: 28px; }
   footer a { color: ${palette.input}; text-decoration: none; }
   @media (max-width: 1080px) { .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-  @media (max-width: 760px) { .two-col { grid-template-columns: 1fr; } .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .kpi[data-kpi="kpi.tokens"], .kpi[data-kpi="kpi.modelCost"] { grid-column: auto; } .page { padding: 24px 16px 40px; } }
+  @media (max-width: 760px) { .two-col { grid-template-columns: 1fr; } .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .kpi[data-kpi="kpi.tokens"] { grid-column: auto; } .page { padding: 24px 16px 40px; } }
   @media print { body { background: #fff; } .card, .kpi { break-inside: avoid; box-shadow: none; } }
 </style>
 </head>

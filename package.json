@@ -1,6 +1,6 @@
 {
   "name": "dsh-workload-report",
-  "version": "2.1.1",
+  "version": "2.3.1",
   "description": "DeepSeek Harness (DSH) plugin — see your effort and token usage by date and workspace: calendar heatmap, time-of-day analysis, workspace share, a shareable self-contained HTML report, and multi-device sync (Tencent COS / GitHub / Gitea / shared folder).",
   "type": "module",
   "main": "index.js",
@@ -27,7 +27,8 @@
     "test": "node test/verify.mjs",
     "bench:open": "node test/bench-open.mjs",
     "e2e:boot": "./test/e2e-boot.sh",
-    "e2e": "node test/e2e-ui.mjs"
+    "e2e": "node test/e2e-ui.mjs",
+    "check:release": "node test/check-release.mjs"
   },
   "keywords": [
     "dsh",

@@ -1,7 +1,7 @@
 # TimeMirror for DSH · Workload Report
 
 > **See your effort and your token spend on the same picture** — by **date** and by **workspace**: a calendar heatmap, time-of-day analysis, workspace share, model usage, and a **one-click self-contained HTML report** you can send straight to a client.
-> A DeepSeek Harness (DSH) plugin. Current version: **2.1.1**.
+> A DeepSeek Harness (DSH) plugin. Current version: **2.3.1**.
 
 > TimeMirror is a macOS time-distribution app I published on the Mac App Store; this plugin brings the same idea to AI-assisted work. The package/repo keeps the descriptive name `dsh-workload-report` so it can be found in the DSH ecosystem; the brand stays TimeMirror.
 
@@ -173,7 +173,7 @@ Running DSH on several machines? Merge their usage into one report. **Disabled b
 4. **Connection details** as "label on the left, input on the right", one field per row; **credentials** expanded by default.
 5. **Connection & sync status**: probe result, last push / pull, registered devices, last test.
 6. **"Test connection" lives inside the dialog** and saving runs a probe automatically, so the icon and status update immediately.
-7. **Sync frequency (reserved in this release)**: "every 6 hours" is the default; "every 12 hours" and "on every boot" are greyed out and marked *next release*. Manual push / pull remain available until automatic sync ships.
+7. **Sync frequency**: every 6 hours (default) / every 12 hours / on every boot / manual only — applied immediately on save (timers are rebuilt). With *manual only*, "Push now" / "Pull now" appear right after the options.
 8. One **"Save settings"** button writes the profile config, then the credentials, then probes once.
 
 Prefer a config file (servers / CI)? That works too — see section 4 of [docs/sync.md](./docs/sync.md).
@@ -208,12 +208,21 @@ Prefer a config file (servers / CI)? That works too — see section 4 of [docs/s
 
 See [docs/sync.md](./docs/sync.md) for the full config reference and least-privilege policies.
 
-## Version in the bottom-right corner
+## Version
 
-The dashboard shows its version (e.g. `v2.0.3`) in the **bottom-right corner**: once in the panel footer,
-and once in the bottom-right corner of the AI-profile card — the AI profile tab is the last page of the dashboard,
-so that card *is* the visible bottom-right corner of the app. The number comes from `package.json` via the host
-(it is sent on `/sync`), never hard-coded in the client, and is simply not rendered when unavailable.
+The dashboard appends its version and build hash to the **definitions note at the bottom**:
+
+```
+Definitions: metric definitions in docs/metrics.md; all data stays local. · v2.3.1 · 2b0d02f
+                                                                          └─ host commit hash
+```
+
+- The version comes from `package.json` via the host (`/sync`); it is never hard-coded in the client and is not rendered when unavailable.
+- The build hash identifies *which build the page is running*: if it stays old after an upgrade, the browser cached the
+  client bundle (restart DSH / hard refresh) — it does **not** mean the version bump was forgotten.
+- It is plain selectable text, so you can paste that line in a bug report.
+- Release-time check: `node test/check-release.mjs --tag vX.Y.Z` compares `package.json`, CHANGELOG and both READMEs
+  and validates the tag; it runs in CI.
 
 ## Style and layout changes (2.0.0)
 
@@ -291,7 +300,7 @@ All statistics stay on your machine. The plugin registers **read-only** HTTP rou
 | --- | --- |
 | `pnpm add -D esbuild puppeteer-core` | Install build and browser-test dependencies (or point `ESBUILD_PATH` / `WL_PUPPETEER_DIR` at existing installs) |
 | `node build.mjs` | Bundle `src/client/` into `lib/client.js` (ModuleLoader factory format) with esbuild |
-| `node test/verify.mjs` | **1447 offline assertions**: aggregation semantics with one shared range rule, time zones, turn-based hour bucketing and conservation, hourly tokens by message time, human-message density, wait exclusion (all three rules + long-task exemption + `excludeWait:false` regression), index/read fallbacks, report structure parity, the AI-profile tab as a right-aligned navigation entry, the 30-day profile window, multi-device sync (payload / merge / credentials / settings / device filter), zero model calls on first open, i18n key alignment, and balance states |
+| `node test/verify.mjs` | **1509 offline assertions**: aggregation semantics with one shared range rule, time zones, turn-based hour bucketing and conservation, hourly tokens by message time, human-message density, wait exclusion (all three rules + long-task exemption + `excludeWait:false` regression), index/read fallbacks, report structure parity, the AI-profile tab as a right-aligned navigation entry, the 30-day profile window, multi-device sync (payload / merge / credentials / settings / device filter), zero model calls on first open, i18n key alignment, and balance states |
 | `./test/e2e-boot.sh 3299` | Boot an **isolated instance** (own DSH_HOME and port) without touching your running GUI |
 | `node test/e2e-ui.mjs` | Real-browser E2E: calendar/bar switching, geometry, donuts, report export, time-of-day card |
 

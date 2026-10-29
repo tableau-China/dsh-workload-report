@@ -6,12 +6,28 @@
  *   · configureIconState —— 由「是否开启 / 是否配齐 / 自检结果」推出图标语义。
  */
 
-/** 同步频率候选（2.0.2 起界面预留；开关随后台同步周期上线）。 */
-export const FREQUENCY_OPTIONS = [
-  { id: "6h", hours: 6, ready: true },
-  { id: "12h", hours: 12, ready: false },
-  { id: "boot", hours: 0, ready: false },
+/**
+ * 自动同步频率（2.2.0）。
+ *
+ * 用户只需选一个「多久同步一次」，插件内部换算成推送 / 拉取周期：
+ *
+ *   · `6h`     —— 每 6 小时推送 + 每 30 分钟拉取（默认，推得少、看得及时）
+ *   · `12h`    —— 每 12 小时推送 + 每 30 分钟拉取
+ *   · `boot`   —— 只在这个 DSH 进程启动时同步一次（推送 + 拉取），之后不再定时跑
+ *   · `manual` —— 完全手动：不建任何定时器，只能点「立即推送 / 立即拉取」
+ *
+ * 三种都保持 pullEveryMs=30min 的理由：拉取是只读且便宜的（列一次目录 + 读几个小文件），
+ * 但要让本机看到别的机器的新数据，拉取必须比推送频繁——否则两边都要等对方推。
+ */
+export const SYNC_FREQUENCY_OPTIONS = [
+  { id: "6h", label: "每 6 小时" },
+  { id: "12h", label: "每 12 小时" },
+  { id: "boot", label: "每次开机" },
+  { id: "manual", label: "仅手动" },
 ];
+
+/** 同步频率候选（2.2.0 起正式启用，见下方 SYNC_FREQUENCY_OPTIONS / frequencyPlan）。 */
+export const FREQUENCY_OPTIONS = SYNC_FREQUENCY_OPTIONS;
 
 /**
  * 配置状态 → 图标语义（「对号 / 圆圈 / 感叹号」）。
@@ -43,6 +59,15 @@ export const FREQUENCY_TEXT_KEYS = {
   "6h": "set.freq.6h",
   "12h": "set.freq.12h",
   boot: "set.freq.boot",
+  manual: "set.freq.manual",
+};
+
+/** 频率 → 说明文案键（每个选项解释"会怎样同步"）。 */
+export const FREQUENCY_NOTE_KEYS = {
+  "6h": "set.freqNote.6h",
+  "12h": "set.freqNote.12h",
+  boot: "set.freqNote.boot",
+  manual: "set.freqNote.manual",
 };
 
 
@@ -143,4 +168,29 @@ export function manualSyncState({ enabled = false, busy = false, probing = false
   if (needsProbe && probing) return { disabled: true, reason: "probing" };
   if (enabled !== true) return { disabled: true, reason: "disabled" };
   return { disabled: false, reason: null };
+}
+
+/** 频率 id 归一化：未知值回落默认 6h。 */
+export function normalizeFrequency(id) {
+  const value = typeof id === "string" ? id.trim() : "";
+  return SYNC_FREQUENCY_OPTIONS.some((item) => item.id === value) ? value : "6h";
+}
+
+/** 拉取周期：所有频率共用 30 分钟（"仅手动"不建定时器，由调用方判断）。 */
+export const AUTO_PULL_EVERY_MS = 30 * 60 * 1000;
+
+/**
+ * 频率 → 定时器参数。
+ *
+ * @returns {{ frequency: string, pushEveryMs: number, pullEveryMs: number, timer: boolean, runOnStart: boolean }}
+ *   timer     —— 是否建周期定时器（manual 为 false）
+ *   runOnStart—— 启动后是否立刻同步一次（boot / 其余频率都是 true：开机先对齐一次）
+ */
+export function frequencyPlan(id) {
+  const frequency = normalizeFrequency(id);
+  const common = { frequency, pullEveryMs: AUTO_PULL_EVERY_MS, timer: true, runOnStart: true };
+  if (frequency === "manual") return { ...common, pushEveryMs: 0, timer: false, runOnStart: false };
+  if (frequency === "boot") return { ...common, pushEveryMs: 0, timer: false, runOnStart: true };
+  if (frequency === "12h") return { ...common, pushEveryMs: 12 * 3600 * 1000 };
+  return { ...common, pushEveryMs: 6 * 3600 * 1000 };
 }

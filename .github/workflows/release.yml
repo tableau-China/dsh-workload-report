@@ -51,6 +51,9 @@ jobs:
           npm install --no-save --no-audit --no-fund esbuild@^0.28.2
           node build.mjs
 
+      - name: 校验版本号三处一致（package.json / CHANGELOG / README）
+        run: node test/check-release.mjs --tag "$GITHUB_REF_NAME"
+
       - name: 校验入库的 lib/client.js 与源码一致
         run: |
           if ! git diff --quiet -- lib/client.js; then

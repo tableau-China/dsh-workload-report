@@ -20,7 +20,8 @@ import { formatInt } from "../format.js";
 import { Chip, ChipGroup } from "./chips.jsx";
 import { CardHead } from "./card-head.jsx";
 import {
-  FREQUENCY_OPTIONS, FREQUENCY_TEXT_KEYS, ICON_TEXT_KEYS, checkMachineIdentity, configureIconState, deviceRenameReport, manualSyncState, pathPreview, prefixOf, shortDeviceId,
+  FREQUENCY_NOTE_KEYS, FREQUENCY_OPTIONS, FREQUENCY_TEXT_KEYS, ICON_TEXT_KEYS, checkMachineIdentity,
+  configureIconState, deviceRenameReport, manualSyncState, normalizeFrequency, pathPreview, prefixOf, shortDeviceId,
 } from "./sync-state.js";
 
 /** 宿主半部注册的只读接口前缀（与 index.js 的默认 apiPath 一致）。 */
@@ -118,27 +119,40 @@ export function DeviceFilter({ devices, value, onChange, t, syncOpen = false, on
     else next.add(key);
     onChange([...next]);
   };
+  /**
+   * 布局（2.3.3）：**左侧应用说明**、**右侧「设备」标签 + 筛选 chips + 「设备同步」按钮**挤在一起。
+   * 不再复用 CardHead（它会标题最左、控件最右，中间空一大段）。
+   */
   return (
-    <CardHead title={t("devices.title")} hint={hasChips ? t("devices.hint") : null}>
-      {hasChips ? (
-        <ChipGroup label={t("devices.title")}>
-          <Chip active={allActive} onClick={() => onChange([])}>{t("devices.all")}</Chip>
-          {devices.map((device) => (
-            <Chip
-              key={device.key}
-              active={!allActive && selected.has(device.key)}
-              data-device={device.key}
-              data-stale={device.stale === true ? "true" : undefined}
-              title={device.stale === true ? t("devices.stale") : undefined}
-              onClick={() => (device.local === true ? toggleLocal() : toggle(device.key))}
-            >
-              {device.local === true ? t("devices.local") : device.name}
-            </Chip>
-          ))}
-        </ChipGroup>
-      ) : null}
-      {entry}
-    </CardHead>
+    <div className="wl-device-row" data-kind="device-filter">
+      {/* 左：一句话说明这个应用是做什么的 */}
+      <div className="wl-app-desc" data-kind="app-desc">
+        <p className="wl-app-desc-title">{t("panel.descTitle")}</p>
+        <p className="wl-app-desc-body">{t("panel.descBody")}</p>
+      </div>
+      {/* 右：筛选标签 + chips + 入口按钮，紧挨在一起 */}
+      <div className="wl-device-controls" data-kind="device-controls">
+        {hasChips ? (
+          <ChipGroup label={t("devices.title")}>
+            <span className="wl-device-label" title={t("devices.hint")} data-kind="devices-label">{t("devices.title")}</span>
+            <Chip active={allActive} onClick={() => onChange([])}>{t("devices.all")}</Chip>
+            {devices.map((device) => (
+              <Chip
+                key={device.key}
+                active={!allActive && selected.has(device.key)}
+                data-device={device.key}
+                data-stale={device.stale === true ? "true" : undefined}
+                title={device.stale === true ? t("devices.stale") : undefined}
+                onClick={() => (device.local === true ? toggleLocal() : toggle(device.key))}
+              >
+                {device.local === true ? t("devices.local") : device.name}
+              </Chip>
+            ))}
+          </ChipGroup>
+        ) : null}
+        {entry === null ? null : entry}
+      </div>
+    </div>
   );
 }
 
@@ -174,11 +188,13 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
   const [running, setRunning] = useState(null);
   const [message, setMessage] = useState(null);
   /** 同步频率：**本轮只预留界面**（6 小时为默认；12 小时 / 开机同步在下一版随后台周期一起打开）。 */
-  const [frequency, setFrequency] = useState("6h");
+  const [frequency, setFrequency] = useState(normalizeFrequency(initialStatus?.syncFrequency));
   /** 最近一次自检结果（来自 /sync 的 status.lastProbe 或本页测试按钮），决定标题右侧的对号 / 圆圈 / 感叹号。 */
   const [probe, setProbe] = useState(initialStatus?.lastProbe ?? null);
   /** 基准设备 id：本弹窗第一次看到的本机 id（后续所有保存都跟它比对）。 */
   const [savedDeviceId, setSavedDeviceId] = useState(initialStatus?.devices?.find((d) => d.local === true)?.id ?? null);
+  /** 已生效的同步频率（保存成功后更新；与表单不一致时提示"保存后生效"）。 */
+  const [savedFrequency, setSavedFrequency] = useState(normalizeFrequency(initialStatus?.syncFrequency));
   /** 「高级选项」里的路径是否处于编辑态（默认只读）。 */
   const [pathEditing, setPathEditing] = useState(false);
   /** 保存前那次的本机显示名（用来提示"从 X 改成 Y，设备 id 不变"）。 */
@@ -194,6 +210,12 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
       setState({ status: "ready", ...body, error: null });
       setForm(body.view);
       setBaseline(body.view);
+      // 频率以**设置视图**为准（initialStatus 是看板状态，里面没有 syncFrequency）
+      if (body.view?.syncFrequency !== undefined) {
+        const freq = normalizeFrequency(body.view.syncFrequency);
+        setFrequency(freq);
+        setSavedFrequency(freq);
+      }
     } catch (error) {
       setState((previous) => ({ ...previous, status: "error", error: String(error?.message ?? error) }));
     }
@@ -272,6 +294,10 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
         values[key] = value;
       }
     }
+    // 同步频率是独立 state（不是 form 字段），变更时一并提交
+    if (baseline !== null && normalizeFrequency(baseline.syncFrequency) !== frequency) {
+      values.syncFrequency = frequency;
+    }
     return values;
   };
 
@@ -313,6 +339,7 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
         savedView = body.view;
         setForm(body.view);
         setBaseline(body.view);
+        if (body.view?.syncFrequency !== undefined) setSavedFrequency(normalizeFrequency(body.view.syncFrequency));
       }
 
       const filled = Object.fromEntries(
@@ -648,7 +675,8 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
                 )}
               </section>
 
-              {/* ④b 状态：连接自检结果 + 上次推送/拉取 + 设备数（原「设备同步」页的只读状态搬进弹窗） */}
+              {/* ④b + ④c 左右两列：左「连接与同步状态」、右「同步频率」（2.3.1 减少纵向长度） */}
+              <div className="wl-form-grid wl-sync-two-col" data-block="sync-status-frequency">
               <section className="wl-form-block" data-block="sync-status" aria-label={t("set.statusTitle")}>
                 <h4 className="wl-form-section">{t("set.statusTitle")}</h4>
                 {/* 一行：大号状态图标 + 结论 + 上次推送 / 拉取（同一行，紧凑） */}
@@ -685,38 +713,41 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
                 {status?.lastPullError ? <p className="wl-hint" data-kind="sync-error">{t("sync.failed", { message: status.lastPullError })}</p> : null}
               </section>
 
-              {/* ④c 同步频率：**本轮只预留界面**——6 小时为默认，12 小时 / 开机同步在下一版随后台周期一起打开。
-                  「立即推送 / 立即拉取」保留为临时手动操作，等自动同步上线后再收起。 */}
+              {/* ④c 自动同步频率（2.2.0 正式启用）：选一个周期即可，保存后定时器立刻按新频率重建。
+                  手动按钮始终保留（自动同步之外的兜底）。 */}
               <section className="wl-form-block" data-block="sync-frequency" aria-label={t("set.frequency")}>
-                <h4 className="wl-form-section">
-                  {t("set.frequency")}
-                  <span className="wl-form-badge" data-kind="soon">{t("set.frequencySoon")}</span>
-                </h4>
+                <h4 className="wl-form-section">{t("set.frequency")}</h4>
                 <ChipGroup label={t("set.frequency")}>
                   {FREQUENCY_OPTIONS.map((item) => (
                     <Chip
                       key={item.id}
                       active={frequency === item.id}
                       data-frequency={item.id}
-                      disabled={item.ready !== true}
-                      title={item.ready === true ? undefined : t("set.frequencyComing")}
-                      onClick={() => { if (item.ready === true) setFrequency(item.id); }}
+                      onClick={() => setFrequency(item.id)}
                     >
                       {t(FREQUENCY_TEXT_KEYS[item.id])}
                     </Chip>
                   ))}
                 </ChipGroup>
-                <p className="wl-hint" data-kind="sync-frequency-note">{t("set.frequencyNote")}</p>
-                {pendingSave ? <p className="wl-hint" data-kind="sync-pending-save">{t("set.pendingSave")}</p> : null}
-                <div className="wl-sync-manual">
-                  <button type="button" className="wl-btn" data-action="sync-now-push" disabled={pushState.disabled} onClick={() => void runSync("push")}>
-                    {running === "push" ? t("sync.pushing") : t("sync.pushNow")}
-                  </button>
-                  <button type="button" className="wl-btn" data-action="sync-now-pull" disabled={pushState.disabled} onClick={() => void runSync("pull")}>
-                    {running === "pull" ? t("sync.pulling") : t("sync.pullNow")}
-                  </button>
+                {/* 手动按钮跟在「仅手动」后面，且**只在选中手动时出现**（自动同步下不需要它们） */}
+                <div className="wl-sync-manual" data-visible={frequency === "manual" ? "true" : "false"}>
+                  {frequency === "manual" ? (
+                    <>
+                      <button type="button" className="wl-btn" data-action="sync-now-push" disabled={pushState.disabled} onClick={() => void runSync("push")}>
+                        {running === "push" ? t("sync.pushing") : t("sync.pushNow")}
+                      </button>
+                      <button type="button" className="wl-btn" data-action="sync-now-pull" disabled={pushState.disabled} onClick={() => void runSync("pull")}>
+                        {running === "pull" ? t("sync.pulling") : t("sync.pullNow")}
+                      </button>
+                    </>
+                  ) : null}
                 </div>
+                <p className="wl-hint" data-kind="sync-frequency-note">
+                  {t(FREQUENCY_NOTE_KEYS[frequency])}
+                  {savedFrequency === frequency ? null : ` ${t("set.pendingSave")}`}
+                </p>
               </section>
+              </div>
 
               {/* ⑤ 高级选项（默认收起）：只有普通用户不用管、默认值即可的项 */}
               <section className="wl-form-block" data-block="advanced" aria-label={t("set.advanced")}>
@@ -740,10 +771,7 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
                     <code className="wl-path-preview" data-path-template={form.path ?? ""}>{pathPreview(form.path, { machineId: localDeviceId ? shortDeviceId(localDeviceId).replace("…", "") : "" })}</code>
                   </div>
                 )}
-                <p className="wl-hint" data-kind="path-hint">{t("set.pathReadonlyHint")}</p>
                 <p className="wl-hint" data-kind="path-location">{t("set.pathLocation", { dir: prefixOf(form.path) })}</p>
-                {/* 这是最常见的"一台机器看不到另一台"的原因：路径模板不一致 → 各自写到不同目录 */}
-                <p className="wl-hint" data-kind="path-shared">{t("set.pathSharedHint")}</p>
                 <button type="button" className="wl-btn" data-action="toggle-path-edit" aria-expanded={pathEditing} onClick={() => setPathEditing((v) => !v)}>
                   {pathEditing ? t("set.pathEditDone") : t("set.pathEdit")}
                 </button>
@@ -761,13 +789,11 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
                   })}
                 </p>
               )}
-              <p className="wl-note">{t("cred.why")}</p>
             </div>
           )
         )}
 
         <footer className="wl-dialog-foot">
-          <p className="wl-hint" data-kind="sync-footnote">{t("cred.hint")}</p>
           <button type="button" className="wl-btn" onClick={onClose} disabled={busy}>{t("set.cancel")}</button>
           <button type="button" className="wl-btn" data-kind="primary" data-action="save-all" disabled={!canSave || busy} onClick={() => void submit()}>
             {busy ? t("set.saving") : t("set.save")}
