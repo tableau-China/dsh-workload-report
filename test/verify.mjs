@@ -3961,8 +3961,8 @@ bootSync.seq = 1;
     ok(/color: var\(--dsw-alias-label-secondary/.test(labelRule), "样式：「设备」标签用次级文字色（弱化）");
     const titleRule = /\.wl-title \{[^}]*\}/s.exec(stylesText)?.[0] ?? "";
     ok(/font-size: 17px/.test(titleRule), "样式：标题字号 17px（16 → +1px）", titleRule);
-    // 版本号不变
-    eq(JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version, "2.3.1", "版本：本次为纯样式微调，版本号不变");
+    // 2.3.1 是纯样式微调（版本号不变）；2.3.2 起新增速度指标，属于功能升级，因此版本号必须前进
+    eq(JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version, "2.3.2", "版本：2.3.2 为速度指标功能升级（非纯样式），版本号已前进");
   }
 
   // 报告不含同步 UI（报告是自包含快照，不暴露设备管理）
