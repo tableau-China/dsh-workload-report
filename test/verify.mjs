@@ -3627,15 +3627,19 @@ bootSync.seq = 1;
     ok(!/data-col="device"/.test(syncView), "UI：不再有「这台设备」独占一列（左右比例失衡的根因已消除）");
   }
   {
-    // 2.0.3：高级选项**不再折叠**，路径**只读展示**（用户不能改，但可以核对写到哪）
+    // 2.3.4：高级选项**默认折叠**（普通用户不用管）；路径**只读**——多设备必须同模板，手改只会对不上
     const advancedBlock = syncView.slice(syncView.indexOf('data-block="advanced"'), syncView.indexOf("</section>", syncView.indexOf('data-block="advanced"')));
-    ok(!syncView.includes("toggle-advanced") && !/advancedOpen/.test(syncView), "UI：高级选项不再折叠（没有展开/收起按钮）");
+    ok(syncView.includes('data-action="toggle-advanced"') && /const \[advancedOpen, setAdvancedOpen\] = useState\(false\)/.test(syncView), "UI：高级选项有展开/收起按钮且默认折叠（初始 false）");
+    ok(/advancedOpen \? \(/.test(syncView), "UI：高级选项内容只在展开时渲染");
+    ok(!syncView.includes('data-action="toggle-path-edit"') && !/data-setting="path"/.test(syncView), "UI：不再提供「修改路径模板」入口（路径只读）");
     ok(advancedBlock.includes('data-row="path-readonly"'), "UI：路径以只读行展示");
-    // 路径默认只读；多设备必须同模板，所以提供一个显式的「修改路径模板」入口（展开才有输入框）
-    ok(/data-row="path-readonly"/.test(syncView) && /pathEditing \? \(/.test(syncView), "UI：路径默认只读展示");
-    ok(syncView.includes('data-action="toggle-path-edit"'), "UI：有「修改路径模板」入口（多设备对齐用）");
-    ok(syncView.indexOf('data-setting="path"') > syncView.indexOf('data-action="toggle-path-edit"') - 2000, "UI：路径输入框只在编辑态出现");
     ok(advancedBlock.includes("pathPreview(") && advancedBlock.includes("prefixOf("), "UI：路径预览 + 所属目录说明都在");
+    // 2.3.4：时间只显示到分钟（同步频率是小时级，秒没有信息量）
+    ok(/minute: "2-digit"/.test(syncView) && !/toLocaleString\(\)/.test(syncView), "UI：上次推送/拉取时间不显示秒");
+    // 2.3.4：打开弹窗时若从未探测过，自动静默测一次（宿主 lastProbe 只在内存，重启后会丢）
+    ok(syncView.includes("autoProbedRef") && /runProbe\(\{ silent: true \}\)/.test(syncView), "UI：已开启同步但从未探测时自动静默测一次连接");
+    // 防回归：effect 依赖数组在渲染期求值，引用下方才声明的 savedEnabled 会撞 TDZ 直接崩掉弹窗
+    ok(/const enabled = status\?\.enabled === true \|\| initialStatus\?\.enabled === true/.test(syncView), "UI：自动探测在 effect 内自行判断 enabled（不引用后声明的 savedEnabled）");
   }
   {
     // 2.0.3：状态区紧凑——大图标 + 结论 + 上次推送/拉取同处一行；设备数 / 上次测试已移除
@@ -3996,6 +4000,19 @@ bootSync.seq = 1;
   for (const key of ["set.dialogTitle", "set.colConnection", "set.advanced", "set.cancel", "set.savedCredFail", "cred.clearPending", "cred.afterEnable", "set.path", "set.pathLocation", "set.registeredDevices", "set.deviceIdHint", "set.lastTimes"]) {
     ok(syncView.includes(`t("${key}")`) || syncView.includes(`t("${key}",`) || syncView.includes(`"${key}"`), `文案：${key} 在界面里被使用`);
   }
+}
+
+// GitHub Star 入口：看板右上角给仓库链接；报告里刻意不放（报告发给客户，外链仅官方计费页）
+{
+  const clientSource = await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8");
+  const reportSource2 = await readFile(new URL("../src/report-html.js", import.meta.url), "utf8");
+  const stylesSource2 = await readFile(new URL("../src/client/styles.js", import.meta.url), "utf8");
+  ok(clientSource.includes('data-kind="star-link"') && clientSource.includes("https://github.com/tableau-China/dsh-workload-report"), "UI：面板右上角有 GitHub Star 入口");
+  ok(/data-kind="star-link"[\s\S]{0,400}target="_blank"/.test(clientSource) && /rel="noreferrer noopener"/.test(clientSource), "UI：Star 链接新标签打开，且带 rel=noreferrer noopener");
+  ok(clientSource.includes('t("action.star.hint")') && "action.star" in zh && "action.star" in en && "action.star.hint" in zh && "action.star.hint" in en, "文案：Star 入口中英文案齐全且被使用");
+  ok(/\.wl-star \{[^}]*text-decoration: none/s.test(stylesSource2) && /\.wl-star \{[^}]*border: none/s.test(stylesSource2), "样式：Star 入口无边框、无下划线（靠 GitHub 图标识别）");
+  ok(clientSource.includes('className="wl-star-gh"') && /viewBox="0 0 16 16"/.test(clientSource), "UI：Star 入口带内联 GitHub logo（SVG，不引外部资源）");
+  ok(!reportSource2.includes("github.com/tableau-China/dsh-workload-report"), "报告：不含 Star 链接（发给客户，外链仅官方计费页）");
 }
 
 // 收尾：删掉本次的临时索引

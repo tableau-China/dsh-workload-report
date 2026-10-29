@@ -51,6 +51,21 @@ export const STYLES = `
 .wl-title { font-size: 17px; font-weight: 600; margin: 0; }
 .wl-subtitle { font-size: 12px; color: var(--dsw-alias-label-tertiary, #6b7280); margin: 2px 0 0; }
 .wl-spacer { flex: 1 1 auto; }
+/* GitHub Star 入口：右上角操作区里的次级按钮（无边框，靠 GitHub 图标识别），不抢主操作权重 */
+.wl-star {
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 6px;
+  border: none; background: transparent;
+  font-size: 12px; font-weight: 600; line-height: 18px; text-decoration: none; white-space: nowrap;
+  color: var(--dsw-alias-label-secondary, #4b5563);
+}
+.wl-star:hover {
+  background: color-mix(in srgb, var(--dsw-static-amber-500, #f59e0b) 12%, transparent);
+  color: var(--dsw-alias-label-primary, #111);
+}
+.wl-star-gh { flex: none; color: var(--dsw-alias-label-secondary, #4b5563); }
+.wl-star:hover .wl-star-gh { color: var(--dsw-alias-label-primary, #111); }
+.wl-star-icon { color: var(--dsw-static-amber-500, #f59e0b); font-size: 13px; line-height: 1; }
+@media (max-width: 900px) { .wl-star-text { display: none; } }
 /* 切换控件唯一实现（src/client/chips.jsx）：默认浅底 + 边框，选中主题强调色实底 + 白字。
    尺寸 / 圆角 / 间距只在这里定义；各卡片不得再写变体 class。 */
 .wl-chips { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -600,6 +615,14 @@ export const STYLES = `
   padding-bottom: 6px; border-bottom: 1px solid var(--dsw-alias-border-l2, #eceef1);
 }
 .wl-form-section[data-kind="cred-section"] { margin-top: 4px; }
+/* 「高级选项」标题是可折叠按钮：外观沿用 .wl-form-section，去掉按钮默认样式 */
+.wl-advanced-toggle {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  background: none; border: 0; border-bottom: 1px solid var(--dsw-alias-border-l2, #eceef1);
+  padding: 0 0 6px; cursor: pointer; text-align: left;
+  font: inherit; font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-secondary, #4b5563);
+}
+.wl-advanced-toggle:hover { color: var(--dsw-alias-label-primary, #111); }
 /* 两列布局里每列是一个字段容器；把行式字段直接放进这两列（每行是网格的一个格子） */
 .wl-form-fields { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .wl-form-grid > .wl-form-fields { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }

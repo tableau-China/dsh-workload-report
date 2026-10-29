@@ -15,7 +15,7 @@
  *   · 「抹掉路径」不再作为设置项展示（默认关闭 = 路径照原样同步，配置项仍保留在 YAML 里可手改）。
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { formatInt } from "../format.js";
 import { Chip, ChipGroup } from "./chips.jsx";
 import { CardHead } from "./card-head.jsx";
@@ -28,10 +28,13 @@ import {
 const API_PATH = "/workload-report/v1";
 
 /** 时间戳 → 本地可读时间；0 表示从未执行。 */
+/** 时间显示到分钟（不显示秒：同步频率是小时级，秒没有信息量）。 */
 function formatTime(ms, never) {
   if (!ms) return never;
   try {
-    return new Date(ms).toLocaleString();
+    return new Date(ms).toLocaleString(undefined, {
+      year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+    });
   } catch {
     return never;
   }
@@ -195,8 +198,8 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
   const [savedDeviceId, setSavedDeviceId] = useState(initialStatus?.devices?.find((d) => d.local === true)?.id ?? null);
   /** 已生效的同步频率（保存成功后更新；与表单不一致时提示"保存后生效"）。 */
   const [savedFrequency, setSavedFrequency] = useState(normalizeFrequency(initialStatus?.syncFrequency));
-  /** 「高级选项」里的路径是否处于编辑态（默认只读）。 */
-  const [pathEditing, setPathEditing] = useState(false);
+  /** 「高级选项」默认**折叠**：里面的项普通用户不需要动，展开才渲染。 */
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   /** 保存前那次的本机显示名（用来提示"从 X 改成 Y，设备 id 不变"）。 */
   const [renamedFrom, setRenamedFrom] = useState(null);
   /** 自检请求进行中（按钮置灰 + 状态卡片显示"测试中…"）。 */
@@ -414,6 +417,26 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
       void loadStatus();
     }
   }, [t, loadStatus]);
+
+  /**
+   * 打开弹窗时**自动静默探测一次**。
+   *
+   * 为什么需要：宿主把 `lastProbe` 只放在内存里，重启 DSH 后自动同步会刷新
+   * 「上次推送 / 拉取」时间，但 `lastProbe` 变回 null —— 于是每次打开都显示
+   * 「尚未测试连接」，与旁边的时间自相矛盾。这里在**已开启同步且从未探测过**时补一次，
+   * 结果只写状态卡片，不弹提示。
+   */
+  const autoProbedRef = useRef(false);
+  useEffect(() => {
+    if (autoProbedRef.current) return;
+    // 这里直接算 enabled：`savedEnabled` 声明在下方，依赖数组在**渲染期**求值，引用它会撞 TDZ。
+    const enabled = status?.enabled === true || initialStatus?.enabled === true;
+    if (!enabled) return;
+    if (probe !== null) return;
+    if (busy || probing) return;
+    autoProbedRef.current = true;
+    void runProbe({ silent: true });
+  }, [status, initialStatus, probe, busy, probing, runProbe]);
 
   /**
    * 手动推送 / 拉取（迁移自旧「设备同步」页，现在只在弹窗里出现）。
@@ -749,32 +772,27 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
               </section>
               </div>
 
-              {/* ⑤ 高级选项（默认收起）：只有普通用户不用管、默认值即可的项 */}
-              <section className="wl-form-block" data-block="advanced" aria-label={t("set.advanced")}>
-                <h4 className="wl-form-section">{t("set.advanced")}</h4>
-                {/* 路径默认只读（普通用户不用改），但**多台机器必须用同一个模板**才能互相看到——
-                    所以给一个明确的「修改路径」入口：展开后可填，保存时宿主会校验必须含 {machineId}。 */}
-                {pathEditing ? (
-                  <div className="wl-field-row" data-row="path-edit">
-                    <span className="wl-field-label">{t("set.path")}</span>
-                    <input
-                      type="text"
-                      data-setting="path"
-                      value={form.path ?? ""}
-                      placeholder="dsh-workload-sync/machines/{machineId}.json"
-                      onChange={(event) => setField("path", event.target.value)}
-                    />
-                  </div>
-                ) : (
-                  <div className="wl-field-row" data-row="path-readonly">
-                    <span className="wl-field-label">{t("set.path")}</span>
-                    <code className="wl-path-preview" data-path-template={form.path ?? ""}>{pathPreview(form.path, { machineId: localDeviceId ? shortDeviceId(localDeviceId).replace("…", "") : "" })}</code>
-                  </div>
-                )}
-                <p className="wl-hint" data-kind="path-location">{t("set.pathLocation", { dir: prefixOf(form.path) })}</p>
-                <button type="button" className="wl-btn" data-action="toggle-path-edit" aria-expanded={pathEditing} onClick={() => setPathEditing((v) => !v)}>
-                  {pathEditing ? t("set.pathEditDone") : t("set.pathEdit")}
+              {/* ⑤ 高级选项（默认折叠）：只有普通用户不用管、默认值即可的项。
+                  路径**只读**：多设备必须用同一个模板，手改只会造成对不上，所以不提供编辑入口。 */}
+              <section className="wl-form-block" data-block="advanced" data-open={advancedOpen ? "true" : "false"} aria-label={t("set.advanced")}>
+                <button
+                  type="button"
+                  className="wl-form-section wl-advanced-toggle"
+                  data-action="toggle-advanced"
+                  aria-expanded={advancedOpen}
+                  onClick={() => setAdvancedOpen((value) => !value)}
+                >
+                  <span aria-hidden="true">{advancedOpen ? "▾" : "▸"}</span> {t("set.advanced")}
                 </button>
+                {advancedOpen ? (
+                  <>
+                    <div className="wl-field-row" data-row="path-readonly">
+                      <span className="wl-field-label">{t("set.path")}</span>
+                      <code className="wl-path-preview" data-path-template={form.path ?? ""}>{pathPreview(form.path, { machineId: localDeviceId ? shortDeviceId(localDeviceId).replace("…", "") : "" })}</code>
+                    </div>
+                    <p className="wl-hint" data-kind="path-location">{t("set.pathLocation", { dir: prefixOf(form.path) })}</p>
+                  </>
+                ) : null}
               </section>
 
               {state.canSave === true ? null : <p className="wl-hint" data-kind="sync-error">{t("set.noEditor")}</p>}

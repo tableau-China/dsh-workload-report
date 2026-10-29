@@ -1,7 +1,7 @@
 # TimeMirror for DSH · Workload Report
 
 > **See your effort and your token spend on the same picture** — by **date** and by **workspace**: a calendar heatmap, time-of-day analysis, workspace share, model usage, and a **one-click self-contained HTML report** you can send straight to a client.
-> A DeepSeek Harness (DSH) plugin. Current version: **2.3.3**.
+> A DeepSeek Harness (DSH) plugin. Current version: **2.3.4**.
 
 > TimeMirror is a macOS time-distribution app I published on the Mac App Store; this plugin brings the same idea to AI-assisted work. The package/repo keeps the descriptive name `dsh-workload-report` so it can be found in the DSH ecosystem; the brand stays TimeMirror.
 
@@ -54,9 +54,17 @@ Uninstall: `dsh plugin --profile web remove dsh-workload-report`.
 - **Top sessions and daily detail**: ratio bars in the main numeric columns (sessions: turns / steps / active / output; daily detail: conversations / turns / active / tokens) and sortable headers on the sessions table. The daily detail table is **expanded by default**, covers the last 31 days, and **paginates at 10 days per page** (no pager unless there is more than one page).
 - **By workspace**: three bars per row — **sessions / turns · my effort · token spend** (one shared scale); the workspace list carries its own card head with a one-line hint (same structure as the model-usage page).
 - **Export a self-contained HTML report**: one file with inline CSS and inline SVG, **no scripts and no external assets**; light/dark themes, custom title/note, optional `anonymize=1` to hide workspace names and session titles. The report mirrors the dashboard: nine KPIs, a calendar plus a **model token-share donut** (two independent cards whose widths align exactly with the time-of-day / workspace rows below), hourly density dots + turns mini-chart, ratio bars, and the same definitions. A **static range filter** at the top highlights the current range — visual only, with no links. Only official pricing pages are linked.
+- **GitHub Star entry**: "GitHub logo + ★ Star" in the **top-right** of the panel, opening the repo in a new tab; deliberately **not** in the exported report (the report goes to clients, whose only external links are official pricing pages).
 - **Theme and locale aware**: **data visualisation uses the Tableau 10 palette** (`src/palette.js`, identical in the dashboard and the exported report); UI chrome (buttons / tabs / links) keeps host theme tokens (`--dsw-*`) so it follows the harness light/dark theme. All UI strings are aligned between Chinese and English.
 - **AI user profile (included by default, manual trigger)**: a dedicated top-level tab at the **right end of the navigation** (blue-tinted, distinct from the other tabs); the Top sessions tab keeps its sessions table only. It shows a three-line notice first and calls the model only after you click Generate. It generates a headline + 4–6 numeric dimensions + 2–3 advice items + risk from **aggregate statistics only** (window = max(current range, 30 days)) — never conversations, titles, or paths. The same statistics fingerprint reuses the disk cache; any failure falls back to deterministic local rules. See [AI user profile](#ai-user-profile).
 - **Fast open**: opening the panel triggers **zero** event-log reads (`readSession`); cold open 25 ms, warm open ~1 ms (measured on an isolated instance). Model folding is driven by background timers, never by opening the panel.
+
+## What's new in 2.3.4
+
+- **GitHub Star entry** in the **top-right** of the panel ("GitHub logo + ★ Star", opens in a new tab); deliberately absent from the exported report.
+- **Sync dialog no longer contradicts itself.** It used to say "not tested yet" on every open while still showing the last push/pull times — the host keeps `lastProbe` in memory only, so a restart refreshed the timestamps but dropped the probe result. Now, when sync is enabled and never probed, opening the dialog **runs one silent probe** and reflects the result in the status badge.
+- **Times no longer show seconds**: `2026/10/29 05:23` (sync frequency is measured in hours).
+- **Advanced options are collapsed by default**, and **"Edit path template" is gone**: the path is read-only (all devices must share one template; editing it only makes them miss each other).
 
 ## What's new in 2.3.3
 
@@ -228,7 +236,7 @@ See [docs/sync.md](./docs/sync.md) for the full config reference and least-privi
 The dashboard appends its version and build hash to the **definitions note at the bottom**:
 
 ```
-Definitions: metric definitions in docs/metrics.md; all data stays local. · v2.3.3 · 9cb52a5
+Definitions: metric definitions in docs/metrics.md; all data stays local. · v2.3.4 · bbdd460
                                                                           └─ host commit hash
 ```
 
