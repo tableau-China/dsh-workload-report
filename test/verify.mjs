@@ -706,7 +706,7 @@ eq(barPercent(1200, 1000), 100, "异常值夹紧到 100%");
   const cellSource = await readFile(new URL("../src/client/bar-cell.jsx", import.meta.url), "utf8");
   const widthSource = await readFile(new URL("../src/client/bar-width.js", import.meta.url), "utf8");
   ok(cellSource.includes("export function MetricBarCell"), "通用组件 MetricBarCell 存在");
-  eq((indexSource.match(/<MetricBarCell/g) ?? []).length, 2, "两处调用点：主要会话 + 按日期明细");
+  eq((indexSource.match(/<MetricBarCell/g) ?? []).length, 4, "四处调用点：主要会话 + 按日期明细 + 模型速度 + 模型请求数");
   ok(indexSource.includes('from "./bar-cell.jsx"'), "两张表从同一组件模块导入");
   ok(!indexSource.includes("wl-bar-cell"), "index.jsx 不再复制条形单元格的样式/逻辑");
   ok(cellSource.includes('from "./bar-width.js"') && widthSource.includes("export function barPercent"), "宽度计算只有一份实现");
@@ -925,7 +925,7 @@ console.log("\n—— 时刻卡片（默认 Tokens / chips / 顶部密度点）�
   ok(/className="wl-hour-grid"/.test(clientSource) && !clientSource.includes("hour.sub"), "卡片头无小标题、图表仍是 24 列网格");
   ok(/\.wl-hour-card \{[^}]*display: flex[^}]*flex-direction: column/s.test(stylesSource) && /\.wl-hour-grid \{[^}]*flex: 1 1 auto/s.test(stylesSource) && /\.wl-hour-grid \{[^}]*min-height: 240px/s.test(stylesSource) && /\.wl-grid-2 > \.wl-pie-card \{[^}]*display: flex/s.test(stylesSource), "图表区 flex 填充卡片（最小 240px），右侧饼图同行拉伸并居中");
   ok(/\.wl-hour-track \{[^}]*top: 64px/s.test(stylesSource) && /\.wl-hour-track \{[^}]*bottom: 16px/s.test(stylesSource) && !/\.wl-hour-track \{[^}]*height: 116px/s.test(stylesSource), "柱形区从顶部 64px 撑到底部 16px（随卡片高度伸缩）");
-  ok(/\.wl-hour-col\[data-peak\] \.wl-hour-fill \{[^}]*var\(--dsw-static-blue-600/s.test(stylesSource) && /\.wl-hour-dot \{[^}]*var\(--dsw-static-amber-500/s.test(stylesSource) && /\.wl-hour-legend \.wl-legend-peak \{[^}]*var\(--dsw-static-blue-600/s.test(stylesSource) && /peak: "#2f4bd8"/.test(reportSource) && /isPeak \? palette\.peak : palette\.input/.test(reportSource), "峰值柱/图例用深蓝 token，人类消息点用 amber token（报告同色）");
+  ok(/\.wl-hour-col\[data-peak\] \.wl-hour-fill \{[^}]*var\(--dsw-static-blue-600/s.test(stylesSource) && /\.wl-hour-dot \{[^}]*var\(--dsw-static-amber-500/s.test(stylesSource) && /\.wl-hour-legend \.wl-legend-peak \{[^}]*var\(--dsw-static-blue-600/s.test(stylesSource) && /peak: "#3f5a7d"/.test(reportSource) && /isPeak \? palette\.peak : palette\.input/.test(reportSource), "峰值柱/图例用深蓝 token，人类消息点用 amber token（报告同色）");
   ok(/\.wl-hour-dot \{[^}]*top: 14px/s.test(stylesSource), "密度点 CSS 上沿固定 14px");
   ok(clientSource.includes("hourDotRadius") && clientSource.includes("hour.dotTip"), "密度点用统一半径函数，并带「小时 + 人类消息条数」title");
   ok(clientSource.includes("wl-hour-legend") && clientSource.includes("hour.legend.tokens") && clientSource.includes("hour.legend.humans") && clientSource.includes("hour.legend.peak"), "图例三项：Token 产出 / 人类消息密度 / 峰值");
@@ -3922,7 +3922,8 @@ bootSync.seq = 1;
     ok(!("kpi.modelCost" in zh) && !("kpi.modelCost" in en), "KPI：删除「模型费用」文案键");
     const keysBlock = /const KPI_KEYS = \[([\s\S]*?)\];/.exec(clientIndex)?.[1] ?? "";
     const keys = [...keysBlock.matchAll(/"(kpi\.[A-Za-z]+)"/g)].map((m) => m[1]);
-    eq(keys.length, 8, "KPI：仍是 8 张卡");
+    eq(keys.length, 9, "KPI：9 张卡（2.3.3 起新增「输出速度」）");
+    ok(keys.includes("kpi.speed"), "KPI：新增「输出速度」（tok/s + 首字延迟副标题）");
     ok(keys.includes("kpi.modelShare") && keys.includes("kpi.modelOutput"), "KPI：换成模型耗时占比 + 平均每次输出");
     // 不与已有的「缓存读取占比」重复（曾用命中率，实测两者数值完全相同）
     ok(!keys.includes("kpi.modelCacheHit") || keys.includes("kpi.cache"), "KPI：不与「缓存读取占比」重复计指标");
@@ -3961,8 +3962,11 @@ bootSync.seq = 1;
     ok(/color: var\(--dsw-alias-label-secondary/.test(labelRule), "样式：「设备」标签用次级文字色（弱化）");
     const titleRule = /\.wl-title \{[^}]*\}/s.exec(stylesText)?.[0] ?? "";
     ok(/font-size: 17px/.test(titleRule), "样式：标题字号 17px（16 → +1px）", titleRule);
-    // 2.3.1 是纯样式微调（版本号不变）；2.3.2 起新增速度指标，属于功能升级，因此版本号必须前进
-    eq(JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version, "2.3.2", "版本：2.3.2 为速度指标功能升级（非纯样式），版本号已前进");
+    // 2.3.1 是纯样式微调（版本号不变）；2.3.2 起是功能升级线（速度指标 / 可见化 / 色板），
+    // 版本号只前进不回退 —— 这里断言"在功能升级线之内"，避免每次发版都改死值。
+    const pkgVersion = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
+    const [, versionMinor, versionPatch] = pkgVersion.split(".").map(Number);
+    ok(versionMinor > 3 || (versionMinor === 3 && versionPatch >= 2), "版本：2.3.2 起为功能升级线，版本号未回退", pkgVersion);
   }
 
   // 报告不含同步 UI（报告是自包含快照，不暴露设备管理）

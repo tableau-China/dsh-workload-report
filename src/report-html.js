@@ -16,6 +16,7 @@ import { barPercent } from "./client/bar-width.js";
 import { hourTokensNote } from "./client/hour-status.js";
 import { translate } from "./client/locales.js";
 import { escapeHtml, formatHours, formatInt, formatPercent, formatSpeed, formatTtft, formatTokens } from "./format.js";
+import { SEMANTIC, TABLEAU10, withAlpha } from "./palette.js";
 import { sectorPath } from "./sector-path.js";
 import { HOUR_CHART_TOP_SPACE, HOUR_DOT_TOP, hourDotRadius } from "./hour-scale.js";
 
@@ -26,36 +27,36 @@ const t = (key, vars) => translate("zh", key, vars);
 const PALETTES = {
   light: {
     bg: "#f5f6f8", surface: "#ffffff", text: "#1a1d21", muted: "#6b7280", border: "#e5e7eb",
-    input: "#3b82f6", output: "#10b981", cache: "#c7cbd1", accent: "#4f46e5", barBg: "#eef0f3",
-    /** 周末柱：与看板同一个强调色（--dsw-static-amber-500 的浅色值）。 */
-    weekend: "#f59e0b",
-    /** 时刻图峰值柱：深蓝（预览稿 #2f4bd8），与人类消息点的 amber 区分。 */
-    peak: "#2f4bd8",
-    /** 日历热力图 5 级色阶（与看板 --dsw-static-deepseek-* 同色）。 */
-    calendar: ["#eef0f3", "#dfe5ff", "#a9b8ff", "#4d6bfe", "#2b3fa8"],
-    /** 表格比例条填色：与看板 MetricBarCell 的 20% 左右透明色同视觉。 */
+    input: SEMANTIC.turns, output: SEMANTIC.tokens, cache: TABLEAU10[9], accent: SEMANTIC.turns, barBg: "#eef0f3",
+    /** 周末柱：与看板同一语义色（我的付出 = 橙）。 */
+    weekend: SEMANTIC.effort,
+    /** 时刻图峰值柱：蓝的深阶，与人类消息点（橙）区分。 */
+    peak: "#3f5a7d",
+    /** 日历热力图 5 级色阶（由中性到 Tableau 蓝的深阶）。 */
+    calendar: ["#eef0f3", "#dfe5f2", "#aebfd4", "#5778a4", "#3f5a7d"],
+    /** 表格比例条填色：与看板 MetricBarCell 同色同透明度。 */
     barFill: {
-      turns: "rgba(77, 107, 254, 0.20)",
-      steps: "rgba(96, 165, 250, 0.22)",
-      activeMs: "rgba(247, 173, 49, 0.26)",
-      conversations: "rgba(169, 184, 255, 0.34)",
-      output: "rgba(52, 211, 153, 0.22)",
-      tokens: "rgba(52, 211, 153, 0.22)",
+      turns: withAlpha(SEMANTIC.turns, 0.22),
+      steps: withAlpha(SEMANTIC.steps, 0.30),
+      activeMs: withAlpha(SEMANTIC.effort, 0.26),
+      conversations: withAlpha(SEMANTIC.conversations, 0.30),
+      output: withAlpha(SEMANTIC.tokens, 0.22),
+      tokens: withAlpha(SEMANTIC.tokens, 0.22),
     },
   },
   dark: {
     bg: "#15171c", surface: "#1d2026", text: "#e8eaed", muted: "#9aa1ac", border: "#2b2f37",
-    input: "#60a5fa", output: "#34d399", cache: "#4b5563", accent: "#818cf8", barBg: "#282c34",
-    weekend: "#f59e0b",
-    peak: "#2f4bd8",
-    calendar: ["#282c34", "#24305c", "#33478f", "#4d6bfe", "#7c93ff"],
+    input: "#8fa9c8", output: "#8fbf7e", cache: "#7c858f", accent: "#8fa9c8", barBg: "#282c34",
+    weekend: "#eeb078",
+    peak: "#8fa9c8",
+    calendar: ["#282c34", "#2c374a", "#3f5372", "#5778a4", "#8fa9c8"],
     barFill: {
-      turns: "rgba(96, 165, 250, 0.28)",
-      steps: "rgba(96, 165, 250, 0.30)",
-      activeMs: "rgba(247, 173, 49, 0.32)",
-      conversations: "rgba(129, 140, 248, 0.32)",
-      output: "rgba(52, 211, 153, 0.30)",
-      tokens: "rgba(52, 211, 153, 0.30)",
+      turns: withAlpha("#8fa9c8", 0.30),
+      steps: withAlpha(TABLEAU10[9], 0.34),
+      activeMs: withAlpha("#eeb078", 0.32),
+      conversations: withAlpha("#c3a0bd", 0.32),
+      output: withAlpha("#8fbf7e", 0.30),
+      tokens: withAlpha("#8fbf7e", 0.30),
     },
   },
 };
@@ -511,7 +512,7 @@ function modelSection(snapshot, palette) {
   const cost = (value) => (value === null || value === undefined ? "—" : symbol + (value < 1 ? value.toFixed(4) : value.toFixed(2)));
   const rows = models
     .map(
-      (item) => '<tr><td class="ws">' + escapeHtml(item.label) + "</td><td>" + escapeHtml(item.provider ?? "—") + "</td><td>" + formatPercent(item.share) + "</td><td>" + formatInt(item.requests) + "</td><td>" + formatTokens(item.tokens.input) + "</td><td>" + formatTokens(item.tokens.output) + "</td><td>" + formatTokens(item.tokens.cacheRead) + "</td><td>" + (item.cacheHitRate === null || item.cacheHitRate === undefined ? "—" : formatPercent(item.cacheHitRate)) + "</td><td>" + formatSpeed(item.speed) + "</td><td>" + formatTtft(item.ttft) + "</td><td>" + cost(item.cost) + "</td></tr>",
+      (item) => '<tr><td class="ws">' + escapeHtml(item.label) + "</td><td>" + formatSpeed(item.speed) + "</td><td>" + formatTtft(item.ttft) + "</td><td>" + escapeHtml(item.provider ?? "—") + "</td><td>" + formatPercent(item.share) + "</td><td>" + formatInt(item.requests) + "</td><td>" + formatTokens(item.tokens.input) + "</td><td>" + formatTokens(item.tokens.output) + "</td><td>" + formatTokens(item.tokens.cacheRead) + "</td><td>" + (item.cacheHitRate === null || item.cacheHitRate === undefined ? "—" : formatPercent(item.cacheHitRate)) + "</td><td>" + cost(item.cost) + "</td></tr>",
     )
     .join("");
   const links = (pricing.links ?? []).map((link) => '<a href="' + escapeHtml(link.url) + '">' + escapeHtml(link.label ?? link.provider) + "</a>").join(" · ");
@@ -523,7 +524,7 @@ function modelSection(snapshot, palette) {
     <div>${modelTrend(snapshot.modelDaily, models, palette)}</div>
   </div>
   <table>
-    <thead><tr><th>模型</th><th>供应商</th><th>占比</th><th>请求</th><th>输入</th><th>输出</th><th>缓存读</th><th>缓存命中</th><th>速度 tok/s</th><th>首字延迟</th><th>费用(估算)</th></tr></thead>
+    <thead><tr><th>模型</th><th>速度 tok/s</th><th>首字延迟</th><th>供应商</th><th>占比</th><th>请求</th><th>输入</th><th>输出</th><th>缓存读</th><th>缓存命中</th><th>费用(估算)</th></tr></thead>
     <tbody>${rows}</tbody>
   </table>
   <p class="note-line">费用按官方公开单价估算（as-of ${escapeHtml(String(pricing.asOf ?? ""))}，${pricing.costed?.covered ?? 0}/${pricing.costed?.total ?? 0} 个模型有官方价${totalText}）；仅 DeepSeek 有官方价。</p>
@@ -577,14 +578,15 @@ export function renderReport(snapshot, options = {}) {
       modelRequests > 0 ? `模型耗时 ${formatHours(modelLlmMs)} · ${formatInt(modelList.length)} 个模型` : "该区间没有模型记录",
     ],
     ["kpi.activeDays", `${formatInt(totals.activeDays)} / ${formatInt(range.days)}`, `覆盖 ${formatInt(totals.workspaces)} 个工作区`],
-    ["kpi.conversations", formatInt(totals.conversations), `会话总数 ${formatInt(totals.sessions)}（含空会话 ${formatInt(totals.emptySessions)}）`],
-    ["kpi.turns", `${formatInt(totals.turns)} / ${formatInt(totals.steps)}`, `主会话 ${formatInt(totals.mainSessions)} · 子代理 ${formatInt(totals.subagentSessions)}`],
+    // 对话次数与轮次合并（与看板一致，2.3.3）：步骤不再展示
+    ["kpi.conversations", `${formatInt(totals.conversations)} / ${formatInt(totals.turns)}`, `会话总数 ${formatInt(totals.sessions)}（含空会话 ${formatInt(totals.emptySessions)}）`],
     [
       "kpi.modelOutput",
       modelRequests > 0 ? formatInt(Math.round(modelOutputPerRequest)) : "—",
       modelRequests > 0 ? `共 ${formatInt(modelRequests)} 次请求` : "该区间没有模型记录",
     ],
-    ["kpi.cache", formatPercent(derived.cacheHitRate), `速度 ${formatSpeed(derived.outputSpeed)} tok/s · 首字 ${formatTtft(derived.ttftMean)}`],
+    ["kpi.speed", formatSpeed(derived.outputSpeed), `首字 ${formatTtft(derived.ttftMean)}`],
+    ["kpi.cache", formatPercent(derived.cacheHitRate), `输出 ${formatTokens(derived.outputPerActiveHour)}/h`],
     [
       "kpi.topModel",
       topModel === null ? "—" : topModel.label,

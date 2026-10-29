@@ -153,12 +153,16 @@ export const STYLES = `
 .wl-name { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 主要会话：列内浅色条形图（宽度＝该行数值占本列最大值的比例，数字压在条上） */
 .wl-bar-cell { position: relative; display: block; min-width: 56px; height: 20px; border-radius: 5px; background: var(--dsw-alias-bg-layer-2, #f2f3f5); overflow: hidden; }
-.wl-bar-cell-fill { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 5px; background: color-mix(in srgb, var(--dsw-static-deepseek-500, #4d6bfe) 20%, transparent); }
-.wl-bar-cell-fill[data-kind="steps"] { background: color-mix(in srgb, var(--dsw-static-blue-400, #60a5fa) 22%, transparent); }
-.wl-bar-cell-fill[data-kind="activeMs"] { background: color-mix(in srgb, var(--dsw-static-amber-400, #f7ad31) 26%, transparent); }
-.wl-bar-cell-fill[data-kind="conversations"] { background: color-mix(in srgb, var(--dsw-static-deepseek-300, #a9b8ff) 34%, transparent); }
+.wl-bar-cell-fill { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 5px; background: color-mix(in srgb, #5778a4 22%, transparent); }
+.wl-bar-cell-fill[data-kind="turns"] { background: color-mix(in srgb, #5778a4 22%, transparent); }
+.wl-bar-cell-fill[data-kind="steps"] { background: color-mix(in srgb, #b8b0ac 30%, transparent); }
+.wl-bar-cell-fill[data-kind="activeMs"] { background: color-mix(in srgb, #e49444 26%, transparent); }
+.wl-bar-cell-fill[data-kind="conversations"] { background: color-mix(in srgb, #a87c9f 30%, transparent); }
 /* output（主要会话）与 tokens（按日期明细）共用同一份绿色：同一语义不写两套 */
-.wl-bar-cell-fill[data-kind="output"], .wl-bar-cell-fill[data-kind="tokens"] { background: color-mix(in srgb, var(--dsw-static-green-400, #34d399) 22%, transparent); }
+.wl-bar-cell-fill[data-kind="output"], .wl-bar-cell-fill[data-kind="tokens"] { background: color-mix(in srgb, #6a9f58 22%, transparent); }
+/* 模型明细表：速度（红）/ 请求数（黄），与「主要会话」的四色区分开 */
+.wl-bar-cell-fill[data-kind="speed"] { background: color-mix(in srgb, #d1615d 24%, transparent); }
+.wl-bar-cell-fill[data-kind="requests"] { background: color-mix(in srgb, #e7ca60 34%, transparent); }
 /* 数值占满单元格；窄屏超长时省略号截断，title 保留全文（宽度只在单元格内滚动，不撑破表格） */
 .wl-bar-cell-value { position: relative; z-index: 1; display: block; padding: 0 7px; line-height: 20px; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* 可排序表头：当前排序列用主色加粗 + 箭头指示 */
@@ -169,15 +173,16 @@ export const STYLES = `
 .wl-th-sort[data-active] .wl-sort-mark { opacity: 1; }
 .wl-bars { list-style: none; margin: 0 0 14px; padding: 0; display: grid; gap: 12px; }
 .wl-bar-track { height: 8px; border-radius: 999px; background: var(--dsw-alias-bg-layer-2, #eef0f3); overflow: hidden; }
-.wl-bar-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--dsw-static-deepseek-400, #6b83ff), var(--dsw-static-deepseek-600, #3b57e0)); }
-.wl-bar-fill[data-kind="tokens"] { background: linear-gradient(90deg, var(--dsw-static-green-400, #34d399), var(--dsw-static-green-500, #10b981)); }
-.wl-bar-fill[data-kind="days"] { background: linear-gradient(90deg, var(--dsw-static-green-400, #34d399), var(--dsw-static-green-500, #10b981)); }
+.wl-bar-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, #e49444, #cf7f33); }
+.wl-bar-fill[data-kind="tokens"] { background: linear-gradient(90deg, #6a9f58, #5c8c4c); }
+.wl-bar-fill[data-kind="turns"] { background: linear-gradient(90deg, #5778a4, #46648c); }
+.wl-bar-fill[data-kind="days"] { background: linear-gradient(90deg, #85b6b2, #6fa09c); }
 /* 工作区行：左独立名称列 + 右侧两条同口径 bar。列宽用变量，列头按同一套变量对齐 */
 .wl-bars, .wl-metrics-head { --wl-ws-left: 156px; --wl-ws-gap: 18px; }
 /* 列头只出现一次，和右侧两栏对齐（左侧名称列用 margin-left 留白，不占额外 grid 单元） */
-.wl-metrics-head { display: grid; grid-template-columns: 1fr 1fr; gap: var(--wl-ws-gap); margin-left: calc(var(--wl-ws-left) + var(--wl-ws-gap)); font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); margin-bottom: 10px; }
+.wl-metrics-head { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: var(--wl-ws-gap); margin-left: calc(var(--wl-ws-left) + var(--wl-ws-gap)); font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); margin-bottom: 10px; }
 /* 一行 = 名称列 + 两条 bar；minmax(0,1fr) 保证窄屏可收缩、不溢出 */
-.wl-ws-row { display: grid; grid-template-columns: var(--wl-ws-left) minmax(0, 1fr) minmax(0, 1fr); gap: var(--wl-ws-gap); align-items: start; }
+.wl-ws-row { display: grid; grid-template-columns: var(--wl-ws-left) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr); gap: var(--wl-ws-gap); align-items: start; }
 /* 名称列：名称 → 活跃 N 天 → 最近使用；窄屏省略号截断，title 保留全路径 */
 .wl-ws-left { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .wl-ws-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -187,8 +192,7 @@ export const STYLES = `
 .wl-metric-value { font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; margin-bottom: 5px; }
 .wl-metric-share { font-size: 11px; font-weight: 400; color: var(--dsw-alias-label-tertiary, #6b7280); margin-left: 7px; }
 .wl-metric-sub { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); margin-top: 5px; line-height: 1.5; }
-.wl-ws-foot { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); margin-top: 9px; padding-top: 7px; border-top: 1px dashed var(--dsw-alias-border-l2, #eceef1); }
-/* 窄屏：名称列收窄（名称截断、title 留全文），两条 bar 继续并排，整行不溢出 */
+/* 窄屏：名称列收窄（名称截断、title 留全文），三条 bar 继续并排，整行不溢出 */
 @media (max-width: 720px) { .wl-bars, .wl-metrics-head { --wl-ws-left: 104px; --wl-ws-gap: 12px; } }
 .wl-state { padding: 28px; text-align: center; color: var(--dsw-alias-label-tertiary, #6b7280); font-size: 13px; }
 .wl-note { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); line-height: 1.65; border-top: 1px solid var(--dsw-alias-border-l2, #eceef1); padding-top: 12px; margin-top: 4px; }

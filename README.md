@@ -1,7 +1,7 @@
 # TimeMirror for DSH · Workload Report
 
 > **See your effort and your token spend on the same picture** — by **date** and by **workspace**: a calendar heatmap, time-of-day analysis, workspace share, model usage, and a **one-click self-contained HTML report** you can send straight to a client.
-> A DeepSeek Harness (DSH) plugin. Current version: **2.3.2**.
+> A DeepSeek Harness (DSH) plugin. Current version: **2.3.3**.
 
 > TimeMirror is a macOS time-distribution app I published on the Mac App Store; this plugin brings the same idea to AI-assisted work. The package/repo keeps the descriptive name `dsh-workload-report` so it can be found in the DSH ecosystem; the brand stays TimeMirror.
 
@@ -45,26 +45,34 @@ Uninstall: `dsh plugin --profile web remove dsh-workload-report`.
 
 ## Features (2.0.0)
 
-- **Eight KPIs**: cumulative active time (**net active**, waiting shown on a second line), total tokens (full integer you can verify), model cost, active days, conversations, turns / steps, cache-read share, and the most active model.
+- **Nine KPIs (two rows)**: cumulative active time (**net active**, waiting shown on a second line), total tokens (full integer you can verify), model-time share, active days, **conversations / turns** (one merged card, **steps no longer shown**), **output speed tok/s** (subtitle = TTFT), average output per request, cache-read share, and the most active model.
 - **Daily usage trend**: calendar heatmap (Mon–Sun × Year-Week, colour and bar height = active time) or a bar chart; weekends use a different colour, the peak bar is always labelled, and every calendar cell, bar, weekday total and axis label has its own tooltip.
 - **Time of day**: bars default to **token output** (switchable to **turns**); the dots above the bars show **human-message density**. Peak bars are highlighted and labelled; the legend sits on one row.
 - **Workspace share**: Top 6 + others donut, switchable between **time** and **tokens**.
 - **Model token share**: a compact donut on the dashboard; full model details live in the next tab.
-- **Model usage tab**: treemap (area = token share, Top 8 + others), stacked daily trend (Top 6 models), a detail table (share / requests / input / output / cache read / cache-hit rate / estimated cost), metric chips (Token / requests / model time), click-to-filter, and official pricing links. Costs are estimated only for models with official public prices.
+- **Model usage tab**: treemap (area = token share, Top 8 + others), stacked daily trend (Top 6 models), a detail table (**speed tok/s / TTFT / provider** / share / requests / input / output / cache read / cache-hit rate / estimated cost — 11 columns, with ratio bars on speed and requests), metric chips (Token / requests / model time), click-to-filter, and official pricing links. Costs are estimated only for models with official public prices.
 - **Top sessions and daily detail**: ratio bars in the main numeric columns (sessions: turns / steps / active / output; daily detail: conversations / turns / active / tokens) and sortable headers on the sessions table. The daily detail table is **expanded by default**, covers the last 31 days, and **paginates at 10 days per page** (no pager unless there is more than one page).
-- **By workspace**: the workspace bars carry their own card head with a one-line hint (same structure as the model-usage page).
-- **Export a self-contained HTML report**: one file with inline CSS and inline SVG, **no scripts and no external assets**; light/dark themes, custom title/note, optional `anonymize=1` to hide workspace names and session titles. The report mirrors the dashboard: 8 KPIs, a calendar plus a **model token-share donut** (two independent cards whose widths align exactly with the time-of-day / workspace rows below), hourly density dots + turns mini-chart, ratio bars, and the same definitions. A **static range filter** at the top highlights the current range — visual only, with no links. Only official pricing pages are linked.
-- **Theme and locale aware**: all colours use host theme tokens (`--dsw-*`), so the dashboard follows the harness light/dark theme; all UI strings are aligned between Chinese and English.
+- **By workspace**: three bars per row — **sessions / turns · my effort · token spend** (one shared scale); the workspace list carries its own card head with a one-line hint (same structure as the model-usage page).
+- **Export a self-contained HTML report**: one file with inline CSS and inline SVG, **no scripts and no external assets**; light/dark themes, custom title/note, optional `anonymize=1` to hide workspace names and session titles. The report mirrors the dashboard: nine KPIs, a calendar plus a **model token-share donut** (two independent cards whose widths align exactly with the time-of-day / workspace rows below), hourly density dots + turns mini-chart, ratio bars, and the same definitions. A **static range filter** at the top highlights the current range — visual only, with no links. Only official pricing pages are linked.
+- **Theme and locale aware**: **data visualisation uses the Tableau 10 palette** (`src/palette.js`, identical in the dashboard and the exported report); UI chrome (buttons / tabs / links) keeps host theme tokens (`--dsw-*`) so it follows the harness light/dark theme. All UI strings are aligned between Chinese and English.
 - **AI user profile (included by default, manual trigger)**: a dedicated top-level tab at the **right end of the navigation** (blue-tinted, distinct from the other tabs); the Top sessions tab keeps its sessions table only. It shows a three-line notice first and calls the model only after you click Generate. It generates a headline + 4–6 numeric dimensions + 2–3 advice items + risk from **aggregate statistics only** (window = max(current range, 30 days)) — never conversations, titles, or paths. The same statistics fingerprint reuses the disk cache; any failure falls back to deterministic local rules. See [AI user profile](#ai-user-profile).
 - **Fast open**: opening the panel triggers **zero** event-log reads (`readSession`); cold open 25 ms, warm open ~1 ms (measured on an isolated instance). Model folding is driven by background timers, never by opening the panel.
 
+## What's new in 2.3.3
+
+- **Nine KPIs (two rows)**: a new **output speed** card; **conversations** and **turns / steps** merged into one **conversations / turns** card, with **steps removed**.
+- **Model detail table**: new **speed tok/s / TTFT / provider** columns (speed sits right next to the model name, no horizontal scrolling needed) plus ratio bars on speed and requests.
+- **By workspace**: three bars per row — **sessions / turns · my effort · token spend**; the old "per conversation / waiting" footnote became **"per turn"** and moved into the sessions / turns column.
+- **Tableau 10 palette across all data visualisation** (`src/palette.js`): dashboard and exported report share the same colours; UI chrome still follows host theme tokens.
+- Speed and TTFT rely on index **v8** (introduced in 2.3.2): the first upgrade rebuilds the index and re-folds sessions (about 1–2 minutes).
+
 ## Screenshots
 
-**By date**: eight KPIs + calendar heatmap + time-of-day analysis with human-message density dots + workspace share
+**By date**: nine KPIs + calendar heatmap + time-of-day analysis with human-message density dots + workspace share
 
 ![dashboard by date](https://raw.githubusercontent.com/tableau-China/dsh-workload-report/main/assets/dashboard-calendar.png)
 
-**By workspace**: effort on the left, token spend on the right, both bars share one scale
+**By workspace**: three bars — sessions / turns · my effort · token spend, one shared scale
 
 ![dashboard by workspace](https://raw.githubusercontent.com/tableau-China/dsh-workload-report/main/assets/dashboard-workspace.png)
 
@@ -108,6 +116,13 @@ The dashboard card has **two measures** and a third visual layer:
 - **Conversations** = sessions with at least one step. Zero-step sessions (opened but unused) are listed separately and excluded from this KPI.
 - **Attribution date** = the session's creation day in the selected time zone. A session resumed across midnight still belongs to its creation day.
 - **Model cost** is estimated from built-in official public prices (DeepSeek peak/off-peak, as-of 2026-10-13). Only models with an official price get a number; models without one show **—**. Estimates never fetch prices at runtime. The estimate is intentionally not described as an invoice.
+
+### Output speed and TTFT
+
+- **Output speed tok/s** = `ΣdecodeTokens / (ΣdecodeMs / 1000)`, **weighted** (sum first, divide once). The decode window runs from the first token to message completion and **excludes** time spent waiting for the first token. Do not use "output tokens / model time" — that puts first-token latency in the denominator and systematically understates speed (first token took about 56% of model time on the author's machine).
+- **Time to first token (TTFT)** = `step/start → first token`; the mean is `ΣttftMs / ΣttftSteps`.
+- **Provider** = everything in the model group key except the model itself (`magpie/workbuddy-ai/xxx` → `magpie/workbuddy-ai`). The same underlying model can differ by several times in speed and latency depending on the route.
+- **Requests without a report show —, never 0** (0 would read as "genuinely slow"). Full definitions: [docs/metrics.md](./docs/metrics.md).
 
 ### Ranges
 
@@ -213,7 +228,7 @@ See [docs/sync.md](./docs/sync.md) for the full config reference and least-privi
 The dashboard appends its version and build hash to the **definitions note at the bottom**:
 
 ```
-Definitions: metric definitions in docs/metrics.md; all data stays local. · v2.3.2 · 2b0d02f
+Definitions: metric definitions in docs/metrics.md; all data stays local. · v2.3.3 · 9cb52a5
                                                                           └─ host commit hash
 ```
 

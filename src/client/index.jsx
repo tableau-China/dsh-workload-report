@@ -10,6 +10,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, use
 import { STYLES } from "./styles.js";
 import { NS, en, languageOf, translate, zh } from "./locales.js";
 import { formatHours, formatInt, formatMoney, formatPercent, formatSpeed, formatTtft, formatTokens } from "../format.js";
+import { TABLEAU10 } from "../palette.js";
 import { balanceChip } from "./balance.js";
 import { MetricBarCell } from "./bar-cell.jsx";
 import { Chip, ChipGroup } from "./chips.jsx";
@@ -67,7 +68,7 @@ export const DETAIL_PAGE_SIZE = 10;
 
 /** KPI 卡片顺序（骨架屏与真实卡片共用，卡片数量/顺序不会漂）。 */
 /**
- * KPI 卡片（8 张，5 列栅格；tokens 跨 2 列）。
+ * KPI 卡片（9 张，5 列栅格；tokens 跨 2 列）。
  *
  * 2.3.0：「模型费用」下线——内置价目表只有 DeepSeek 官方模型，实际主力模型（step-5-preview /
  * hy4-preview / deepseek-v4.1-flash 等）都没有官方价，费用只覆盖很小一部分用量、数字严重偏低。
@@ -75,7 +76,7 @@ export const DETAIL_PAGE_SIZE = 10;
  */
 const KPI_KEYS = [
   "kpi.active", "kpi.tokens", "kpi.modelShare",
-  "kpi.activeDays", "kpi.conversations", "kpi.modelOutput", "kpi.cache", "kpi.topModel",
+  "kpi.activeDays", "kpi.conversations", "kpi.modelOutput", "kpi.speed", "kpi.cache", "kpi.topModel",
 ];
 
 /** 需要 inject 的服务：插槽注册表 + 国际化。 */
@@ -561,15 +562,7 @@ function WorkspacePie({ items, t, metric = "activeMs", ariaLabel = null, fullLab
     return { slices: slicesOut, total };
   }, [items, metric]);
 
-  const palette = [
-    "var(--dsw-static-deepseek-500, #4d6bfe)",
-    "var(--dsw-static-green-500, #10b981)",
-    "var(--dsw-static-amber-500, #f59e0b)",
-    "var(--dsw-static-blue-400, #60a5fa)",
-    "var(--dsw-static-red-400, #f25a5a)",
-    "var(--dsw-static-deepseek-300, #a9b8ff)",
-    "var(--dsw-static-neutral-300, #c7cbd1)",
-  ];
+  const palette = TABLEAU10;
 
   const radius = 62;
   const stroke = 24;
@@ -848,20 +841,15 @@ function ModelSection({ data, t }) {
   const models = data.byModel ?? [];
   const [metric, setMetric] = useState("tokens");
   const [selected, setSelected] = useState([]);
-  const palette = [
-    "var(--dsw-static-deepseek-500, #4d6bfe)",
-    "var(--dsw-static-green-500, #10b981)",
-    "var(--dsw-static-amber-500, #f59e0b)",
-    "var(--dsw-static-blue-400, #60a5fa)",
-    "var(--dsw-static-red-400, #f25a5a)",
-    "var(--dsw-static-deepseek-300, #a9b8ff)",
-    "var(--dsw-static-neutral-300, #c7cbd1)",
-  ];
+  const palette = TABLEAU10;
   const metricValue = (item) =>
     metric === "requests" ? item.requests : metric === "llmMs" ? item.llmMs : item.tokensTotal;
   const fmtMetric = (value) => (metric === "requests" ? formatInt(value) : metric === "llmMs" ? formatHours(value) : formatTokens(value));
 
   const ranked = useMemo(() => [...models].sort((a, b) => metricValue(b) - metricValue(a)), [models, metric]);
+  // 明细表比例条：速度 / 请求各按本列最大值归一（与「主要会话」共用 MetricBarCell 规则）
+  const maxSpeed = Math.max(1, ...ranked.map((item) => item.speed ?? 0));
+  const maxRequests = Math.max(1, ...ranked.map((item) => item.requests ?? 0));
   const totalMetric = ranked.reduce((sum, item) => sum + metricValue(item), 0);
   const colorOf = (key) => palette[Math.max(0, ranked.findIndex((item) => item.key === key)) % palette.length];
 
@@ -1004,9 +992,9 @@ function ModelSection({ data, t }) {
       <table className="wl-table wl-model-table">
         <thead>
           <tr>
-            <th>{t("model.col.model")}</th><th>{t("model.col.provider")}</th><th>{t("model.col.share")}</th><th>{t("model.col.requests")}</th>
+            <th>{t("model.col.model")}</th><th>{t("model.col.speed")}</th><th>{t("model.col.ttft")}</th><th>{t("model.col.provider")}</th><th>{t("model.col.share")}</th><th>{t("model.col.requests")}</th>
             <th>{t("table.input")}</th><th>{t("table.output")}</th><th>{t("table.cache")}</th>
-            <th>{t("model.col.hitRate")}</th><th>{t("model.col.speed")}</th><th>{t("model.col.ttft")}</th><th>{t("model.col.cost")}</th>
+            <th>{t("model.col.hitRate")}</th><th>{t("model.col.cost")}</th>
           </tr>
         </thead>
         <tbody>
@@ -1021,15 +1009,21 @@ function ModelSection({ data, t }) {
                   <span className="wl-hint wl-hint-block">{t("model.merged", { list: Object.keys(item.raw).map((k) => k.split("/").pop()).join(" + ") })}</span>
                 ) : null}
               </td>
+              <td>
+                {item.speed === null || item.speed === undefined ? "\u2014" : (
+                  <MetricBarCell value={item.speed} max={maxSpeed} kind="speed" text={formatSpeed(item.speed)} title={`${t("model.col.speed")} ${formatSpeed(item.speed)}`} />
+                )}
+              </td>
+              <td>{formatTtft(item.ttft)}</td>
               <td>{item.provider ?? "\u2014"}</td>
               <td>{formatPercent(item.share)}</td>
-              <td>{formatInt(item.requests)}</td>
+              <td>
+                <MetricBarCell value={item.requests} max={maxRequests} kind="requests" text={formatInt(item.requests)} title={`${t("model.col.requests")} ${formatInt(item.requests)}`} />
+              </td>
               <td>{formatTokens(item.tokens.input)}</td>
               <td>{formatTokens(item.tokens.output)}</td>
               <td>{formatTokens(item.tokens.cacheRead)}</td>
               <td>{item.cacheHitRate === null || item.cacheHitRate === undefined ? "\u2014" : formatPercent(item.cacheHitRate)}</td>
-              <td>{formatSpeed(item.speed)}</td>
-              <td>{formatTtft(item.ttft)}</td>
               <td>{fmtCost(item.cost)}</td>
             </tr>
           ))}
@@ -1225,16 +1219,15 @@ function Kpis({ data, t }) {
         : t("kpi.modelShare.none"),
     ],
     ["kpi.activeDays", `${formatInt(totals.activeDays)} / ${formatInt(data.range.days)}`, t("kpi.activeDays.sub", { workspaces: formatInt(totals.workspaces) })],
-    ["kpi.conversations", formatInt(totals.conversations), t("kpi.conversations.sub", { sessions: formatInt(totals.sessions), empty: formatInt(totals.emptySessions) })],
-    // 步骤数字比轮次小 2px，整行不换行（与 Tokens 卡一样靠栅格给足宽度）
+    // 对话次数与轮次合并成一张卡（2.3.3）：步骤对用户没有意义，去掉；轮次用次级字号区分
     [
-      "kpi.turns",
+      "kpi.conversations",
       (
         <>
-          {formatInt(totals.turns)} / <span className="wl-kpi-steps">{formatInt(totals.steps)}</span>
+          {formatInt(totals.conversations)} / <span className="wl-kpi-steps">{formatInt(totals.turns)}</span>
         </>
       ),
-      t("kpi.turns.sub", { main: formatInt(totals.mainSessions), subagent: formatInt(totals.subagentSessions) }),
+      t("kpi.conversations.sub", { sessions: formatInt(totals.sessions), empty: formatInt(totals.emptySessions) }),
     ],
     // 模型性能之二：平均每次请求的输出 Token（产出效率）
     [
@@ -1244,8 +1237,16 @@ function Kpis({ data, t }) {
         ? t("kpi.modelOutput.sub", { requests: formatInt(modelPerf.requests) })
         : t("kpi.modelOutput.none"),
     ],
-    // 缓存命中率的副文本改成"速度 + 首字延迟"：这两项才是体感性能的直接来源
-    ["kpi.cache", formatPercent(derived.cacheHitRate), t("kpi.cache.sub", { speed: formatSpeed(derived.outputSpeed), ttft: formatTtft(derived.ttftMean) })],
+    // 模型性能之三：输出速度（tok/s）+ 首字延迟 —— 体感性能最直接的两个数
+    [
+      "kpi.speed",
+      formatSpeed(derived.outputSpeed),
+      derived.ttftMean === null || derived.ttftMean === undefined
+        ? t("kpi.speed.none")
+        : t("kpi.speed.sub", { ttft: formatTtft(derived.ttftMean) }),
+    ],
+    // 速度已独立成卡，缓存卡的副文本恢复「输出 x/h」（不再重复速度）
+    ["kpi.cache", formatPercent(derived.cacheHitRate), t("kpi.cache.sub", { output: formatTokens(derived.outputPerActiveHour) })],
     // 第 8 张：最活跃模型（默认按请求数口径，可在配置里切换 tokens / activeMs）
     data.topModel === null || data.topModel === undefined
       ? ["kpi.topModel", "\u2014", t("kpi.topModel.none")]
@@ -1498,6 +1499,10 @@ function ByDayView({ data, t }) {
 function ByWorkspaceView({ data, t }) {
   const items = data.byWorkspace;
   const pct = (share) => `${(Math.max(0, Math.min(1, share ?? 0)) * 100).toFixed(2)}%`;
+  // 会话 / 轮次：`conversations` 的口径是"至少 1 个 step 的会话数"，天然 ≈ 会话数；
+  // 真正表示"对话了几次"的是轮次（turns），所以这里展示 sessions + turns，并给轮次一条 bar。
+  const totalTurns = items.reduce((sum, item) => sum + (item.turns ?? 0), 0) || 1;
+  const avgPerTurn = (item) => (item.turns > 0 ? item.activeMs / item.turns : 0);
   const dateOf = (ms) => (ms > 0 ? new Date(ms).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" }) : "—");
 
   return (
@@ -1511,6 +1516,7 @@ function ByWorkspaceView({ data, t }) {
           <>
             {/* 列头只出现一次；每一行不再重复"我的付出 / Token 消耗" */}
             <div className="wl-metrics-head" aria-hidden="true">
+              <span>{t("metric.sessionsTurns")}</span>
               <span>{t("metric.effort")}</span>
               <span>{t("metric.tokens")}</span>
             </div>
@@ -1523,6 +1529,17 @@ function ByWorkspaceView({ data, t }) {
                     <span className="wl-ws-name" title={item.path}>{item.label}</span>
                     <span className="wl-ws-days">{t("ws.activeDays", { days: formatInt(item.activeDays ?? 0) })}</span>
                     <span className="wl-ws-meta">{t("ws.lastUsed", { date: dateOf(item.lastUsedAt) })}</span>
+                  </div>
+                  <div className="wl-metric">
+                    <div className="wl-metric-value">
+                      {formatInt(item.sessions)} {t("table.sessions")} · {formatInt(item.turns)} {t("table.turns")}
+                    </div>
+                    <div className="wl-bar-track">
+                      <div className="wl-bar-fill" data-kind="turns" style={{ width: pct((item.turns ?? 0) / totalTurns) }} />
+                    </div>
+                    <div className="wl-metric-sub">
+                      {t("ws.avgPerTurn", { avg: formatHours(avgPerTurn(item)) })}
+                    </div>
                   </div>
                   <div className="wl-metric">
                     <div className="wl-metric-value">
@@ -1556,11 +1573,6 @@ function ByWorkspaceView({ data, t }) {
                       })}
                     </div>
                   </div>
-                </div>
-                <div className="wl-ws-foot">
-                  {formatInt(item.sessions)} {t("table.sessions")} · {formatInt(item.conversations)} {t("table.conversations")} ·{" "}
-                  {t("metric.chatsSub", { avg: formatHours(item.avgActiveMsPerConversation) })}
-                  {item.waitMs > 0 ? ` · ${t("ws.wait", { wait: formatHours(item.waitMs) })}` : ""}
                 </div>
               </li>
             ))}
