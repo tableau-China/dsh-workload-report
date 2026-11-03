@@ -18,7 +18,7 @@
  *     · local  —— 共享目录（iCloud / Syncthing / NAS），零凭据
  */
 
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { checkMachineIdentity, prefixOf, shortMachineId } from "./client/sync-state.js";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
@@ -30,6 +30,10 @@ import { CredentialVault, fieldsOf, resolveField } from "./credential-vault.js";
 /** 载荷 schema 版本：与 docs/sync.md §二 对应，改了形状就要升版。 */
 export const PAYLOAD_SCHEMA = 1;
 export const PAYLOAD_KIND = "dsh-workload-report/rows";
+/** 拉取缓存文件格式版本（不兼容时直接忽略旧文件）。 */
+export const SYNC_CACHE_VERSION = 1;
+/** 缓存文件大小上限：超过就不落盘（避免把几百 MB 写进 home）。 */
+export const SYNC_CACHE_MAX_BYTES = 16 * 1024 * 1024;
 
 /** 支持的传输类型。 */
 export const TRANSPORTS = ["cos", "github", "gitea", "local"];
@@ -701,9 +705,9 @@ export class SyncService {
   /**
    * @param ctx - Cordis ctx（只用 logger）。
    * @param config - 合并后的 sync 配置。
-   * @param options - { home, pluginVersion }。
+   * @param options - { home, pluginVersion, cachePath }。
    */
-  constructor(ctx, config, { home = defaultHome(), pluginVersion = null } = {}) {
+  constructor(ctx, config, { home = defaultHome(), pluginVersion = null, cachePath = null } = {}) {
     this.ctx = ctx;
     /** 加密凭据仓库（DSH 自带的 credentials 服务；不存在时自动降级到文件/环境变量）。 */
     this.vault = new CredentialVault(ctx);
@@ -716,8 +720,16 @@ export class SyncService {
     this.home = home;
     this.pluginVersion = pluginVersion;
     this.identity = null;
-    /** key(machine.id) → { payload, fetchedAt, key } */
+    /** key(machine.id) → { payload, fetchedAt, key, cached? } */
     this.sources = new Map();
+    /**
+     * 最近一次拉取结果的磁盘缓存：`sources` 只在内存里，重启就没了（用户的同步频率还可能是
+     * 「仅手动」→ 启动也不拉）。落盘后重启/离线也能看到上次拉到的其它设备数据。
+     */
+    this.cachePath = cachePath ?? join(home, "workload-report", "sync-sources.json");
+    /** 缓存文件里记录的保存时间 / 已加载的来源数（诊断用）。 */
+    this.cacheSavedAt = 0;
+    this.cacheLoadedSessions = 0;
     this.stats = {
       lastPushAt: 0, lastPushError: null, lastPushRows: 0,
       lastPullAt: 0, lastPullError: null, lastPullFetched: 0,
@@ -726,6 +738,109 @@ export class SyncService {
     };
     this.pushingPromise = null;
     this.pullingPromise = null;
+  }
+
+  /**
+   * 从磁盘恢复上次拉取结果 + 推送/拉取/探测时间（重启后不丢）。
+   *
+   * 只在**内存里还没有来源**时加载：如果启动后已经拉过（自动同步），磁盘数据是旧的，不该覆盖。
+   * 单条坏数据只跳过那一条，不拖垮整个同步服务。
+   *
+   * @returns {Promise<{ loaded: number, savedAt: number, sessions: number }>}
+   */
+  async loadCache() {
+    // 同步关闭时完全不碰缓存：既不读旧数据（否则 devices 里会冒出幽灵设备），
+    // 也不因为读缓存去创建本机身份文件。打开同步后由 applyConfig 再补一次。
+    if (this.enabled !== true) return { loaded: 0, savedAt: 0, sessions: 0 };
+    if (this.sources.size > 0) return { loaded: 0, savedAt: 0, sessions: 0 };
+    // 先确定本机身份（纯本地读取，不联网）：否则重启后还没 pull 时 devices() 里没有「本机」，
+    // 设备 chips 会只剩远端，用户没法切回本机。
+    if (this.enabled === true) {
+      try {
+        await this.identify();
+      } catch {
+        /* 身份读不到就不列本机，不影响远端缓存恢复 */
+      }
+    }
+    let text;
+    try {
+      text = await readFile(this.cachePath, "utf8");
+    } catch {
+      return { loaded: 0, savedAt: 0, sessions: 0 };
+    }
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      return { loaded: 0, savedAt: 0, sessions: 0 };
+    }
+    if (data?.version !== SYNC_CACHE_VERSION) return { loaded: 0, savedAt: 0, sessions: 0 };
+    const entries = Array.isArray(data.sources) ? data.sources : [];
+    let loaded = 0;
+    let sessions = 0;
+    for (const entry of entries) {
+      try {
+        validatePayload(entry?.payload, `cache:${entry?.key ?? "?"}`);
+        const id = entry.payload.machine.id;
+        this.sources.set(id, {
+          payload: entry.payload,
+          fetchedAt: Number(entry.fetchedAt) || Date.now(),
+          key: typeof entry.key === "string" ? entry.key : "",
+          cached: true,
+        });
+        sessions += entry.payload.rows.length;
+        loaded += 1;
+      } catch {
+        /* 单条坏数据跳过 */
+      }
+    }
+    // 时间类统计跨重启恢复（错误信息不恢复：那是"这次运行"的失败）
+    const stats = data.stats ?? {};
+    for (const field of ["lastPushAt", "lastPullAt"]) {
+      const value = Number(stats[field]);
+      if (Number.isFinite(value) && value > 0) this.stats[field] = value;
+    }
+    const probe = stats.lastProbe;
+    if (probe !== null && typeof probe === "object" && typeof probe.ok === "boolean") this.stats.lastProbe = probe;
+    this.cacheSavedAt = Number(data.savedAt) || 0;
+    this.cacheLoadedSessions = sessions;
+    return { loaded, savedAt: this.cacheSavedAt, sessions };
+  }
+
+  /**
+   * 把当前来源 + 时间统计写回磁盘（原子替换，权限 0600）。
+   * 参数变化（换存储/换账号）时旧缓存会被下次 pull 覆盖；超过大小上限就不写，避免写爆 home。
+   *
+   * @returns {Promise<{ saved: boolean, bytes?: number, reason?: string }>}
+   */
+  async saveCache() {
+    try {
+      const sources = [...this.sources.values()].map((source) => ({
+        key: source.key ?? "",
+        fetchedAt: source.fetchedAt,
+        payload: source.payload,
+      }));
+      const body = JSON.stringify({
+        version: SYNC_CACHE_VERSION,
+        savedAt: Date.now(),
+        stats: {
+          lastPushAt: this.stats.lastPushAt,
+          lastPullAt: this.stats.lastPullAt,
+          lastProbe: this.stats.lastProbe,
+        },
+        sources,
+      });
+      if (body.length > SYNC_CACHE_MAX_BYTES) return { saved: false, reason: "too-large" };
+      await mkdir(dirname(this.cachePath), { recursive: true });
+      const tmp = `${this.cachePath}.tmp`;
+      await writeFile(tmp, body, { mode: 0o600 });
+      await rename(tmp, this.cachePath);
+      this.cacheSavedAt = Date.now();
+      return { saved: true, bytes: body.length };
+    } catch (error) {
+      this.ctx?.logger?.warn?.(`[workload-report] 同步缓存写入失败：${String(error?.message ?? error)}`);
+      return { saved: false, reason: "write-failed" };
+    }
   }
 
   /**
@@ -747,6 +862,10 @@ export class SyncService {
     }
     this.config = next;
     this.config.keyPrefix = prefixOf(this.config.path);
+    // 刚打开同步（或保存设置后首次启用）：补一次缓存恢复，否则要重启才能看到上次拉到的设备
+    if (this.enabled === true && this.sources.size === 0) {
+      void this.loadCache().catch(() => {});
+    }
     return this.config;
   }
 
@@ -851,6 +970,7 @@ export class SyncService {
         this.stats.lastPushAt = Date.now();
         this.stats.lastPushRows = payload.rows.length;
         this.stats.lastPushError = null;
+        await this.saveCache(); // 时间戳跨重启保留
         this.ctx?.logger?.info?.(`[workload-report] 已同步 ${payload.rows.length} 个会话 → ${key}`);
         return { ok: true, rows: payload.rows.length, key };
       } catch (error) {
@@ -922,6 +1042,7 @@ export class SyncService {
         this.stats.lastPullFetched = fetched;
         this.stats.lastPullSkipped = skipped;
         this.stats.lastPullError = null;
+        await this.saveCache(); // 关键：拉到的其它设备数据落盘，重启/离线后仍可见
         this.ctx?.logger?.info?.(`[workload-report] 拉到 ${fetched} 个其他设备（共 ${this.sources.size} 个来源${skipped > 0 ? `，跳过 ${skipped} 个` : ""}）`);
         return { ok: true, fetched, total: this.sources.size, skipped };
       } catch (error) {
@@ -945,6 +1066,7 @@ export class SyncService {
     await this.identify();
     const result = await transport.probe();
     this.stats.lastProbe = { ...result, at: Date.now() };
+    await this.saveCache(); // 「上次探测」跨重启保留（避免每次打开都显示未测试）
     return result;
   }
 
@@ -958,6 +1080,10 @@ export class SyncService {
    *
    * 合并的是**逐会话行**而非已聚合报告：否则「两台机器同一天做同一项目」
    * 会把活跃天数从 1 天算成 2 天（docs/sync.md §四）。
+   *
+   * **设备筛选语义（2.3.5 修正）**：选中的设备集合决定**最终看到哪些设备**，包括本机——
+   * 选了一台远端机器就只看那台（本机行不参与）。旧实现只筛远端、本机永远在，导致
+   * 「切换设备」时只有跨全历史的日历图看得出变化（区间内的 KPI / 趋势被本机数据淹没）。
    */
   merge(localRows, { machines = null } = {}) {
     const local = localRows instanceof Map
@@ -965,20 +1091,25 @@ export class SyncService {
       : (Array.isArray(localRows)
         ? new Map(localRows.map((row) => [row.id, row]))
         : new Map(Object.entries(localRows ?? {})));
-    const merged = new Map(local);
-    const origin = new Map([...local.keys()].map((id) => [id, "local"]));
     let dropped = 0;
-    // 设备筛选：只在显式选择了设备时生效；空数组 / null 表示「全部设备」
+    // 设备筛选：只在显式选择了设备时生效；空数组 / null / 含 "all" 表示「全部设备」
     const selected = Array.isArray(machines) && machines.length > 0 && !machines.includes("all") ? new Set(machines) : null;
+    // 本机行是否参与：全选时参与；选了 local 时参与；只选其它机器时不参与
+    const wantLocal = selected === null || selected.has("local");
+    const merged = new Map();
+    const origin = new Map();
+    if (wantLocal) {
+      for (const [id, row] of local) {
+        merged.set(id, row);
+        origin.set(id, "local");
+      }
+    } else {
+      dropped += local.size;
+    }
 
     for (const [key, source] of this.sources) {
       const name = source.payload.machine.name;
-      if (selected !== null && !selected.has(key) && !selected.has(name) && !selected.has("local")) {
-        dropped += source.payload.rows.length;
-        continue;
-      }
-      // 「只看本机」：选了 local 且没选其它来源
-      if (selected !== null && selected.size === 1 && selected.has("local")) {
+      if (selected !== null && !selected.has(key) && !selected.has(name)) {
         dropped += source.payload.rows.length;
         continue;
       }
@@ -1018,6 +1149,8 @@ export class SyncService {
         rows: source.payload.rows.length,
         fetchedAt: source.fetchedAt,
         stale: ageMs > Math.max(0, Number(this.config.staleAfterMs) || 0),
+        /** 来自磁盘缓存（重启后还没拉过）—— 界面上要说明"这是上次拉取的数据"。 */
+        cached: source.cached === true,
         platform: source.payload.machine.platform ?? null,
         plugin: source.payload.machine.plugin ?? null,
       });
@@ -1032,6 +1165,9 @@ export class SyncService {
       mode: this.config.mode,
       transport: this.config.transport,
       sources: this.sources.size,
+      /** 缓存状态：重启后 sources 来自磁盘时 cachedSources > 0。 */
+      cacheSavedAt: this.cacheSavedAt,
+      cachedSources: [...this.sources.values()].filter((source) => source.cached === true).length,
       ...this.stats,
       devices: this.devices(),
     };

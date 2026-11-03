@@ -145,7 +145,8 @@ export function DeviceFilter({ devices, value, onChange, t, syncOpen = false, on
                 active={!allActive && selected.has(device.key)}
                 data-device={device.key}
                 data-stale={device.stale === true ? "true" : undefined}
-                title={device.stale === true ? t("devices.stale") : undefined}
+                data-cached={device.cached === true ? "true" : undefined}
+                title={device.cached === true ? t("devices.cached") : (device.stale === true ? t("devices.stale") : undefined)}
                 onClick={() => (device.local === true ? toggleLocal() : toggle(device.key))}
               >
                 {device.local === true ? t("devices.local") : device.name}
@@ -303,6 +304,33 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
     }
     return values;
   };
+
+  /**
+   * 关闭弹窗的唯一入口（✕ / 取消 / 点遮罩 / ESC 都走这里）：
+   * 有未保存修改时先确认，避免"按 ESC 顺手把面板关掉、Token 白填"。
+   */
+  const requestClose = () => {
+    if (busy) return;
+    let dirty = false;
+    try {
+      dirty = form !== null && Object.keys(changedSettings()).length > 0;
+    } catch {
+      dirty = false;
+    }
+    if (dirty && !window.confirm(t("set.discardConfirm"))) return;
+    onClose();
+  };
+
+  // ESC 由弹窗自己处理：capture 阶段拦下，避免冒泡到面板的 ESC（那会连面板一起关）。
+  useEffect(() => {
+    const onKey = (event) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      requestClose();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  });
 
   /**
    * 一次保存：先设置、后凭据。
@@ -564,7 +592,7 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
       aria-modal="true"
       aria-label={t("set.dialogTitle")}
       data-sync-dialog="true"
-      onClick={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}
+      onClick={(event) => { if (event.target === event.currentTarget) requestClose(); }}
     >
       <div className="wl-dialog" data-busy={busy ? "true" : undefined}>
         <header className="wl-head">
@@ -589,7 +617,7 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
           >
             {probing ? t("sync.probing") : t("sync.probe")}
           </button>
-          <button type="button" className="wl-btn" onClick={onClose} disabled={busy} aria-label={t("action.close")}>✕</button>
+          <button type="button" className="wl-btn" onClick={requestClose} disabled={busy} aria-label={t("action.close")}>✕</button>
         </header>
 
         {state.status === "error" ? <p className="wl-state">{t("state.failed", { message: state.error ?? "" })}</p> : (
@@ -812,7 +840,7 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
         )}
 
         <footer className="wl-dialog-foot">
-          <button type="button" className="wl-btn" onClick={onClose} disabled={busy}>{t("set.cancel")}</button>
+          <button type="button" className="wl-btn" onClick={requestClose} disabled={busy}>{t("set.cancel")}</button>
           <button type="button" className="wl-btn" data-kind="primary" data-action="save-all" disabled={!canSave || busy} onClick={() => void submit()}>
             {busy ? t("set.saving") : t("set.save")}
           </button>

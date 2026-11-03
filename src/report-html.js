@@ -15,7 +15,7 @@
 import { barPercent } from "./client/bar-width.js";
 import { hourTokensNote } from "./client/hour-status.js";
 import { translate } from "./client/locales.js";
-import { escapeHtml, formatHours, formatInt, formatPercent, formatSpeed, formatTtft, formatTokens } from "./format.js";
+import { escapeHtml, formatHours, formatInt, formatPercent, formatProvider, formatSpeed, formatTtft, formatTokens } from "./format.js";
 import { SEMANTIC, TABLEAU10, withAlpha } from "./palette.js";
 import { sectorPath } from "./sector-path.js";
 import { HOUR_CHART_TOP_SPACE, HOUR_DOT_TOP, hourDotRadius } from "./hour-scale.js";
@@ -512,7 +512,7 @@ function modelSection(snapshot, palette) {
   const cost = (value) => (value === null || value === undefined ? "—" : symbol + (value < 1 ? value.toFixed(4) : value.toFixed(2)));
   const rows = models
     .map(
-      (item) => '<tr><td class="ws">' + escapeHtml(item.label) + "</td><td>" + formatSpeed(item.speed) + "</td><td>" + formatTtft(item.ttft) + "</td><td>" + escapeHtml(item.provider ?? "—") + "</td><td>" + formatPercent(item.share) + "</td><td>" + formatInt(item.requests) + "</td><td>" + formatTokens(item.tokens.input) + "</td><td>" + formatTokens(item.tokens.output) + "</td><td>" + formatTokens(item.tokens.cacheRead) + "</td><td>" + (item.cacheHitRate === null || item.cacheHitRate === undefined ? "—" : formatPercent(item.cacheHitRate)) + "</td><td>" + cost(item.cost) + "</td></tr>",
+      (item) => '<tr><td class="ws">' + escapeHtml(item.label) + "</td><td>" + formatSpeed(item.speed) + "</td><td>" + formatTtft(item.ttft) + "</td><td title=\"" + escapeHtml(item.provider ?? "—") + "\">" + escapeHtml(formatProvider(item.provider)) + "</td><td>" + formatPercent(item.share) + "</td><td>" + formatInt(item.requests) + "</td><td>" + formatTokens(item.tokens.input) + "</td><td>" + formatTokens(item.tokens.output) + "</td><td>" + formatTokens(item.tokens.cacheRead) + "</td><td>" + (item.cacheHitRate === null || item.cacheHitRate === undefined ? "—" : formatPercent(item.cacheHitRate)) + "</td><td>" + cost(item.cost) + "</td></tr>",
     )
     .join("");
   const links = (pricing.links ?? []).map((link) => '<a href="' + escapeHtml(link.url) + '">' + escapeHtml(link.label ?? link.provider) + "</a>").join(" · ");

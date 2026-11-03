@@ -764,7 +764,7 @@ function buildByModel(modelMap, pricing, modelAliases, totals, metric) {
     return {
       key: bucket.key,
       label: modelLabel(bucket.key, modelAliases),
-      provider: providerOf(bucket.key),
+      provider: providerOf(bucket.key, bucket.raw),
       requests: num(bucket.requests),
       // 逐模型速度：decode token / decode 窗口（秒）。缺首字时间的请求不计 —— 返回 null 而非 0。
       speed: bucket.decodeMs > 0 ? bucket.decodeTokens / (bucket.decodeMs / 1000) : null,
@@ -798,7 +798,7 @@ function buildByModel(modelMap, pricing, modelAliases, totals, metric) {
 function buildByProvider(modelMap) {
   const map = new Map();
   for (const bucket of modelMap.values()) {
-    const key = providerOf(bucket.key);
+    const key = providerOf(bucket.key, bucket.raw);
     let target = map.get(key);
     if (target === undefined) {
       target = { key, requests: 0, tokensTotal: 0, llmMs: 0, models: 0, cacheRead: 0, cacheMiss: 0 };

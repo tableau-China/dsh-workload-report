@@ -560,6 +560,19 @@ class WorkloadIndex {
       buildMs: 0, lastSyncAt: 0, lastError: null, persisted: false,
       modelsFolded: 0, modelPending: 0, modelStale: 0, modelFailed: 0, modelSkipped: 0,
     };
+    /**
+     * 启动时从磁盘恢复上次拉取的设备数据。
+     * `sources` 只在内存里，重启就没了——同步频率还可能是「仅手动」（启动不自动拉），
+     * 那样重启后设备列表与图表会一直空着。快照会先等这个 Promise，避免首屏漏掉其它设备。
+     */
+    this.syncCacheReady = this.deviceSync.loadCache()
+      .then((loaded) => {
+        if (loaded.loaded > 0) {
+          ctx.logger.info?.(`[workload-report] 已从缓存恢复 ${loaded.loaded} 个设备来源（${loaded.sessions} 个会话）`);
+        }
+        return loaded;
+      })
+      .catch(() => ({ loaded: 0 }));
   }
 
   /** 索引文件路径（可用 config.indexPath 覆盖）。 */
@@ -1173,6 +1186,8 @@ class WorkloadIndex {
    */
   async snapshot(query) {
     const started = Date.now();
+    // 先等启动时的缓存恢复（只解析一次；恢复失败不阻塞快照）
+    await this.syncCacheReady;
     this.ensureIndex({ force: query.refresh === true });
     // 余额：只在启用时真的查询；不 await（快照绝不因出网变慢），结果下次请求即生效
     void this.balance.ensure();
@@ -1185,13 +1200,16 @@ class WorkloadIndex {
       // 设备筛选必须进缓存键，否则切换设备会命中旧缓存
       machines: query.machines ?? null,
     });
+    // 手动刷新（?refresh=1）必须绕过下面的快照缓存：否则点「刷新」在 snapshotCacheMs（15s）内
+    // 拿到的还是同一份缓存，按钮看起来毫无反应。
+    const forced = query.refresh === true;
     // stale-while-revalidate：活会话每来一个事件都会作废快照缓存（patchLive），
     // 于是「在会话里打字 → 打开面板」总是 miss。改为：
     //   缓存被作废但旧值还在 → 立即返回旧值（dataStale=true），后台重建一次。
     // 只有**首次**（没有旧值）或 SWR 关闭时才同步重建。
     // 不新鲜超过 snapshotStaleMaxMs 的旧值不再返回，避免长期显示过期数字。
     const cached = this.snapshotCache;
-    if (cached !== undefined && cached.key === cacheKey) {
+    if (!forced && cached !== undefined && cached.key === cacheKey) {
       const age = Date.now() - cached.at;
       const fresh = age < this.config.snapshotCacheMs;
       const swrOn = this.config.snapshotSwr !== false;

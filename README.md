@@ -1,7 +1,7 @@
 # TimeMirror for DSH · Workload Report
 
 > **See your effort and your token spend on the same picture** — by **date** and by **workspace**: a calendar heatmap, time-of-day analysis, workspace share, model usage, and a **one-click self-contained HTML report** you can send straight to a client.
-> A DeepSeek Harness (DSH) plugin. Current version: **2.3.4**.
+> A DeepSeek Harness (DSH) plugin. Current version: **2.4.0**.
 
 > TimeMirror is a macOS time-distribution app I published on the Mac App Store; this plugin brings the same idea to AI-assisted work. The package/repo keeps the descriptive name `dsh-workload-report` so it can be found in the DSH ecosystem; the brand stays TimeMirror.
 
@@ -58,6 +58,24 @@ Uninstall: `dsh plugin --profile web remove dsh-workload-report`.
 - **Theme and locale aware**: **data visualisation uses the Tableau 10 palette** (`src/palette.js`, identical in the dashboard and the exported report); UI chrome (buttons / tabs / links) keeps host theme tokens (`--dsw-*`) so it follows the harness light/dark theme. All UI strings are aligned between Chinese and English.
 - **AI user profile (included by default, manual trigger)**: a dedicated top-level tab at the **right end of the navigation** (blue-tinted, distinct from the other tabs); the Top sessions tab keeps its sessions table only. It shows a three-line notice first and calls the model only after you click Generate. It generates a headline + 4–6 numeric dimensions + 2–3 advice items + risk from **aggregate statistics only** (window = max(current range, 30 days)) — never conversations, titles, or paths. The same statistics fingerprint reuses the disk cache; any failure falls back to deterministic local rules. See [AI user profile](#ai-user-profile).
 - **Fast open**: opening the panel triggers **zero** event-log reads (`readSession`); cold open 25 ms, warm open ~1 ms (measured on an isolated instance). Model folding is driven by background timers, never by opening the panel.
+
+## What's new in 2.4.0
+
+**Consistency and persistence**
+
+- **Device-filter semantics fixed**: previously only remote sources were filtered and **local rows always participated**, so switching devices only changed the all-history calendar (KPIs/trends stayed dominated by local data). Now **you see exactly the devices you select (local included)** and every chart follows.
+- **Pull-cache persistence**: pulled remote data used to live in memory only, so a restart dropped it (and `manual` frequency never pulls on start). Each successful pull/push/probe now writes `<DSH_HOME>/workload-report/sync-sources.json` (0600, atomic replace) and startup restores it — **other devices stay visible after a restart or offline**, chips are marked "from the last pull's cache", and last-push/last-pull/last-probe timestamps survive restarts.
+- **Vanished devices fall back**: a selected device that disappears from the sync sources is dropped from the filter; if nothing remains you return to "all devices" instead of an all-zero dashboard with no active chip.
+
+**Charts and display**
+
+- **Fixed donut colours not switching / legend accumulating**: arcs and legend used the display name as the React key, and same-named models (`deepseek-v4.1-flash` over 3 routes) collided, so React reused the wrong nodes. Now keyed by unique ids, and duplicate names get a provider suffix (`deepseek-v4.1-flash · auto`).
+- **Short provider names** (`workbuddy-ai` / `auto` / `workbuddy`) with the full path in the tooltip; merged groups derive their provider from `raw`, so `(unspecified provider)` becomes `deepseek-account`.
+
+**Interaction**
+
+- **Refresh really refreshes**: manual refresh sends `refresh=1` to bypass the host snapshot cache (auto-poll does not, so it never forces a re-scan every 5 s).
+- **ESC no longer closes the panel**: while the sync dialog is open, ESC goes to the dialog; unsaved edits trigger a "discard and close?" confirmation — `✕ / Cancel / overlay click / ESC` all share one path.
 
 ## What's new in 2.3.4
 
@@ -236,7 +254,7 @@ See [docs/sync.md](./docs/sync.md) for the full config reference and least-privi
 The dashboard appends its version and build hash to the **definitions note at the bottom**:
 
 ```
-Definitions: metric definitions in docs/metrics.md; all data stays local. · v2.3.4 · bbdd460
+Definitions: metric definitions in docs/metrics.md; all data stays local. · v2.4.0 · 9eadcd8
                                                                           └─ host commit hash
 ```
 
@@ -323,7 +341,7 @@ All statistics stay on your machine. The plugin registers **read-only** HTTP rou
 | --- | --- |
 | `pnpm add -D esbuild puppeteer-core` | Install build and browser-test dependencies (or point `ESBUILD_PATH` / `WL_PUPPETEER_DIR` at existing installs) |
 | `node build.mjs` | Bundle `src/client/` into `lib/client.js` (ModuleLoader factory format) with esbuild |
-| `node test/verify.mjs` | **1509 offline assertions**: aggregation semantics with one shared range rule, time zones, turn-based hour bucketing and conservation, hourly tokens by message time, human-message density, wait exclusion (all three rules + long-task exemption + `excludeWait:false` regression), index/read fallbacks, report structure parity, the AI-profile tab as a right-aligned navigation entry, the 30-day profile window, multi-device sync (payload / merge / credentials / settings / device filter), zero model calls on first open, i18n key alignment, and balance states |
+| `node test/verify.mjs` | **1597 offline assertions**: aggregation semantics with one shared range rule, time zones, turn-based hour bucketing and conservation, hourly tokens by message time, human-message density, wait exclusion (all three rules + long-task exemption + `excludeWait:false` regression), index/read fallbacks, report structure parity, the AI-profile tab as a right-aligned navigation entry, the 30-day profile window, multi-device sync (payload / merge / credentials / settings / device filter / pull-cache persistence), output-speed and TTFT definitions, zero model calls on first open, i18n key alignment, and balance states |
 | `./test/e2e-boot.sh 3299` | Boot an **isolated instance** (own DSH_HOME and port) without touching your running GUI |
 | `node test/e2e-ui.mjs` | Real-browser E2E: calendar/bar switching, geometry, donuts, report export, time-of-day card |
 

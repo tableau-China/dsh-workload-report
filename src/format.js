@@ -87,6 +87,18 @@ export function formatTtft(ms) {
   return `${trimZero((n / 1000).toFixed(1))} s`;
 }
 
+/**
+ * 供应商短名：只取路径最后一段（`magpie/workbuddy-ai` → `workbuddy-ai`）。
+ * 表格里同模型的多条链路靠它区分；完整路径由调用方放进 title 提示。
+ * @param provider - 供应商全路径；空值 → "—"。
+ */
+export function formatProvider(provider) {
+  const text = typeof provider === "string" ? provider.trim() : "";
+  if (text === "") return "\u2014";
+  const parts = text.split("/").filter((part) => part !== "");
+  return parts.length > 0 ? parts[parts.length - 1] : text;
+}
+
 /** HTML 转义（报告是字符串拼接生成，必须转义一切外部文本）。 */
 export function escapeHtml(value) {
   return String(value ?? "")

@@ -134,7 +134,7 @@ waitMinMs: 60000
 | **输出速度 tok/s** | `ΣdecodeTokens / (ΣdecodeMs / 1000)` | **必须加权**（先求和再相除）。对各会话速度取平均会让短请求被过度放大。decode 窗口 = 首字 → 消息完成，**不含**等首字 |
 | **平均首字延迟 TTFT** | `ΣttftMs / ΣttftSteps` | 首字延迟 = `step/start → 首个 token`。分母用 `ttftSteps`（不是 `steps`），因为未上报的步不参与 |
 | **模型时间拆解** | 等首字 `ttftMs` + 吐字 `decodeMs` + 其它（排队 / 重试 / 空转）= `llmMs` | 守恒。判断"优化速度有没有用"：等首字占大头时，提高吐字速度收益很小 |
-| **供应商** | 归并组名里**除最后一段（模型）之外**的路径（`magpie/workbuddy-ai/xxx` → `magpie/workbuddy-ai`） | 只取首段会把同渠道下不同厂商并成一个（`magpie/workbuddy-ai` 与 `magpie/workbuddy` 都变 `magpie`），失去"换哪条链路"的诊断价值；无分隔段归为 `(未标注供应商)`，**不猜** |
+| **供应商** | 归并组名里**除最后一段（模型）之外**的路径（`magpie/workbuddy-ai/xxx` → `magpie/workbuddy-ai`）；**归并组没有渠道段时从 `raw` 回推**（取出现次数最多的 `provider/model` 前缀，如 `deepseek-v4-flash` ← `deepseek-account/deepseek-flash` → `deepseek-account`） | 只取首段会把同渠道下不同厂商并成一个（`magpie/workbuddy-ai` 与 `magpie/workbuddy` 都变 `magpie`），失去"换哪条链路"的诊断价值；回推失败才归为 `(未标注供应商)`，**不猜**。**表格里显示短名**（最后一段，如 `workbuddy-ai`），完整路径放 `title` —— 同一模型的多条链路（`workbuddy-ai` / `auto` / `workbuddy`）靠它区分，行数不是重复计数 |
 | **速度覆盖度** | `speedCoverage = { steps, speedSteps }` | 区分"数据不足"与"确实慢"。未上报时界面显示 `—` |
 
 **为什么不用「输出 token / llmMs」**：`llmMs` 包含等首字的时间（本机实测约占 **56%**），拿它当分母会把速度系统性低估一半以上，且无法区分"模型慢"与"链路排队久"。官方 Web 端显示速度用的也是 `decodeTokens / decodeMs`。

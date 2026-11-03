@@ -5,8 +5,13 @@ import { readFileSync } from "node:fs";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+// 测试隔离：把 DSH_HOME 指到临时目录。
+// 否则宿主实例的同步缓存会写到真实 `~/.dsh/workload-report/sync-sources.json`
+// （跑一次测试就污染用户的真实数据目录）。
+process.env.DSH_HOME = `/tmp/wl-verify-dshhome-${process.pid}`;
+
 import { aggregate, dateKey, present, resolveRange, rowFromSession, workspaceLabel } from "../src/aggregate.js";
-import { escapeHtml, formatHours, formatInt, formatMoney, formatTokens } from "../src/format.js";
+import { escapeHtml, formatHours, formatInt, formatMoney, formatProvider, formatTokens } from "../src/format.js";
 import { barPercent } from "../src/client/bar-width.js";
 import { renderReport } from "../src/report-html.js";
 import {
@@ -39,7 +44,7 @@ import { profileCardPhase, profileRouteInfo, profileSummaryDays } from "../src/c
 import { en, translate, zh } from "../src/client/locales.js";
 import {
   DEFAULT_PRICING, DEFAULT_WAIT_TOOLS, allocateLlmMs, cacheHitRate, costOf, emptyModelBucket, foldSessionModels,
-  groupKeyFor, isPeak, modelLabel, modelTokens, resolvePricing, UNKNOWN_MODEL,
+  groupKeyFor, isPeak, modelLabel, modelTokens, providerOf, resolvePricing, UNKNOWN_MODEL,
 } from "../src/models.js";
 import {
   HOUR_CHART_TOP_SPACE, HOUR_DOT_BASE_RADIUS, HOUR_DOT_RADIUS_SPAN, HOUR_DOT_TOP,
@@ -1002,6 +1007,20 @@ console.log("\n—— 时刻卡片（默认 Tokens / chips / 顶部密度点）�
   const snapM = present(aggregate([rowM], { timeZone: "UTC", now: Date.parse("2026-10-02T00:00:00Z") }));
   eq(snapM.byProvider.length, 2, "供应商维度：按归并组名首段汇总出 2 个供应商");
   eq(snapM.byProvider[0].key, "magpie/workbuddy-ai", "供应商取「除模型外的整段路径」（magpie/workbuddy-ai/... → magpie/workbuddy-ai）");
+  // 归并组（组名里没有渠道段）从 raw 的 provider/model 计数回推，避免显示「未标注供应商」
+  eq(providerOf("deepseek-v4-flash", { "deepseek-account/deepseek-flash": 10 }), "deepseek-account", "供应商：归并组从 raw 回推真实 provider");
+  eq(providerOf("deepseek-v4-flash"), "(未标注供应商)", "供应商：归并组无 raw 时仍标「未标注」（不猜）");
+  eq(providerOf("g", { "?/m": 5, "prov/m": 3 }), "prov", "供应商回推跳过 ? 占位");
+  // 表格里同模型多条链路靠供应商短名区分（完整路径在 title）
+  eq(formatProvider("magpie/workbuddy-ai"), "workbuddy-ai", "供应商短名：只取最后一段");
+  eq(formatProvider(""), "\u2014", "供应商短名：空值显示 —");
+  {
+    // 展示层：表格里供应商只显示短名（完整路径进 title），否则同模型多条链路看不出区别
+    const clientSrc = await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8");
+    const reportSrc = await readFile(new URL("../src/report-html.js", import.meta.url), "utf8");
+    ok(/formatProvider\(item\.provider\)/.test(clientSrc) && /title=\{item\.provider/.test(clientSrc), "UI：供应商列显示短名，完整路径放 title");
+    ok(reportSrc.includes("formatProvider(item.provider)") && reportSrc.includes('title=\\"'), "报告：供应商列同样短名 + title");
+  }
   eq(snapM.byProvider[0].requests, 3, "供应商请求数汇总正确");
   ok(modelsSource.includes("export function providerOf"), "providerOf 由 models.js 提供（无分隔段时归为未标注，不猜）");
   ok(aggSource.includes("byProvider: buildByProvider(modelMap)"), "快照带 byProvider");
@@ -3169,16 +3188,23 @@ bootSync.seq = 1;
   eq(soloAgg.totals.activeDays, 2, "合并：单机活跃天数 2（两条跨两天）");
   eq(bothAgg.totals.activeDays, 2, "合并：远端会话与最早一天同日 → 活跃天数仍是 2（不重复计天）");
 
-  // 12.8 设备筛选
+  // 12.8 设备筛选：选中谁就只看谁（**含本机**）。2.3.5 修正：旧实现本机行永远参与，
+  // 导致切换设备时只有跨全历史的日历图看得出变化，区间内的 KPI / 趋势被本机数据淹没。
   const onlyLocal = svc.merge(localRows, { machines: ["local"] });
   eq(onlyLocal.rows.size, 2, "设备筛选：只看本机 → 2 行");
   eq(onlyLocal.dropped, 2, "设备筛选：丢掉远端 2 行");
   const onlyRemote = svc.merge(localRows, { machines: ["remote-1"] });
-  eq(onlyRemote.rows.size, 3, "设备筛选：选中远端（本机永远在）→ 3 行");
+  eq(onlyRemote.rows.size, 2, "设备筛选：选中远端 → 只保留该设备 2 行（本机行不再混入）");
+  eq(onlyRemote.dropped, 2, "设备筛选：选中远端时本机 2 行计入 dropped");
+  eq(onlyRemote.rows.get("a").turns, 99, "设备筛选：本机行被排除后，同 id 采用远端行");
   const allDevices = svc.merge(localRows, { machines: [] });
   eq(allDevices.rows.size, 3, "设备筛选：空数组 = 全部设备");
   const named = svc.merge(localRows, { machines: ["iMac"] });
-  eq(named.rows.size, 3, "设备筛选：也支持按机器名筛选");
+  eq(named.rows.size, 2, "设备筛选：也支持按机器名筛选（同样排除本机）");
+  // 切设备后聚合结果必须跟着变（远端单机只有 2 个会话）
+  const remoteOnlyAgg = present(aggregate([...onlyRemote.rows.values()], { all: true, timeZone: "UTC", scope: "all", aliases: {} }));
+  eq(remoteOnlyAgg.totals.sessions, 2, "设备筛选：只看远端时会话数为该设备的 2");
+  ok(remoteOnlyAgg.totals.sessions !== bothAgg.totals.sessions, "设备筛选：切换设备会改变总量（不再只影响日历）");
 
   // 12.9 设备清单与诊断
   svc.identity = { id: "self-1", name: "Mac mini", host: "h", platform: "darwin", arch: "arm64", plugin: "1.0.5" };
@@ -3191,6 +3217,51 @@ bootSync.seq = 1;
   eq(diag.enabled, true, "诊断：enabled=true");
   eq(diag.transport, "local", "诊断：transport 正确");
   eq(diag.sources, 1, "诊断：sources 计数正确");
+
+  // 12.9b 拉取缓存持久化（2.3.5）：sources 只在内存，重启会丢——必须落盘并在启动时恢复
+  {
+    const cacheHome = `/tmp/wl-verify-cache-${process.pid}`;
+    await rm(cacheHome, { recursive: true, force: true });
+    const first = new SyncService({ logger: { info() {}, warn() {} } }, { enabled: true, transport: "local", local: { dir: "/tmp/x" } }, { home: cacheHome });
+    first.identity = { id: "self-1", name: "Mac mini" };
+    first.sources.set("remote-c", {
+      payload: { schema: PAYLOAD_SCHEMA, kind: PAYLOAD_KIND, generatedAt: Date.now(), machine: { id: "remote-c", name: "Laptop" }, rows: remoteRows },
+      fetchedAt: 1700000000000,
+      key: "machines/remote-c.json",
+    });
+    first.stats.lastPullAt = 1700000000000;
+    first.stats.lastPushAt = 1700000001000;
+    first.stats.lastProbe = { ok: true, at: 1700000002000 };
+    const saved = await first.saveCache();
+    eq(saved.saved, true, "缓存：saveCache 写入成功");
+    ok((await readFile(join(cacheHome, "workload-report", "sync-sources.json"), "utf8")).includes("remote-c"), "缓存：文件落在 <home>/workload-report/sync-sources.json");
+
+    const second = new SyncService({ logger: { info() {}, warn() {} } }, { enabled: true, transport: "local", local: { dir: "/tmp/x" } }, { home: cacheHome });
+    second.identity = { id: "self-1", name: "Mac mini" };
+    const loaded = await second.loadCache();
+    eq(loaded.loaded, 1, "缓存：重启后恢复 1 个来源");
+    eq(loaded.sessions, 2, "缓存：恢复的会话数正确");
+    eq(second.sources.size, 1, "缓存：sources 里有远端来源（设备筛选 / 图表可用）");
+    eq(second.stats.lastPullAt, 1700000000000, "缓存：上次拉取时间跨重启保留");
+    eq(second.stats.lastPushAt, 1700000001000, "缓存：上次推送时间跨重启保留");
+    eq(second.stats.lastProbe?.ok, true, "缓存：上次探测结果跨重启保留（不再显示未测试）");
+    eq(second.devices().find((device) => device.key === "remote-c")?.cached, true, "缓存：设备标记 cached=true");
+    eq(second.diagnostics().cachedSources, 1, "缓存：诊断里 cachedSources=1");
+
+    // 内存里已有来源时不能被旧缓存覆盖（启动后已经拉过）
+    const third = new SyncService({ logger: { info() {}, warn() {} } }, { enabled: true, transport: "local", local: { dir: "/tmp/x" } }, { home: cacheHome });
+    third.sources.set("fresh", { payload: { schema: PAYLOAD_SCHEMA, kind: PAYLOAD_KIND, generatedAt: Date.now(), machine: { id: "fresh", name: "Fresh" }, rows: [] }, fetchedAt: Date.now(), key: "machines/fresh.json" });
+    eq((await third.loadCache()).loaded, 0, "缓存：已有来源时不加载旧缓存");
+
+    // 坏文件 / 版本不符 → 静默忽略，不拖垮同步
+    await writeFile(join(cacheHome, "workload-report", "sync-sources.json"), "{ not json");
+    const fourth = new SyncService({ logger: { info() {}, warn() {} } }, { enabled: true, transport: "local", local: { dir: "/tmp/x" } }, { home: cacheHome });
+    eq((await fourth.loadCache()).loaded, 0, "缓存：坏文件不抛错（当作没有）");
+    await writeFile(join(cacheHome, "workload-report", "sync-sources.json"), JSON.stringify({ version: 999, sources: [] }));
+    const fifth = new SyncService({ logger: { info() {}, warn() {} } }, { enabled: true, transport: "local", local: { dir: "/tmp/x" } }, { home: cacheHome });
+    eq((await fifth.loadCache()).loaded, 0, "缓存：版本不符直接忽略");
+    await rm(cacheHome, { recursive: true, force: true });
+  }
 
   // 12.10 local 传输：真实读写（走临时目录，不联网）
   {
@@ -3590,7 +3661,7 @@ bootSync.seq = 1;
   // 2.0.2：凭据与同步设置合并进同一对话框 —— 页面上不再有独立的凭据卡
   ok(!syncView.includes("export function CredentialForm"), "UI：不再单独导出 CredentialForm（已并入对话框）");
   ok(syncView.includes('data-sync-dialog="true"'), "UI：设置表单渲染在对话框浮层里");
-  ok(/onClick=\{\(event\) => \{ if \(event\.target === event\.currentTarget && !busy\) onClose\(\); \}\}/.test(syncView), "UI：点遮罩关闭对话框（保存中不关）");
+  ok(/onClick=\{\(event\) => \{ if \(event\.target === event\.currentTarget\) requestClose\(\); \}\}/.test(syncView), "UI：点遮罩关闭对话框（走 requestClose：保存中不关 + 有改动先确认）");
   {
     // 2.0.2 布局 v2（用户反馈）：本机显示名是**全局项**，放在存储方式 chips 上方；
     // 连接参数左右两列、每个字段一行；凭据默认展开、每字段一行；高级选项只留路径模板。
@@ -4013,6 +4084,41 @@ bootSync.seq = 1;
   ok(/\.wl-star \{[^}]*text-decoration: none/s.test(stylesSource2) && /\.wl-star \{[^}]*border: none/s.test(stylesSource2), "样式：Star 入口无边框、无下划线（靠 GitHub 图标识别）");
   ok(clientSource.includes('className="wl-star-gh"') && /viewBox="0 0 16 16"/.test(clientSource), "UI：Star 入口带内联 GitHub logo（SVG，不引外部资源）");
   ok(!reportSource2.includes("github.com/tableau-China/dsh-workload-report"), "报告：不含 Star 链接（发给客户，外链仅官方计费页）");
+}
+
+// 交互修复（2.3.5）：刷新真的刷新 / ESC 不误关且编辑中确认 / 设备消失回落
+{
+  const client = await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8");
+  const syncV = await readFile(new URL("../src/client/sync-view.jsx", import.meta.url), "utf8");
+  const host = await readFile(new URL("../index.js", import.meta.url), "utf8");
+  // ① 刷新
+  ok(client.includes('query.set("refresh", "1")'), "刷新：手动刷新带 refresh=1");
+  ok(client.includes("forceKey") && /setForceKey\(\(value\) => value \+ 1\)/.test(client), "刷新：手动刷新与自动轮询分开计数（轮询不带 refresh=1，避免每次轮询都强制重扫）");
+  ok(host.includes("if (!forced && cached !== undefined"), "刷新：宿主收到 refresh=1 时跳过快照缓存");
+  // ①b 拉取缓存持久化（重启后其它设备数据不丢）
+  ok(host.includes("await this.syncCacheReady") && host.includes("this.deviceSync.loadCache()"), "缓存：启动时加载上次拉取结果，快照先等它");
+  ok(syncV.includes("data-cached=") && syncV.includes('t("devices.cached")') && "devices.cached" in zh && "devices.cached" in en, "缓存：设备 chip 标注「来自上次拉取的缓存」（中英齐全）");
+  // ② ESC + 编辑中确认
+  ok(/event\.key === "Escape" && !syncOpen/.test(client), "ESC：同步弹窗打开时面板不响应 ESC（避免连面板一起关）");
+  ok(syncV.includes("const requestClose = ") && syncV.includes("requestClose();"), "ESC：弹窗关闭统一走 requestClose");
+  ok(/addEventListener\("keydown", onKey, true\)/.test(syncV) && syncV.includes("event.stopPropagation()"), "ESC：弹窗在 capture 阶段拦截 ESC");
+  ok(syncV.includes('t("set.discardConfirm")') && "set.discardConfirm" in zh && "set.discardConfirm" in en, "ESC：有未保存修改时二次确认（中英齐全）");
+  ok((syncV.match(/onClick=\{requestClose\}/g) ?? []).length >= 2, "关闭入口（✕ / 取消）都走 requestClose");
+  ok(syncV.includes("onClick={(event) => { if (event.target === event.currentTarget) requestClose(); }}"), "关闭入口：点遮罩同样走 requestClose");
+  // ③ 设备消失回落
+  ok(client.includes("const deviceList = state.data?.devices") && /exists\.has\(key\)/.test(client), "设备筛选：选中的设备消失后自动剔除（全没了回落「全部设备」）");
+}
+
+// 环形图唯一 key + 同名模型区分（2.3.5）：
+// 之前扇区/图例用 `key={arc.label}`，而模型显示名不唯一（同一模型多条链路），
+// React 撞 key 会复用错节点 → 切换设备后颜色 / 数值不更新、图例条目残留。
+{
+  const client = await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8");
+  ok(!client.includes("key={arc.label}"), "环形图：扇区 / 图例不再用显示名做 key");
+  ok(client.includes("key={arc.id}") && client.includes("const withId = (slice, fallback)"), "环形图：改用唯一 id（item.key，重复时加序号）");
+  ok(/const base = String\(slice\.item\?\.key \?\? fallback\)/.test(client), "环形图：id 优先取 item.key（工作区路径 / 模型 key）");
+  ok(/counts\.get\(item\.label\) > 1 && item\.provider/.test(client), "环形图：同名模型补供应商短名区分（deepseek-v4.1-flash · auto）");
+  ok(client.includes("trendLabelOf(key)"), "模型趋势图例：同样对同名模型补供应商短名");
 }
 
 // 收尾：删掉本次的临时索引

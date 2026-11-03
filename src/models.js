@@ -724,15 +724,37 @@ export function modelLabel(key, aliases = {}) {
  * 组名形如 `magpie/workbuddy-ai/deepseek-v4.1-flash`（渠道 / 厂商 / 模型），
  * 供应商 = `magpie/workbuddy-ai`。只取首段会把同渠道下的不同厂商并成一个（例如
  * `magpie/workbuddy-ai` 与 `magpie/workbuddy` 都变成 `magpie`），失去"换哪条链路"的诊断价值。
- * 没有分隔段时（如内置归并组 `deepseek-v4-flash`）判断不出渠道，归入 `(未标注供应商)` —— 不猜。
+ *
+ * **归并组没有渠道段时从 raw 回推**：内置归并组（如 `deepseek-v4-flash`）把官方 legacy 名合并后
+ * 组名里没有 `/`，但它记录了原始 `provider/model` 计数。取出现次数最多的那个 provider，
+ * 避免显示成 `(未标注供应商)`（例如 `deepseek-account/deepseek-flash` → `deepseek-account`）。
  *
  * @param key - 归并组名。
+ * @param raw - 该桶的原始 `provider/model` → 次数（可选）。
  * @returns 供应商名。
  */
-export function providerOf(key) {
+export function providerOf(key, raw = null) {
   const text = typeof key === "string" ? key.trim() : "";
-  if (text === "" || text === UNKNOWN_MODEL) return "(未标注供应商)";
-  const parts = text.split("/").filter((part) => part !== "");
-  if (parts.length <= 1) return "(未标注供应商)";
-  return parts.slice(0, -1).join("/");
+  if (text !== "" && text !== UNKNOWN_MODEL) {
+    const parts = text.split("/").filter((part) => part !== "");
+    if (parts.length > 1) return parts.slice(0, -1).join("/");
+  }
+  if (raw !== null && typeof raw === "object") {
+    let best = "";
+    let bestCount = -1;
+    for (const [rawKey, count] of Object.entries(raw)) {
+      if (typeof rawKey !== "string") continue;
+      const slash = rawKey.lastIndexOf("/");
+      if (slash <= 0) continue;
+      const provider = rawKey.slice(0, slash).split("/").filter((part) => part !== "" && part !== "?").join("/");
+      if (provider === "") continue;
+      const times = typeof count === "number" && Number.isFinite(count) ? count : 0;
+      if (times > bestCount) {
+        bestCount = times;
+        best = provider;
+      }
+    }
+    if (best !== "") return best;
+  }
+  return "(未标注供应商)";
 }

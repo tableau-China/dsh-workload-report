@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { STYLES } from "./styles.js";
 import { NS, en, languageOf, translate, zh } from "./locales.js";
-import { formatHours, formatInt, formatMoney, formatPercent, formatSpeed, formatTtft, formatTokens } from "../format.js";
+import { formatHours, formatInt, formatMoney, formatPercent, formatProvider, formatSpeed, formatTtft, formatTokens } from "../format.js";
 import { TABLEAU10 } from "../palette.js";
 import { balanceChip } from "./balance.js";
 import { MetricBarCell } from "./bar-cell.jsx";
@@ -143,8 +143,13 @@ const SNAPSHOT_CACHE = new Map();
 const snapshotKey = ({ days, scope, all, machines }) =>
   `${days}|${scope}|${all === true ? "all" : "range"}|${(machines ?? []).join(",")}`;
 
-function useSnapshot({ days, scope, refreshKey, enabled, all, machines = [] }) {
+function useSnapshot({ days, scope, refreshKey, forceKey = 0, enabled, all, machines = [] }) {
   const key = snapshotKey({ days, scope, all, machines });
+  /**
+   * 上一次的"强制刷新"键：只有用户点「刷新」才 +1（自动轮询只加 refreshKey）。
+   * 分开是因为 refresh=1 会让宿主绕过快照缓存并重新扫描索引，轮询不该有这种代价。
+   */
+  const forceRef = useRef(forceKey);
   const [state, setState] = useState(() => {
     const cached = SNAPSHOT_CACHE.get(key);
     return cached === undefined
@@ -168,6 +173,12 @@ function useSnapshot({ days, scope, refreshKey, enabled, all, machines = [] }) {
     if (all) query.set("all", "1");
     // 设备筛选：可重复的 machine 参数；空数组表示全部设备
     for (const machine of machines ?? []) query.append("machine", machine);
+    // 手动刷新：带 refresh=1 让宿主绕过快照缓存，并清掉客户端自己的一份缓存
+    if (forceKey !== forceRef.current) {
+      forceRef.current = forceKey;
+      query.set("refresh", "1");
+      SNAPSHOT_CACHE.delete(key);
+    }
     fetch(`${API_PATH}/snapshot?${query.toString()}`, { signal: abort.signal, headers: { accept: "application/json" } })
       .then(async (response) => {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -182,7 +193,7 @@ function useSnapshot({ days, scope, refreshKey, enabled, all, machines = [] }) {
         setState((previous) => ({ status: "error", data: previous.data, error: String(error?.message ?? error) }));
       });
     return () => abort.abort();
-  }, [days, scope, refreshKey, enabled, all, key, machines]);
+  }, [days, scope, refreshKey, forceKey, enabled, all, key, machines]);
   return state;
 }
 
@@ -556,8 +567,22 @@ function WorkspacePie({ items, t, metric = "activeMs", ariaLabel = null, fullLab
     const sorted = [...items].filter((item) => valueOf(item) > 0).sort((a, b) => valueOf(b) - valueOf(a));
     const top = sorted.slice(0, 6);
     const rest = sorted.slice(6);
-    const slicesOut = top.map((item) => ({ label: item.label, value: valueOf(item), item }));
-    if (rest.length > 0) slicesOut.push({ label: "others", value: rest.reduce((sum, item) => sum + valueOf(item), 0), item: null });
+    // id 用**唯一键**（模型 key / 工作区路径），不能用显示名：
+    // 模型名可能重复（同一个 deepseek-v4.1-flash 走多条链路），工作区目录名也可能重名。
+    // 之前用「显示名」做 React key 撞车 → React 复用错节点，切换设备后颜色 / 数值不更新、图例条目残留。
+    const used = new Set();
+    const withId = (slice, fallback) => {
+      const base = String(slice.item?.key ?? fallback);
+      let id = base;
+      let n = 1;
+      while (used.has(id)) id = `${base}#${n++}`;
+      used.add(id);
+      return { ...slice, id };
+    };
+    const slicesOut = top.map((item, index) => withId({ label: item.label, value: valueOf(item), item }, `slice-${index}`));
+    if (rest.length > 0) {
+      slicesOut.push(withId({ label: "others", value: rest.reduce((sum, item) => sum + valueOf(item), 0), item: null }, "__others"));
+    }
     const total = slicesOut.reduce((sum, slice) => sum + slice.value, 0);
     return { slices: slicesOut, total };
   }, [items, metric]);
@@ -584,7 +609,7 @@ function WorkspacePie({ items, t, metric = "activeMs", ariaLabel = null, fullLab
           <g transform="translate(80,80) rotate(-90)">
             {arcs.map((arc) => (
               <path
-                key={arc.label}
+                key={arc.id}
                 d={sectorPath(outer, inner, arc.from, arc.to)}
                 fill={arc.color}
                 stroke="var(--dsw-alias-bg-base, #ffffff)"
@@ -604,7 +629,7 @@ function WorkspacePie({ items, t, metric = "activeMs", ariaLabel = null, fullLab
         </svg>
         <ul className="wl-pie-legend">
           {arcs.map((arc) => (
-            <li key={arc.label}>
+            <li key={arc.id}>
               <i className="wl-dot" style={{ background: arc.color }} />
               {/* 模型占比要**完整显示**模型名（可换行、不省略号截断）；工作区名仍单行省略 + title 全文 */}
               <span className={fullLabels ? "wl-pie-name wl-pie-name-full" : "wl-pie-name"} title={arc.item?.path ?? arc.label}>{arc.label}</span>
@@ -853,6 +878,22 @@ function ModelSection({ data, t }) {
   const totalMetric = ranked.reduce((sum, item) => sum + metricValue(item), 0);
   const colorOf = (key) => palette[Math.max(0, ranked.findIndex((item) => item.key === key)) % palette.length];
 
+  /**
+   * 趋势图例的显示名：同名模型（同一模型多条链路）补供应商短名区分。
+   * 表格保留单独的「供应商」列，所以只在这里（图例）补，不改表格里的 label。
+   */
+  const trendLabelOf = (() => {
+    const counts = new Map();
+    for (const item of models) counts.set(item.label, (counts.get(item.label) ?? 0) + 1);
+    return (key) => {
+      const item = models.find((entry) => entry.key === key);
+      if (item === undefined) return key;
+      return (counts.get(item.label) ?? 0) > 1 && item.provider
+        ? `${item.label} · ${formatProvider(item.provider)}`
+        : item.label;
+    };
+  })();
+
   // 面积分布：Top 8 + others（保证 treemap 可读）
   const cells = useMemo(() => {
     const top = ranked.filter((item) => metricValue(item) > 0).slice(0, 8);
@@ -880,7 +921,7 @@ function ModelSection({ data, t }) {
     const visibleKeys = active === null ? ranked.slice(0, 6).map((item) => item.key) : active;
     const series = visibleKeys.map((key) => ({
       key,
-      label: models.find((item) => item.key === key)?.label ?? key,
+      label: trendLabelOf(key),
       color: colorOf(key),
     }));
     const rows = days.map((day) => {
@@ -1015,7 +1056,7 @@ function ModelSection({ data, t }) {
                 )}
               </td>
               <td>{formatTtft(item.ttft)}</td>
-              <td>{item.provider ?? "\u2014"}</td>
+              <td title={item.provider ?? "\u2014"}>{formatProvider(item.provider)}</td>
               <td>{formatPercent(item.share)}</td>
               <td>
                 <MetricBarCell value={item.requests} max={maxRequests} kind="requests" text={formatInt(item.requests)} title={`${t("model.col.requests")} ${formatInt(item.requests)}`} />
@@ -1331,7 +1372,19 @@ function ByDayView({ data, t }) {
   const hourNote = hourTokensNote(data.diagnostics, t, formatInt);
   const dailyBodyRef = useRef(null);
   const dailyBody = useChartSize(dailyBodyRef);
-  const models = data.byModel ?? [];
+  /**
+   * 模型列表：显示名重复时补上供应商短名（`deepseek-v4.1-flash · auto`）。
+   * 同一个模型走多条链路会产生多条同名记录，不区分的话环形图图例看起来像"重复项"，
+   * 也无法靠名字判断是哪条链路。
+   */
+  const models = useMemo(() => {
+    const list = data.byModel ?? [];
+    const counts = new Map();
+    for (const item of list) counts.set(item.label, (counts.get(item.label) ?? 0) + 1);
+    return list.map((item) => (counts.get(item.label) > 1 && item.provider
+      ? { ...item, label: `${item.label} · ${formatProvider(item.provider)}` }
+      : item));
+  }, [data.byModel]);
   const rows = useMemo(
     () => [...data.byDay].filter((day) => day.sessions > 0).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 31),
     [data.byDay],
@@ -1734,8 +1787,10 @@ function Overlay({ control }) {
   const [syncOpen, setSyncOpen] = useState(false);
   // 设备筛选：空数组 = 全部设备（同步关闭时设备清单为 null → 只剩「设备同步」入口）
   const [machines, setMachines] = useState([]);
+  /** 手动刷新计数：只有点「刷新」才 +1（自动轮询走 refreshKey，不带 refresh=1）。 */
+  const [forceKey, setForceKey] = useState(0);
   // 关闭时不请求，避免白跑一次接口
-  const state = useSnapshot({ days, scope, refreshKey, enabled: open, all: allTime, machines });
+  const state = useSnapshot({ days, scope, refreshKey, forceKey, enabled: open, all: allTime, machines });
   // 面板右下角版本号：来自宿主 /sync 的 version + build（不写死常量，见 usePluginVersion）
   const versionInfo = usePluginVersion();
   const indexing = state.data?.diagnostics?.indexing === true;
@@ -1743,12 +1798,29 @@ function Overlay({ control }) {
   const close = useCallback(() => control.close(), [control]);
   useEffect(() => {
     if (!open) return undefined;
+    // 同步设置弹窗打开时，ESC 交给弹窗自己处理（它能确认"放弃未保存修改"），
+    // 否则会连面板一起关掉、未保存的表单内容丢失。
     const onKey = (event) => {
-      if (event.key === "Escape") control.close();
+      if (event.key === "Escape" && !syncOpen) control.close();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, control]);
+  }, [open, syncOpen, control]);
+
+  /**
+   * 设备筛选收敛：设备清单变化后，选中的设备若已不存在（远端文件被删 / 换了同步源），
+   * 就从筛选里剔除；全被剔除时回到「全部设备」——避免"没有芯片高亮 + 看板全 0"的悬空状态。
+   */
+  const deviceList = state.data?.devices;
+  useEffect(() => {
+    if (!Array.isArray(deviceList) || deviceList.length === 0) return;
+    const exists = new Set(deviceList.map((device) => device.key));
+    setMachines((previous) => {
+      if (previous.length === 0) return previous;
+      const next = previous.filter((key) => exists.has(key));
+      return next.length === previous.length ? previous : next;
+    });
+  }, [deviceList]);
 
   // 首次建索引要冷读历史会话（可能几分钟）、模型折叠正在跑时要跟进进度：
   // 只在**后台确实在跑**时每 5 秒重拉；pending 但没在跑（等定时器）不轮询——
@@ -1819,7 +1891,7 @@ function Overlay({ control }) {
             <span className="wl-star-icon" aria-hidden="true">★</span>
             <span className="wl-star-text">{t("action.star")}</span>
           </a>
-          <button type="button" className="wl-btn" onClick={() => setRefreshKey((value) => value + 1)}>{t("action.refresh")}</button>
+          <button type="button" className="wl-btn" onClick={() => { setRefreshKey((value) => value + 1); setForceKey((value) => value + 1); }}>{t("action.refresh")}</button>
           {/* 导出 HTML 报告：2.1.0 起**暂时隐藏**（功能与 /report.html 路由都保留，只去掉入口）。
               恢复时把 EXPORT_ENTRY_VISIBLE 改回 true 即可。 */}
           {EXPORT_ENTRY_VISIBLE ? (
