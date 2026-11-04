@@ -486,8 +486,9 @@ export const STYLES = `
 /* 同步设置对话框：叠在看板之上的二级浮层（同一套 overlay 外观，弹窗更窄、更"表单"）。
    盖住面板右下角的版本号，所以这里要把版本号抬到对话框之上（见 .wl-version 的 z-index）。 */
 .wl-dialog {
-  width: min(820px, 100%);
-  max-height: min(88vh, calc(100vh - 8vh));
+  /* 2.2.0 起放大到 920px：它现在是「设备同步」的唯一入口，一屏要放下 设备/连接/凭据/状态/频率 */
+  width: min(920px, 100%);
+  max-height: min(92vh, calc(100vh - 6vh));
   display: flex;
   flex-direction: column;
   background: var(--dsw-alias-bg-layer-1, #ffffff);
@@ -587,17 +588,6 @@ export const STYLES = `
 }
 .wl-dot-mini { width: 6px; height: 6px; border-radius: 999px; background: var(--dsw-alias-label-tertiary, #9ca3af); flex: 0 0 auto; }
 .wl-dot-mini[data-local="true"] { background: var(--dsw-static-deepseek-500, #4d6bfe); }
-/* 只读路径：等宽字体 + 可选中复制，一眼看出写到哪 */
-.wl-path-preview {
-  flex: 1 1 auto; min-width: 0;
-  padding: 6px 10px; border-radius: 8px;
-  font-family: var(--dsw-font-family-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 12px; line-height: 1.5;
-  color: var(--dsw-alias-label-primary, #111);
-  background: var(--dsw-alias-bg-layer-2, #f6f7f9);
-  border: 1px dashed var(--dsw-alias-border-l2, #d7dbe0);
-  overflow-wrap: anywhere; user-select: all;
-}
 /* 同步频率：标题右侧的「下一版」徽标 + 手动同步按钮组 */
 .wl-form-badge {
   margin-left: 8px; padding: 1px 6px; border-radius: 999px;
@@ -607,8 +597,6 @@ export const STYLES = `
   border: 1px solid color-mix(in srgb, var(--dsw-static-amber-500, #f59e0b) 35%, transparent);
 }
 .wl-sync-manual { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-/* 对话框放大：现在它是「设备同步」的唯一入口，一屏要放下 设备 / 连接 / 凭据 / 状态 / 频率 */
-.wl-dialog { width: min(920px, 100%); max-height: min(92vh, calc(100vh - 6vh)); }
 .wl-form-section {
   font-size: 12px; font-weight: 600; margin: 0;
   color: var(--dsw-alias-label-secondary, #4b5563);

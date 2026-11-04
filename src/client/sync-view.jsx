@@ -814,11 +814,20 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
                 </button>
                 {advancedOpen ? (
                   <>
-                    <div className="wl-field-row" data-row="path-readonly">
+                    {/* 路径**可编辑**（2.4.1）：多台设备必须填同一个模板，用户需要能自己改。
+                        默认值 machines/{machineId}.json 出厂即可用；升级/重装不会覆盖已保存的值。 */}
+                    <div className="wl-field-row" data-row="path-edit">
                       <span className="wl-field-label">{t("set.path")}</span>
-                      <code className="wl-path-preview" data-path-template={form.path ?? ""}>{pathPreview(form.path, { machineId: localDeviceId ? shortDeviceId(localDeviceId).replace("…", "") : "" })}</code>
+                      <input
+                        type="text"
+                        data-setting="path"
+                        value={form.path ?? ""}
+                        placeholder="machines/{machineId}.json"
+                        onChange={(event) => setField("path", event.target.value)}
+                      />
                     </div>
                     <p className="wl-hint" data-kind="path-location">{t("set.pathLocation", { dir: prefixOf(form.path) })}</p>
+                    <p className="wl-hint" data-kind="path-hint">{t("set.pathHint")}</p>
                   </>
                 ) : null}
               </section>

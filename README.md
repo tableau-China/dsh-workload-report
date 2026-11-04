@@ -1,9 +1,7 @@
-# TimeMirror for DSH · Workload Report
+# Workload Report for DSH
 
 > **See your effort and your token spend on the same picture** — by **date** and by **workspace**: a calendar heatmap, time-of-day analysis, workspace share, model usage, and a **one-click self-contained HTML report** you can send straight to a client.
-> A DeepSeek Harness (DSH) plugin. Current version: **2.4.0**.
-
-> TimeMirror is a macOS time-distribution app I published on the Mac App Store; this plugin brings the same idea to AI-assisted work. The package/repo keeps the descriptive name `dsh-workload-report` so it can be found in the DSH ecosystem; the brand stays TimeMirror.
+> A DeepSeek Harness (DSH) plugin. Current version: **2.4.1**.
 
 [![npm](https://img.shields.io/npm/v/dsh-workload-report?style=flat-square&logo=npm)](https://www.npmjs.com/package/dsh-workload-report)
 [![license](https://img.shields.io/github/license/tableau-China/dsh-workload-report?style=flat-square)](./LICENSE)
@@ -61,36 +59,12 @@ Uninstall: `dsh plugin --profile web remove dsh-workload-report`.
 
 ## What's new in 2.4.0
 
-**Consistency and persistence**
-
-- **Device-filter semantics fixed**: previously only remote sources were filtered and **local rows always participated**, so switching devices only changed the all-history calendar (KPIs/trends stayed dominated by local data). Now **you see exactly the devices you select (local included)** and every chart follows.
-- **Pull-cache persistence**: pulled remote data used to live in memory only, so a restart dropped it (and `manual` frequency never pulls on start). Each successful pull/push/probe now writes `<DSH_HOME>/workload-report/sync-sources.json` (0600, atomic replace) and startup restores it — **other devices stay visible after a restart or offline**, chips are marked "from the last pull's cache", and last-push/last-pull/last-probe timestamps survive restarts.
-- **Vanished devices fall back**: a selected device that disappears from the sync sources is dropped from the filter; if nothing remains you return to "all devices" instead of an all-zero dashboard with no active chip.
-
-**Charts and display**
-
-- **Fixed donut colours not switching / legend accumulating**: arcs and legend used the display name as the React key, and same-named models (`deepseek-v4.1-flash` over 3 routes) collided, so React reused the wrong nodes. Now keyed by unique ids, and duplicate names get a provider suffix (`deepseek-v4.1-flash · auto`).
-- **Short provider names** (`workbuddy-ai` / `auto` / `workbuddy`) with the full path in the tooltip; merged groups derive their provider from `raw`, so `(unspecified provider)` becomes `deepseek-account`.
-
-**Interaction**
-
-- **Refresh really refreshes**: manual refresh sends `refresh=1` to bypass the host snapshot cache (auto-poll does not, so it never forces a re-scan every 5 s).
-- **ESC no longer closes the panel**: while the sync dialog is open, ESC goes to the dialog; unsaved edits trigger a "discard and close?" confirmation — `✕ / Cancel / overlay click / ESC` all share one path.
-
-## What's new in 2.3.4
-
-- **GitHub Star entry** in the **top-right** of the panel ("GitHub logo + ★ Star", opens in a new tab); deliberately absent from the exported report.
-- **Sync dialog no longer contradicts itself.** It used to say "not tested yet" on every open while still showing the last push/pull times — the host keeps `lastProbe` in memory only, so a restart refreshed the timestamps but dropped the probe result. Now, when sync is enabled and never probed, opening the dialog **runs one silent probe** and reflects the result in the status badge.
-- **Times no longer show seconds**: `2026/10/29 05:23` (sync frequency is measured in hours).
-- **Advanced options are collapsed by default**, and **"Edit path template" is gone**: the path is read-only (all devices must share one template; editing it only makes them miss each other).
-
-## What's new in 2.3.3
-
-- **Nine KPIs (two rows)**: a new **output speed** card; **conversations** and **turns / steps** merged into one **conversations / turns** card, with **steps removed**.
-- **Model detail table**: new **speed tok/s / TTFT / provider** columns (speed sits right next to the model name, no horizontal scrolling needed) plus ratio bars on speed and requests.
-- **By workspace**: three bars per row — **sessions / turns · my effort · token spend**; the old "per conversation / waiting" footnote became **"per turn"** and moved into the sessions / turns column.
-- **Tableau 10 palette across all data visualisation** (`src/palette.js`): dashboard and exported report share the same colours; UI chrome still follows host theme tokens.
-- Speed and TTFT rely on index **v8** (introduced in 2.3.2): the first upgrade rebuilds the index and re-folds sessions (about 1–2 minutes).
+- **Correct device filtering**: select a device and every chart shows only that device (local included), not just the calendar.
+- **Pulled data survives restarts**: the last pull is cached to disk, so other devices stay visible after a restart or offline.
+- **Auto fallback**: a device that disappears from the sync sources is dropped from the filter (back to "all devices" if none remain).
+- **Donut fixes**: colours now switch correctly and the legend no longer accumulates even when models share a name.
+- **Short provider names** (`workbuddy-ai` / `auto` / `workbuddy`) with the full path in the tooltip.
+- **Refresh really refreshes** (bypasses the host cache); **ESC** now goes to the sync dialog instead of closing the panel.
 
 ## Screenshots
 
@@ -102,61 +76,16 @@ Uninstall: `dsh plugin --profile web remove dsh-workload-report`.
 
 ![dashboard by workspace](https://raw.githubusercontent.com/tableau-China/dsh-workload-report/main/assets/dashboard-workspace.png)
 
-**The exported report**: one self-contained file, safe to send to a client
-
-![report light](https://raw.githubusercontent.com/tableau-China/dsh-workload-report/main/assets/report-light.png)
-
-<details>
-<summary>Dark-theme report</summary>
-
-![report dark](https://raw.githubusercontent.com/tableau-China/dsh-workload-report/main/assets/report-dark.png)
-
-</details>
-
 ## Metric definitions
 
-The full definitions live in **[docs/metrics.md](./docs/metrics.md)**. Durations use one language-neutral `H / M / S` format (like K/M/B for tokens). The points users misread most:
+The full definitions live in **[docs/metrics.md](./docs/metrics.md)**. Durations use one language-neutral `H / M / S` format (like K/M/B for tokens).
 
-### Active time
-
-- **Active time = model time + tool time − waiting for user.** It is **cumulative engine work**, not wall-clock time; concurrent sessions and subagents each add up. It is not the elapsed time you sat in front of the screen.
-- **Waiting for user** is split out as `waitMs` and excluded from active time. The same value is persisted with the index. The official `totals.activeMs` is kept for cross-checking: `netActiveMs + waitMs === activeMs` (±1 ms).
-- **Three-layer wait rule** (a tool interval is treated as waiting only when it lasts at least `waitMinMs` **and** meets either condition):
-  1. the tool name is in `waitTools` (default `ask_user_question`, `exit_plan_mode`);
-  2. a `user/message` arrives between `tool/call` and `tool/result` (any tool).
-- **Long-task exemption**: a long build/test tool that is not a wait tool and has no interleaved user message still counts as work. Short interactions below `waitMinMs` are not removed, to avoid fragmenting real work.
-- Set `excludeWait: false` to disable the whole rule (behaviour matches 0.6.0).
-
-### Time of day
-
-The dashboard card has **two measures** and a third visual layer:
-
-- **Tokens (default)**: each `assistant/message` usage is bucketed by the **message time** into the selected time zone. The sum of the 24 hour buckets equals the session's official token total (integer rescaling when the event total differs).
-- **Turns**: the number of sessions that **started** in that hour (net active time is still bucketed by turn start for the rest of the dashboard).
-- **Human-message dots** on top: `user/message` count per hour; dot radius encodes relative density.
-- Sessions whose event logs cannot be read (very old v0 logs, not backfilled, or `modelUsage: off`) do **not** get a fabricated hourly distribution. They are excluded from the token chart and the card says **“Token 未计入 N 个会话”**; their totals are still included in the KPI totals.
-
-### Tokens, conversations, dates
-
-- **Total tokens** = uncached input + output + cache read + cache write. Cache reads usually dominate and cost the least; do not price them as fresh input.
-- **Conversations** = sessions with at least one step. Zero-step sessions (opened but unused) are listed separately and excluded from this KPI.
-- **Attribution date** = the session's creation day in the selected time zone. A session resumed across midnight still belongs to its creation day.
-- **Model cost** is estimated from built-in official public prices (DeepSeek peak/off-peak, as-of 2026-10-13). Only models with an official price get a number; models without one show **—**. Estimates never fetch prices at runtime. The estimate is intentionally not described as an invoice.
-
-### Output speed and TTFT
-
-- **Output speed tok/s** = `ΣdecodeTokens / (ΣdecodeMs / 1000)`, **weighted** (sum first, divide once). The decode window runs from the first token to message completion and **excludes** time spent waiting for the first token. Do not use "output tokens / model time" — that puts first-token latency in the denominator and systematically understates speed (first token took about 56% of model time on the author's machine).
-- **Time to first token (TTFT)** = `step/start → first token`; the mean is `ΣttftMs / ΣttftSteps`.
-- **Provider** = everything in the model group key except the model itself (`magpie/workbuddy-ai/xxx` → `magpie/workbuddy-ai`). The same underlying model can differ by several times in speed and latency depending on the route.
-- **Requests without a report show —, never 0** (0 would read as "genuinely slow"). Full definitions: [docs/metrics.md](./docs/metrics.md).
-
-### Ranges
-
-- **All four ranges share one rule**: the end is always today, and the start is `max(window start, first active day)`.
-  "All time" begins at your first active day; the last 7 / 30 / 90 days keep their fixed window once history is long enough,
-  and also begin at the first active day when history is shorter — so the active-days denominator is always the real span
-  (a new account picking 30 days sees `3/3`, not `3/30`). An explicit `from` / `to` and the AI-profile window are never truncated.
-- The calendar heatmap always covers the full history and ignores the top range filter.
+- **Active time** = model time + tool time − waiting for user. It is **cumulative engine work**, not wall-clock time (concurrent sessions and subagents each add up). Waiting for user is tracked separately as `waitMs`.
+- **Time of day** defaults to **token output** (switchable to **turns**), with human-message density dots on top. Sessions with unreadable event logs are excluded from the token chart and counted in the card.
+- **Total tokens** = uncached input + output + cache read + cache write. **Conversations** = sessions with at least one step. **Attribution date** = the session's creation day in the selected time zone.
+- **Model cost** is estimated from built-in official public prices; only models with an official price get a number, others show **—** (an estimate, never an invoice).
+- **Output speed tok/s** = weighted `ΣdecodeTokens / (ΣdecodeMs / 1000)`, excluding time to first token. **TTFT** = `step/start → first token`.
+- **Ranges**: the end is always today and the start is `max(window start, first active day)`, so the active-days denominator is always the real span. The calendar heatmap always covers full history.
 
 ## Configuration
 
@@ -341,7 +270,7 @@ All statistics stay on your machine. The plugin registers **read-only** HTTP rou
 | --- | --- |
 | `pnpm add -D esbuild puppeteer-core` | Install build and browser-test dependencies (or point `ESBUILD_PATH` / `WL_PUPPETEER_DIR` at existing installs) |
 | `node build.mjs` | Bundle `src/client/` into `lib/client.js` (ModuleLoader factory format) with esbuild |
-| `node test/verify.mjs` | **1597 offline assertions**: aggregation semantics with one shared range rule, time zones, turn-based hour bucketing and conservation, hourly tokens by message time, human-message density, wait exclusion (all three rules + long-task exemption + `excludeWait:false` regression), index/read fallbacks, report structure parity, the AI-profile tab as a right-aligned navigation entry, the 30-day profile window, multi-device sync (payload / merge / credentials / settings / device filter / pull-cache persistence), output-speed and TTFT definitions, zero model calls on first open, i18n key alignment, and balance states |
+| `node test/verify.mjs` | **1608 offline assertions**: aggregation semantics with one shared range rule, time zones, turn-based hour bucketing and conservation, hourly tokens by message time, human-message density, wait exclusion (all three rules + long-task exemption + `excludeWait:false` regression), index/read fallbacks, report structure parity, the AI-profile tab as a right-aligned navigation entry, the 30-day profile window, multi-device sync (payload / merge / credentials / settings / device filter / pull-cache persistence), output-speed and TTFT definitions, zero model calls on first open, i18n key alignment, and balance states |
 | `./test/e2e-boot.sh 3299` | Boot an **isolated instance** (own DSH_HOME and port) without touching your running GUI |
 | `node test/e2e-ui.mjs` | Real-browser E2E: calendar/bar switching, geometry, donuts, report export, time-of-day card |
 
@@ -355,7 +284,7 @@ CI runs `build.mjs` + `verify.mjs`, and fails if the committed `lib/client.js` d
 
 ## Author
 
-**[XILEJUN](https://github.com/tableau-China)** — author of TimeMirror · [Blog post (中文)](https://github.com/tableau-China/dsh-workload-report/blob/main/docs/blog.md)
+**[XILEJUN](https://github.com/tableau-China)** · [Blog post (中文)](https://github.com/tableau-China/dsh-workload-report/blob/main/docs/blog.md)
 
 ## License
 

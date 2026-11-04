@@ -119,6 +119,23 @@
 3. **防回归校验**：保存时比对基准 id 与当前 id，若变了（换了 DSH 账户 / `DSH_HOME` / 删了 id 文件）
    **拒绝保存**并说明「继续保存会把历史数据拆成两台设备」。
 
+### 1c·2 路径模板：可编辑，且升级不会改掉它（2.4.1）
+
+默认 `sync.path = machines/{machineId}.json`（**单级目录**，越简单越不容易配错）。
+「高级选项」里是**普通可编辑输入框**，保存时校验必须包含 `{machineId}`。
+
+**多台设备必须填同一个模板**，否则各自写到不同目录、互相看不到。
+
+> 真实故障：某台机器卸载重装后路径回到默认 `machines/`，另一台是 `dsh-workload-sync/machines/`
+> → 互相拉不到数据。当时的做法是加「扫描目录 + 告警 + 一键对齐」，但扫描整个存储的 `*.json`
+> 有误判风险（别的程序的文件也可能是 `<名字>.json`），**已移除**。现在只保留最朴素的两条：
+
+1. **升级/重装不会改变已保存的路径**——只有你在界面上显式改了 `path` 才会写；
+   只改其它设置（显示名、同步频率…）时，已保存的自定义 `path` 原样保留。
+   （`slimConfig` 也会让「等于默认值的 path」不落盘，避免无意义写入。）
+2. **对照确认**：两台机器的「高级选项 → 位于同步存储的『…』」目录部分应完全相同；
+   不一致时手动把路径改成一样即可。
+
 ### 1c. 文件到底写到哪（路径只读展示）
 
 - 默认 `sync.path = machines/{machineId}.json` → 文件在**同步存储的根**下的 `machines/`：
@@ -355,7 +372,7 @@ config:
 | `sync.enabled` | `false` | 总开关（false 时零外发） |
 | `sync.mode` | `push+pull` | `push+pull` \| `push` \| `pull` |
 | `sync.transport` | `github` | `cos` \| `github` \| `gitea` \| `local` |
-| `sync.path` | `machines/{machineId}.json` | key 模板，支持 `{machineId}` / `{machineName}` |
+| `sync.path` | `machines/{machineId}.json` | key 模板，支持 `{machineId}` / `{machineName}`。**多台设备必须完全一致**（否则互相看不到，见 1c·2） |
 | `sync.machineName` | `os.hostname()`（去 .local） | 展示名 |
 | `sync.syncFrequency` | `6h` | 自动同步频率：`6h` \| `12h` \| `boot` \| `manual`（2.2.0） |
 | `sync.pushEveryMs` | 6h | 推送周期（最小 60s；由 `syncFrequency` 自动推导，手改仍生效） |

@@ -3698,13 +3698,12 @@ bootSync.seq = 1;
     ok(!/data-col="device"/.test(syncView), "UI：不再有「这台设备」独占一列（左右比例失衡的根因已消除）");
   }
   {
-    // 2.3.4：高级选项**默认折叠**（普通用户不用管）；路径**只读**——多设备必须同模板，手改只会对不上
+    // 高级选项默认折叠；路径**可编辑**（2.4.1：用户要求能自己改，升级不覆盖）
     const advancedBlock = syncView.slice(syncView.indexOf('data-block="advanced"'), syncView.indexOf("</section>", syncView.indexOf('data-block="advanced"')));
     ok(syncView.includes('data-action="toggle-advanced"') && /const \[advancedOpen, setAdvancedOpen\] = useState\(false\)/.test(syncView), "UI：高级选项有展开/收起按钮且默认折叠（初始 false）");
     ok(/advancedOpen \? \(/.test(syncView), "UI：高级选项内容只在展开时渲染");
-    ok(!syncView.includes('data-action="toggle-path-edit"') && !/data-setting="path"/.test(syncView), "UI：不再提供「修改路径模板」入口（路径只读）");
-    ok(advancedBlock.includes('data-row="path-readonly"'), "UI：路径以只读行展示");
-    ok(advancedBlock.includes("pathPreview(") && advancedBlock.includes("prefixOf("), "UI：路径预览 + 所属目录说明都在");
+    ok(advancedBlock.includes('data-row="path-edit"') && advancedBlock.includes('data-setting="path"'), "UI：路径在高级选项里可编辑");
+    ok(advancedBlock.includes("prefixOf(") && advancedBlock.includes("set.pathLocation"), "UI：编辑时仍显示文件所在目录");
     // 2.3.4：时间只显示到分钟（同步频率是小时级，秒没有信息量）
     ok(/minute: "2-digit"/.test(syncView) && !/toLocaleString\(\)/.test(syncView), "UI：上次推送/拉取时间不显示秒");
     // 2.3.4：打开弹窗时若从未探测过，自动静默测一次（宿主 lastProbe 只在内存，重启后会丢）
@@ -4042,6 +4041,36 @@ bootSync.seq = 1;
     const pkgVersion = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
     const [, versionMinor, versionPatch] = pkgVersion.split(".").map(Number);
     ok(versionMinor > 3 || (versionMinor === 3 && versionPatch >= 2), "版本：2.3.2 起为功能升级线，版本号未回退", pkgVersion);
+  }
+
+  // —— 2.4.1：路径可编辑；升级/重装不覆盖已保存的 path；不做目录扫描（避免误判别人的 json）——
+  {
+    eq(SYNC_DEFAULTS.path, "machines/{machineId}.json", "路径：默认单级 machines/{machineId}.json");
+    eq(prefixOfPure(SYNC_DEFAULTS.path), "machines/", "路径：默认目录 machines/");
+
+    // 已保存的 path 不会被默认值覆盖（升级/重装不改变路径）
+    const kept = applySettingsPatch({ enabled: false, path: "dsh-workload-sync/machines/{machineId}.json" }, { machineName: "x" });
+    eq(kept.path, "dsh-workload-sync/machines/{machineId}.json", "升级：只改其它字段时保留已保存的 path");
+    const kept2 = applySettingsPatch({ enabled: false, path: "a/b/{machineId}.json" }, { syncFrequency: "12h" });
+    eq(kept2.path, "a/b/{machineId}.json", "升级：改频率时也保留已保存的 path");
+    // 用户可以显式写 path（必须含 {machineId}）
+    eq(applySettingsPatch({}, { path: "mine/{machineId}.json" }).path, "mine/{machineId}.json", "路径：允许显式编辑");
+    let pathErr = null;
+    try { applySettingsPatch({}, { path: "no/machine/token.json" }); } catch (error) { pathErr = reasonOfForTest(error); }
+    ok(/machineId/.test(pathErr ?? ""), "路径：编辑时仍校验必须含 {machineId}", pathErr);
+
+    // 已移除目录扫描 / 一键对齐（避免误识别其它程序的 json）
+    const svcSrc = await readFile(new URL("../src/sync-service.js", import.meta.url), "utf8");
+    const hostSrc = await readFile(new URL("../index.js", import.meta.url), "utf8");
+    const view = await readFile(new URL("../src/client/sync-view.jsx", import.meta.url), "utf8");
+    ok(!svcSrc.includes("scanDirs") && !hostSrc.includes("/sync/dirs"), "已移除：目录扫描接口");
+    ok(!view.includes("align-path-dir") && !view.includes("path-other-dirs"), "已移除：一键对齐与告警");
+    ok(!Object.keys(zh).some((k) => /pathOtherDirs|pathAlign/.test(k)), "已移除：相关文案键");
+
+    // 路径改为可编辑输入框
+    ok(/data-row="path-edit"/.test(view) && /data-setting="path"/.test(view), "UI：路径是可编辑输入框");
+    ok(/setField\("path", event\.target\.value\)/.test(view), "UI：输入即写入表单值");
+    ok(/type="text"[\s\S]{0,200}data-setting="path"/.test(view), "UI：路径用文本框（非只读 code）");
   }
 
   // 报告不含同步 UI（报告是自包含快照，不暴露设备管理）
