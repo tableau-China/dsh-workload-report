@@ -12,6 +12,7 @@
 import { createHash } from "node:crypto";
 
 import { formatHours, formatTokens } from "./format.js";
+import { languageOf, translator } from "./locales/index.js";
 import {
   PROFILE_DIMENSION_KEYS,
   PROFILE_EVIDENCE_MAX,
@@ -199,8 +200,9 @@ function workspaceSwitches(rows) {
   let previous = "";
   let switches = 0;
   for (const row of ordered) {
+    // 数据层「未知」是空串（语言无关，见 src/labels.js）；只有空值不参与切换判定。
     const label = String(row?.workspaceLabel ?? "").trim();
-    if (label === "" || label === "(未知工作区)") continue;
+    if (label === "") continue;
     if (previous !== "" && label !== previous) switches += 1;
     previous = label;
   }
@@ -496,18 +498,22 @@ function dimension(key, title, insight, evidence) {
 /**
  * 本地规则画像：纯统计 + 固定规则，不联网、不依赖模型。
  * 与 AI 输出同构（headline + dimensions + advice + risk），降级时观感一致。
+ *
+ * 所有用户可见文案都走整句模板键（`profile.local.*` / `profile.dimension.*`）：
+ * 不同语言语序不同，所以一句一个键、变量用 `{name}` 占位符；
+ * 维度 key（rhythm / focus / stack / collab / trend）与 JSON 字段名保持英文。
+ *
  * @param payload - buildProfilePayload() 的结果。
- * @param lang - zh | en。
+ * @param lang - 任意 DSH 界面语言 id（zh / en / ja / es / fr / de / ru / pt）。
  */
 export function localProfile(payload, lang = "zh") {
-  const zh = lang !== "en";
+  const t = translator(languageOf(lang));
   const totalActive = num(payload.netActiveMs) + num(payload.waitMs);
   const waitShare = num(payload.waitShare) || (totalActive > 0 ? num(payload.waitMs) / totalActive : 0);
   const values = payload.activeHours24?.values ?? [];
   const hasHourTokens = values.some((value) => num(value) > 0);
   let peakHour = 0;
   for (let hour = 1; hour < 24; hour += 1) if (num(values[hour]) > num(values[peakHour])) peakHour = hour;
-  const topWorkspace = payload.byWorkspace?.[0];
   const topModel = payload.byModel?.[0];
   const turnsPer = num(payload.avgTurnsPerConversation);
   const stepsPer = num(payload.avgStepsPerTurn);
@@ -519,107 +525,101 @@ export function localProfile(payload, lang = "zh") {
     const shareValue = num(payload["band" + key.charAt(0).toUpperCase() + key.slice(1) + "ActiveShare"]);
     return shareValue > best.share ? { key, share: shareValue } : best;
   }, { key: "afternoon", share: -1 }).key;
-  const bandNamesZh = { night: "深夜", morning: "清晨", forenoon: "上午", afternoon: "下午", evening: "晚间" };
+  /** 时段名不单独翻译再拼接：每种语言一个整句模板（见 staging 的 profile.local.rhythmBand*）。 */
+  const bandInsightKeys = {
+    night: "profile.local.rhythmBandNight",
+    morning: "profile.local.rhythmBandMorning",
+    forenoon: "profile.local.rhythmBandForenoon",
+    afternoon: "profile.local.rhythmBandAfternoon",
+    evening: "profile.local.rhythmBandEvening",
+  };
   const dimensions = [];
 
   // 1) 节奏：夜间 / 周末 / 时段占比三选一，附高峰小时。
   if (night >= 0.25) {
-    dimensions.push(dimension("rhythm", zh ? "夜间节奏" : "Night rhythm",
-      zh ? "夜间活跃 " + percent(night) + "，高峰在 " + peakHour + ":00"
-        : percent(night) + " of activity is at night; peak at " + peakHour + ":00",
-      zh ? "深夜 22–6 点 · 高峰 " + peakHour + ":00"
-        : "22–6 share " + percent(night) + " · peak " + peakHour + ":00"));
+    dimensions.push(dimension("rhythm", t("profile.dimension.rhythm"),
+      t("profile.local.rhythmNightInsight", { share: percent(night), hour: peakHour }),
+      t("profile.local.rhythmNightEvidence", { hour: peakHour })));
   } else if (!hasHourTokens) {
-    dimensions.push(dimension("rhythm", zh ? "节奏" : "Rhythm",
-      zh ? "净活跃 " + formatHours(payload.netActiveMs) + "，小时 Token 待回填"
-        : formatHours(payload.netActiveMs) + " net active; hourly tokens pending",
-      zh ? "净活跃 " + formatHours(payload.netActiveMs) : "net " + formatHours(payload.netActiveMs)));
+    dimensions.push(dimension("rhythm", t("profile.dimension.rhythm"),
+      t("profile.local.rhythmPendingInsight", { time: formatHours(payload.netActiveMs) }),
+      t("profile.local.rhythmPendingEvidence", { time: formatHours(payload.netActiveMs) })));
   } else {
     const bandKeys = ["night", "morning", "forenoon", "afternoon", "evening"];
     const bandTotal = bandKeys.reduce((sum, key) => sum + num(payload["band" + key.charAt(0).toUpperCase() + key.slice(1) + "ActiveShare"]), 0);
     const peakBandShare = num(payload["band" + peakBand.charAt(0).toUpperCase() + peakBand.slice(1) + "ActiveShare"]);
-    dimensions.push(dimension("rhythm", zh ? "节奏" : "Rhythm",
+    dimensions.push(dimension("rhythm", t("profile.dimension.rhythm"),
       bandTotal > 0
-        ? (zh ? (bandNamesZh[peakBand] ?? "下午") + "最活跃（" + percent(peakBandShare) + "）" : peakBand + " is the busiest band (" + percent(peakBandShare) + ")")
-        : (zh ? "活跃高峰在 " + peakHour + ":00" : "Peak at " + peakHour + ":00"),
-      zh ? "高峰 " + peakHour + ":00 · 周末 " + percent(weekend)
-        : "peak " + peakHour + ":00 · weekend " + percent(weekend)));
+        ? t(bandInsightKeys[peakBand] ?? "profile.local.rhythmBandAfternoon", { share: percent(peakBandShare) })
+        : t("profile.local.rhythmPeakInsight", { hour: peakHour }),
+      t("profile.local.rhythmBandEvidence", { hour: peakHour, share: percent(weekend) })));
   }
 
   // 2) 专注：单会话时长 + 短会话占比。
-  dimensions.push(dimension("focus", zh ? "专注" : "Focus",
-    zh ? "单会话均值 " + avgSession + "，" + percent(num(payload.durationUnder15mShare)) + " 在 15 分钟内"
-      : avgSession + " per conversation; " + percent(num(payload.durationUnder15mShare)) + " under 15 min",
-    zh ? "会话 " + num(payload.conversations) + " · 样本 " + num(payload.durationSampleSessions)
-      : num(payload.conversations) + " conversations · sample " + num(payload.durationSampleSessions)));
+  dimensions.push(dimension("focus", t("profile.dimension.focus"),
+    t("profile.local.focusInsight", { avg: avgSession, share: percent(num(payload.durationUnder15mShare)) }),
+    t("profile.local.focusEvidence", { n: num(payload.conversations), sample: num(payload.durationSampleSessions) })));
 
   // 3) 工具栈：模型集中度 + 缓存命中率。
   if (topModel) {
-    dimensions.push(dimension("stack", zh ? "工具栈" : "Stack",
-      zh ? topModel.name + " 占 " + percent(topModel.share) + "，缓存命中 " + percent(cache)
-        : topModel.name + " is " + percent(topModel.share) + "; cache hits " + percent(cache),
-      zh ? "模型 " + num(payload.modelCount) + " 个 · 输入 " + percent(num(payload.inputShare))
-        : num(payload.modelCount) + " models · input " + percent(num(payload.inputShare))));
+    dimensions.push(dimension("stack", t("profile.dimension.stack"),
+      t("profile.local.stackModelInsight", { model: topModel.name, share: percent(topModel.share), cache: percent(cache) }),
+      t("profile.local.stackModelEvidence", { n: num(payload.modelCount), share: percent(num(payload.inputShare)) })));
   } else {
-    dimensions.push(dimension("stack", zh ? "工具栈" : "Stack",
-      zh ? "区间 Token " + formatTokens(payload.tokensTotal) + "，缓存命中 " + percent(cache)
-        : formatTokens(payload.tokensTotal) + " tokens; cache hits " + percent(cache),
-      zh ? "输出 " + formatTokens(payload.tokensOutput) : "output " + formatTokens(payload.tokensOutput)));
+    dimensions.push(dimension("stack", t("profile.dimension.stack"),
+      t("profile.local.stackTokensInsight", { tokens: formatTokens(payload.tokensTotal), cache: percent(cache) }),
+      t("profile.local.stackTokensEvidence", { tokens: formatTokens(payload.tokensOutput) })));
   }
 
   // 4) 协作：等待占比 + 轮次 / 步骤。
-  dimensions.push(dimension("collab", zh ? "协作" : "Collab",
-    zh ? "等待用户 " + percent(waitShare) + "，每会话 " + turnsPer.toFixed(1) + " 轮"
-      : "Waiting " + percent(waitShare) + "; " + turnsPer.toFixed(1) + " turns per conversation",
-    zh ? "步 / 轮 " + stepsPer.toFixed(1) + " · 输出 / 轮 " + formatTokens(payload.avgOutputTokensPerTurn)
-      : stepsPer.toFixed(1) + " steps/turn · " + formatTokens(payload.avgOutputTokensPerTurn) + " output/turn"));
+  dimensions.push(dimension("collab", t("profile.dimension.collab"),
+    t("profile.local.collabInsight", { share: percent(waitShare), turns: turnsPer.toFixed(1) }),
+    t("profile.local.collabEvidence", { steps: stepsPer.toFixed(1), tokens: formatTokens(payload.avgOutputTokensPerTurn) })));
 
   // 5) 趋势：有前 7 天基线才写环比，否则明确「样本不足」。
   if (payload.trendActiveDeltaPct !== null && payload.trendActiveDeltaPct !== undefined) {
     const delta = num(payload.trendActiveDeltaPct);
-    dimensions.push(dimension("trend", zh ? "趋势" : "Trend",
-      zh ? "近 7 天活跃环比 " + (delta >= 0 ? "+" : "") + delta.toFixed(1) + "%"
-        : "Active last 7d " + (delta >= 0 ? "+" : "") + delta.toFixed(1) + "%",
-      zh ? "前 7 天 " + formatHours(payload.trendActivePrevMs) + " → 近 7 天 " + formatHours(payload.trendActiveLastMs)
-        : formatHours(payload.trendActivePrevMs) + " → " + formatHours(payload.trendActiveLastMs)));
+    const deltaText = (delta >= 0 ? "+" : "") + delta.toFixed(1) + "%";
+    dimensions.push(dimension("trend", t("profile.dimension.trend"),
+      t("profile.local.trendInsight", { delta: deltaText }),
+      t("profile.local.trendEvidence", { prev: formatHours(payload.trendActivePrevMs), last: formatHours(payload.trendActiveLastMs) })));
   } else {
-    dimensions.push(dimension("trend", zh ? "趋势" : "Trend",
-      zh ? "区间 " + num(payload.range?.days) + " 天，近 7 天基线不足"
-        : num(payload.range?.days) + "-day range; 7d baseline is thin",
-      zh ? "近 7 天 vs 前 7 天：数据不足" : "last 7d vs prev 7d: not enough data"));
+    dimensions.push(dimension("trend", t("profile.dimension.trend"),
+      t("profile.local.trendThinInsight", { days: num(payload.range?.days) }),
+      t("profile.local.trendThinEvidence")));
   }
 
   const advice = [];
   if (night >= 0.25) {
-    advice.push({ text: zh ? "把深度任务前移到上午" : "Move deep work earlier", why: zh ? "夜间占 " + percent(night) + "，高峰 " + peakHour + ":00" : "Night " + percent(night) });
+    advice.push({ text: t("profile.local.adviceMoveDeepWork"), why: t("profile.local.adviceMoveDeepWorkWhy", { share: percent(night), hour: peakHour }) });
   } else if (cache < 0.3) {
-    advice.push({ text: zh ? "固定系统提示与上下文" : "Stabilize prompts and context", why: zh ? "缓存命中仅 " + percent(cache) : "Cache hit only " + percent(cache) });
+    advice.push({ text: t("profile.local.adviceStabilize"), why: t("profile.local.adviceStabilizeWhy", { share: percent(cache) }) });
   } else {
-    advice.push({ text: zh ? "复用当前高命中上下文" : "Reuse the high-hit context", why: zh ? "缓存命中 " + percent(cache) + "，单会话 " + avgSession : "Cache " + percent(cache) + ", " + avgSession + "/session" });
+    advice.push({ text: t("profile.local.adviceReuseContext"), why: t("profile.local.adviceReuseContextWhy", { share: percent(cache), avg: avgSession }) });
   }
   if (waitShare >= 0.15) {
-    advice.push({ text: zh ? "合并确认点，减少等待" : "Batch confirmations", why: zh ? "等待用户占 " + percent(waitShare) : "Waiting is " + percent(waitShare) });
+    advice.push({ text: t("profile.local.adviceBatch"), why: t("profile.local.adviceBatchWhy", { share: percent(waitShare) }) });
   } else if (payload.trendActiveDeltaPct !== null && payload.trendActiveDeltaPct !== undefined && num(payload.trendActiveDeltaPct) < -10) {
-    advice.push({ text: zh ? "给近一周设一个交付目标" : "Set one delivery goal", why: zh ? "活跃环比 " + num(payload.trendActiveDeltaPct).toFixed(1) + "%" : "Active " + num(payload.trendActiveDeltaPct).toFixed(1) + "%" });
+    advice.push({ text: t("profile.local.adviceWeeklyGoal"), why: t("profile.local.adviceWeeklyGoalWhy", { delta: num(payload.trendActiveDeltaPct).toFixed(1) + "%" }) });
   } else {
-    advice.push({ text: zh ? "按会话设定产出目标" : "Set output goals per session", why: zh ? "输出 / 轮 " + formatTokens(payload.avgOutputTokensPerTurn) : formatTokens(payload.avgOutputTokensPerTurn) + " output/turn" });
+    advice.push({ text: t("profile.local.adviceOutputGoal"), why: t("profile.local.adviceOutputGoalWhy", { tokens: formatTokens(payload.avgOutputTokensPerTurn) }) });
   }
   if (weekend >= 0.2) {
-    advice.push({ text: zh ? "给周末留出整块恢复时间" : "Reserve weekend recovery", why: zh ? "周末活跃占 " + percent(weekend) : "Weekend " + percent(weekend) });
+    advice.push({ text: t("profile.local.adviceWeekend"), why: t("profile.local.adviceWeekendWhy", { share: percent(weekend) }) });
   }
 
   let risk = null;
-  if (night >= 0.3) risk = zh ? "夜间投入偏高（" + percent(night) + "）" : "High night load (" + percent(night) + ")";
-  else if (waitShare >= 0.3) risk = zh ? "等待确认偏多（" + percent(waitShare) + "）" : "Frequent waiting (" + percent(waitShare) + ")";
+  if (night >= 0.3) risk = t("profile.local.riskNight", { share: percent(night) });
+  else if (waitShare >= 0.3) risk = t("profile.local.riskWait", { share: percent(waitShare) });
   else if (payload.trendActiveDeltaPct !== null && payload.trendActiveDeltaPct !== undefined && num(payload.trendActiveDeltaPct) <= -25) {
-    risk = zh ? "近一周活跃下滑 " + num(payload.trendActiveDeltaPct).toFixed(1) + "%" : "Activity down " + num(payload.trendActiveDeltaPct).toFixed(1) + "%";
+    risk = t("profile.local.riskTrend", { delta: num(payload.trendActiveDeltaPct).toFixed(1) + "%" });
   }
 
   const headline = night >= 0.25
-    ? (zh ? "夜间型深度工作者" : "Late-night deep worker")
+    ? t("profile.local.headlineNight")
     : waitShare >= 0.25
-      ? (zh ? "高频确认型协作者" : "High-confirmation collaborator")
-      : (zh ? "白天节奏的稳定交付者" : "Steady daytime deliverer");
+      ? t("profile.local.headlineCollaborator")
+      : t("profile.local.headlineSteady");
 
   return {
     headline: clampProfileText(headline, PROFILE_HEADLINE_MAX),

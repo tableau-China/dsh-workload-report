@@ -27,6 +27,94 @@ import {
 /** 宿主半部注册的只读接口前缀（与 index.js 的默认 apiPath 一致）。 */
 const API_PATH = "/workload-report/v1";
 
+/**
+ * 宿主返回的稳定 code 是**完整词典键**（见 src/sync-service.js 的 SyncError）。
+ *
+ * 这里用静态集合 / 映射把它们显式列出来：
+ *   · 保证 i18n 死键检查能静态扫描到每个 `sync.err.*` / `sync.ok.*` 键；
+ *   · 未知 code（老缓存 / 未来新增）安全回落到宿主 message，不会把键名露给用户。
+ */
+const SYNC_ERROR_KEYS = new Set([
+  "sync.err.notConfigured",
+  "sync.err.noCredentials",
+  "sync.err.unauthorized",
+  "sync.err.forbidden",
+  "sync.err.notFound",
+  "sync.err.httpStatus",
+  "sync.err.networkError",
+  "sync.err.badResponse",
+  "sync.err.probeFailed",
+  "sync.err.unsupported",
+  "sync.err.pushFailed",
+  "sync.err.pullFailed",
+  "sync.err.credentialsNotNeeded",
+  "sync.err.noCredentialFields",
+  "sync.err.badTransport",
+  "sync.err.pathTemplate",
+  "sync.err.frequencyInvalid",
+  "sync.err.repoFormat",
+  "sync.err.baseUrlProtocol",
+  "sync.err.missingFields",
+  "sync.err.noEntry",
+  "sync.err.saveFailed",
+  "sync.err.settingsInvalid",
+  "sync.err.credentialsFailed",
+  "sync.err.disabled",
+  "sync.err.saveUnavailable",
+]);
+
+/** 成功 code → 复用的既有文案键（推送 / 拉取 / 凭据结果本来就有文案，不重复定义新键）。 */
+const SYNC_OK_CODE_KEYS = {
+  "sync.ok.pushed": "sync.pushOk",
+  "sync.ok.pulled": "sync.pullOk",
+  "sync.ok.credentialsSaved": "set.saved",
+  "sync.ok.credentialsCleared": "cred.cleared",
+};
+
+/** 参数里的 `fields` 是「词典键数组」（如 ["set.bucket","set.region"]），先翻成字段名再进模板。 */
+function localizeSyncParams(t, params) {
+  if (params === null || typeof params !== "object") return {};
+  const out = { ...params };
+  if (Array.isArray(params.fields)) out.fields = params.fields.map((key) => t(key)).join(" / ");
+  return out;
+}
+
+/**
+ * 失败结果 → 本地化文案。
+ * @param result - 宿主返回的 `{ code, params, message, error }`。
+ * @param fallback - 未知 code / 老数据时的兜底文案（由调用方给，避免拼英文键名）。
+ */
+function syncErrorText(t, result, fallback) {
+  const code = typeof result?.code === "string" ? result.code : "";
+  if (SYNC_ERROR_KEYS.has(code)) return t(code, localizeSyncParams(t, result.params));
+  return fallback ?? result?.message ?? result?.error ?? "";
+}
+
+/** 成功结果 → 本地化文案；reachable 带可访问数量，其余复用既有文案键。 */
+function syncOkText(t, result) {
+  const code = typeof result?.code === "string" ? result.code : "";
+  const params = localizeSyncParams(t, result?.params);
+  if (code === "sync.ok.reachable") {
+    const count = Number(params.count ?? result?.objects);
+    if (Number.isFinite(count) && count >= 0) return t("sync.ok.reachable", { count: formatInt(count) });
+    return t("sync.probeOk");
+  }
+  const key = SYNC_OK_CODE_KEYS[code];
+  if (key === undefined) return null;
+  if (key === "sync.pushOk" || key === "sync.pullOk") {
+    return t(key, { n: formatInt(result?.params?.n ?? result?.rows ?? result?.fetched ?? 0) });
+  }
+  return t(key);
+}
+
+/** 自检结果 → 一行可读文案（成功带「可访问 N 项」，失败带稳定原因）。 */
+function probeText(t, probe) {
+  return probe?.ok === true
+    ? syncOkText(t, probe) ?? t("sync.probeOk")
+    : syncErrorText(t, probe, probe?.message ?? t("sync.probeFail"));
+}
+
+
 /** 时间戳 → 本地可读时间；0 表示从未执行。 */
 /** 时间显示到分钟（不显示秒：同步频率是小时级，秒没有信息量）。 */
 function formatTime(ms, never) {
@@ -366,7 +454,7 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
           body: JSON.stringify({ values }),
         });
         const body = await response.json().catch(() => ({}));
-        if (!response.ok || body.ok !== true) throw new Error(body.error ?? `HTTP ${response.status}`);
+        if (!response.ok || body.ok !== true) throw new Error(syncErrorText(t, body, body.error ?? `HTTP ${response.status}`));
         savedView = body.view;
         setForm(body.view);
         setBaseline(body.view);
@@ -388,7 +476,7 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
           body: JSON.stringify({ ...(deletion ? { delete: true } : { values: filled }), transport: savedView?.transport ?? transport }),
         });
         const body = await response.json().catch(() => ({}));
-        if (!response.ok || body.ok !== true) throw new Error(body.error ?? `HTTP ${response.status}`);
+        if (!response.ok || body.ok !== true) throw new Error(syncErrorText(t, body, body.error ?? `HTTP ${response.status}`));
         setDraft({}); // 立刻清空输入框，值不再留在界面上
         if (deletion) {
           const stillExternal = (body.fields ?? []).filter((field) => field.fallbackSource === "env" || field.fallbackSource === "file");
@@ -399,7 +487,7 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
           credentialText = t("set.saved");
         } else {
           // 设置已经保存成功，只是连接没通：用「部分成功」的文案，别让用户以为整次保存失败
-          credentialText = t("set.savedCredFail", { message: body.probe?.message ?? "?" });
+          credentialText = t("set.savedCredFail", { message: probeText(t, body.probe) });
         }
       }
 
@@ -429,14 +517,10 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
       const body = await response.json();
       const result = body.result ?? {};
       setProbe({ ...result, at: Date.now() });
-      if (!silent) {
-        setMessage(result.ok === true
-          ? { kind: "ok", text: t("sync.probeOk") }
-          : { kind: "fail", text: `${t("sync.probeFail")}（${result.code ?? "?"}）` });
-      }
+      if (!silent) setMessage({ kind: result.ok === true ? "ok" : "fail", text: probeText(t, result) });
       return result;
     } catch (error) {
-      const failure = { ok: false, code: "ERROR", message: String(error?.message ?? error), at: Date.now() };
+      const failure = { ok: false, message: String(error?.message ?? error), at: Date.now() };
       setProbe(failure);
       if (!silent) setMessage({ kind: "fail", text: t("sync.failed", { message: failure.message }) });
       return failure;
@@ -483,8 +567,8 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
       const body = await response.json();
       const result = body.result ?? {};
       setMessage(result.ok === true
-        ? { kind: "ok", text: action === "push" ? t("sync.pushOk", { n: formatInt(result.rows ?? 0) }) : t("sync.pullOk", { n: formatInt(result.fetched ?? 0) }) }
-        : { kind: "fail", text: t("sync.failed", { message: result.error ?? "?" }) });
+        ? { kind: "ok", text: syncOkText(t, result) ?? (action === "push" ? t("sync.pushOk", { n: formatInt(result.rows ?? 0) }) : t("sync.pullOk", { n: formatInt(result.fetched ?? 0) })) }
+        : { kind: "fail", text: syncErrorText(t, result, t("sync.failed", { message: result.error ?? "?" })) });
       await loadStatus();
       if (result.ok === true && typeof onSaved === "function") onSaved();
     } catch (error) {
@@ -659,7 +743,7 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
                 <ChipGroup label={t("set.transport")}>
                   {(state.transports ?? []).map((item) => (
                     <Chip key={item.id} active={transport === item.id} data-transport={item.id} onClick={() => changeTransport(item.id)}>
-                      {item.label}
+                      {item.labelKey === undefined ? item.label : t(item.labelKey)}
                     </Chip>
                   ))}
                 </ChipGroup>
@@ -749,19 +833,27 @@ export function SyncSettingsDialog({ t, initialTransport = null, initialStatus =
                           ? t("sync.probeNever")
                           : probe.ok === true
                             ? t("set.probeOkShort")
-                            : `${t("set.probeFailShort")}（${probe.code ?? "?"}）`}
+                            : t("set.probeFailShort")}
                     </span>
                     <span className="wl-sync-status-last" data-block="sync-last-line">
                       {t("set.lastTimes", { push: formatTime(status?.lastPushAt ?? 0, t("sync.never")), pull: formatTime(status?.lastPullAt ?? 0, t("sync.never")) })}
                     </span>
                   </div>
                 </div>
-                {/* 失败时把原因单独一行（只在出错时占位，成功保持紧凑） */}
-                {probe !== null && probe.ok === false && probe.message ? (
-                  <p className="wl-hint" data-kind="sync-error">{probe.message}</p>
+                {/* 自检明细：成功显示可访问数量，失败显示稳定原因（code 走词典，不露内部英文）。 */}
+                {probe === null || probing ? null : (
+                  <p className="wl-hint" data-kind={probe.ok === true ? "sync-ok" : "sync-error"}>{probeText(t, probe)}</p>
+                )}
+                {status?.lastPushError ? (
+                  <p className="wl-hint" data-kind="sync-error">
+                    {syncErrorText(t, { code: status.lastPushCode, params: status.lastPushParams }, t("sync.failed", { message: status.lastPushError }))}
+                  </p>
                 ) : null}
-                {status?.lastPushError ? <p className="wl-hint" data-kind="sync-error">{t("sync.failed", { message: status.lastPushError })}</p> : null}
-                {status?.lastPullError ? <p className="wl-hint" data-kind="sync-error">{t("sync.failed", { message: status.lastPullError })}</p> : null}
+                {status?.lastPullError ? (
+                  <p className="wl-hint" data-kind="sync-error">
+                    {syncErrorText(t, { code: status.lastPullCode, params: status.lastPullParams }, t("sync.failed", { message: status.lastPullError }))}
+                  </p>
+                ) : null}
               </section>
 
               {/* ④c 自动同步频率（2.2.0 正式启用）：选一个周期即可，保存后定时器立刻按新频率重建。

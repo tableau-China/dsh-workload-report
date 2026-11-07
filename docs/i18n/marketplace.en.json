@@ -1,0 +1,17 @@
+{
+  "language": "en",
+  "title": "DSH Workload Report — effort and token usage, with a client-ready HTML report",
+  "tagline": "Workload and token usage by date, workspace and model — plus a self-contained HTML report you can send to a client.",
+  "description": "DeepSeek Harness (DSH) plugin: active time and token usage in one view, by date, workspace, model and session. Calendar heatmap, time-of-day analysis, model speed, TTFT and estimated cost; a client-ready self-contained HTML report; an optional AI usage profile; optional multi-device sync; 8 interface languages. Read-only and local by default.",
+  "category": "usage",
+  "keywords": [
+    "DeepSeek Harness plugin",
+    "DSH plugin",
+    "token usage dashboard",
+    "AI coding workload report",
+    "active time tracking",
+    "client HTML report",
+    "multi-device sync",
+    "8 languages"
+  ]
+}

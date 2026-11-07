@@ -4,6 +4,7 @@
 
 | 版本 | 日期 | npm | 一句话 |
 | --- | --- | --- | --- |
+| **2.5.0** | 2026-11-07 | 待发布 | **六国语言**：接入 DSH 内置 8 语言（日 / 西 / 法 / 德 / 俄 / 巴西葡）+ 报告 / 画像 / 同步全链路本地化 + 词典单一来源 |
 | **2.4.1** | 2026-11-04 | 待发布 | **Bug 修复**：路径模板改为可编辑、升级不改变已保存路径；移除目录扫描（避免误判其它程序的 json） |
 | 2.4.0 | 2026-11-03 | 已发布 | **多设备一致性**：设备筛选只看选中设备 + 拉取缓存持久化（重启/离线不丢）+ 供应商短名 + 环形图 key 修复 + 刷新/ESC 交互修复 |
 | **2.3.4** | 2026-10-29 | 待发布 | GitHub Star 入口 + 同步弹窗修复（自动探测、时间不带秒、高级选项折叠、去掉路径编辑） |
@@ -44,6 +45,50 @@
 > 0.7.0 / 0.7.1 的工作已并入 1.0.0，**不再单独发版**；详见各版本条目。
 > 1.1.0 的多设备同步工作已并入 2.0.0，**不再单独发版**；2.0.0 同时包含一轮样式 / 布局调整（语义化版本：新增能力 + 界面与口径调整）。
 > 2.0.2 的同步设置布局重做**并入 2.0.3**，不再单独发版。
+
+## v2.5.0（2026-11-07）— 六国语言：接入 DSH 内置 8 种界面语言
+
+**背景**：DSH 0.2.2 起内置 8 种界面语言（英 / 中 / 日 / 西 / 法 / 德 / 俄 / 巴西葡）。本插件原来只有中 / 英两种文案，且报告固定中文。本次把「文案」从客户端代码里抽成单一词典来源，并让看板 / HTML 报告 / AI 画像 / 同步弹窗全部跟随宿主语言。
+
+### 1. 架构：单一词典来源 + 宿主 locale 服务
+
+| 项 | 实现 |
+| --- | --- |
+| 词典 | `src/locales/<lang>.json` × 8（共 398 键）；`zh.json` 是键集基准，`en.json` 是兜底；JSON 而不是 JS，译者只改 JSON、不碰代码 |
+| 注册表 | `src/locales/index.js`：`NS` / `LOCALES` / `dictionaries` / `languageOf`（`pt-BR→pt`、未知→`en`）/ `localeTag`（Intl 标签）/ `translate` / `translator` / `localeLabel` |
+| 宿主注册 | `ctx.locale.register(NS, dictionaries)` 一次注册 8 部词典；DSH 自带这 6 种语言（语言包由宿主提供），插件**不**调用 `addLanguage`，避免重复注册 |
+| 客户端取文案 | `useLocale()` 订阅 `ctx.locale` 快照 → `{ lang, t }`，语言切换实时生效、无需重载；缺译按「当前语言 → en → 键名」兜底 |
+| 服务端取文案 | 宿主半部不持有界面语言：报告 / 画像请求显式带 `lang`（`?lang=` → `Accept-Language` → `en`），用 `translator(lang)` 渲染 |
+
+### 2. 覆盖范围
+
+- **看板**：全部文案键化；日期格式走 `localeTag(lang)`；未知模型 / 工作区 / 会话标题改为语言无关的数据层占位（展示层用 `common.unknown*` 兜底）；定价链接用 `labelKey`；`others` 桶、页签、表格、弹窗、aria/title 全部本地化。
+- **HTML 报告**：`renderReport(snapshot, { lang, ... })` 按语言渲染（默认 `zh` 保持旧行为）；新增 35 个 `report.*` 键（含页脚口径长文按段落拆分）；`<html lang>` 与日期跟随语言；导出入口自动带当前语言。
+- **AI 画像**：`localProfile(payload, lang)` 改为整句模板（新增 `profile.local.*` 43 键 + `profile.dimension.*` 5 键，替换原来的三元表达式 + 字符串拼接）；`systemPrompt(lang)` 明确要求模型用目标语言写 headline / 维度 / 建议 / 风险（JSON 键名与枚举保持英文）；失败 code → 客户端词典渲染的逻辑不变。
+- **同步 / 服务端**：用户可见的结果与错误统一 `SyncError`（`code` = 完整词典键 + `params`）；客户端用静态 code 表 + `t(code, params)` 渲染，未知 code 才回落到服务端 message；存储方式 chips、设置校验、自检 / 推送 / 拉取、凭据保存 / 清除全部本地化。
+- **服务端日志**：保持中文（内部诊断，不进词典、不面向用户）。
+
+### 3. 质量保障
+
+- `test/i18n.mjs`（新增，85 项断言）：8 语言键集 / 键顺序 / 占位符 / 空值 / 零宽字符 / 残留中文 / 漏译 / 核心界面文案 / 源码零写死文案 / 无死键；支持 `--lang de` 单语言自检。
+- `test/verify.mjs`：新增 8 语言渲染断言（看板辅助函数 / 报告 / 本地规则 / 提示词），总断言 **1738 条全绿**；顺手修掉一条日期相关的 flaky 断言（恰好落在「历史刚好 30 天」的日历日会误判）。
+- `test/e2e-i18n.mjs`（新增，真实浏览器）：为每种语言注入 `navigator.languages`，打开看板与 `/report.html?lang=`，断言文案等于词典值、无裸露键名 / 串台，逐语言截图到 `test/.artifacts/i18n-*.png`。
+- 文档：`docs/i18n.md`（架构 / 维护规则 / 如何新增一种语言）、`docs/i18n-glossary.md`（术语表 / 翻译规范）。
+
+### 4. 可发现性 / 多语言分发
+
+- **npm 首页修复**：npm 用 glob `{README,README.*}` 选 README，根目录同时存在 `README.zh-CN.md` 时会**选中中文**（实测 npm 上 2.4.1 的 `readmeFilename` 就是 `README.zh-CN.md`）。现在中文及其它语言 README 全部移到 `docs/i18n/`，根目录只留英文 `README.md`，npm 首页固定英文；各语言落地页从英文 README 顶部语言导航进入。
+- **8 语言搜索落地页**：`docs/i18n/README.{zh-CN,ja,de,fr,es,ru,pt}.md`，每页含本地化标题 / 关键词句 / 截图 / 安装 / 语言互链，覆盖「DeepSeek Harness 插件 / トークン使用量 / Token-Nutzung……」等本地搜索词。
+- **市场与目录元数据**：`docs/i18n/marketplace.<lang>.json`（8 语言 title/tagline/description/keywords）、`docs/distribution/awesome-dsh-plugin.yml`（awesome-dsh-plugin 收录 PR 文件）、`docs/distribution/marketplace-index.json`（format-1 插件索引）、`assets/icon-180.png`（市场卡片图标）。
+- **npm 元数据**：description 重写为可搜索的一句话；keywords 从 23 个扩到 40 个（含 `token-usage`、`ai-coding`、`developer-productivity` 与 6 种本地语言词）；新增 `engines.dsh = ">=0.2.1-alpha.0"`（**不设上限**：DSH 升级到新的 0.x 时，不会因为版本范围把插件拒之门外；已测试 0.2.1-alpha.2 / 0.2.2-rc.1，README「兼容性」注明：更高版本允许加载但未显式验证）。
+- **文档**：新增 [docs/discoverability.md](./docs/discoverability.md)（渠道地图、8 语言关键词矩阵、投稿清单、90 天节奏、度量与红线）与 `docs/distribution/` 发布资产；README 增加 FAQ（长尾搜索词）与「适合谁」。
+
+### 5. 兼容性与限制
+
+- DSH < 0.2.2（无 locale 服务时）只有 `zh` / `en` 可选，插件照常工作；新增 6 语言词典对旧版无副作用。
+- 缺译 / 未知语言自动回落英文，不显示键名、不串中文。
+- 已知限制：服务端日志仍为中文（内部）；旧缓存里的 `lastProbe` / `lastPushError` 不含 code 时首次展示回落中文 message（重测后消失）；俄语等语言的复数形式受 DSH「无复数规则」约束，计数句统一用不变形写法。
+- 本次只改代码与文档，**未发布 npm / 未推送远端**（按流程等确认后再发版）。
 
 ## v2.0.3（2026-10-25）— 画像卡改绿色 + 宽屏放宽 + 报告列宽自适应
 

@@ -20,6 +20,7 @@
  *   - 归属日期用会话创建时间在所给时区下的自然日；跨天续聊的活动仍算创建那天。
  */
 
+import { UNKNOWN_WORKSPACE_KEY } from "./labels.js";
 import { cacheHitRate, costOf, mergeModelBuckets, modelLabel, modelTokens, providerOf, emptyModelBucket, UNKNOWN_MODEL } from "./models.js";
 import { scaleTokenBuckets } from "./hour-scale.js";
 
@@ -408,7 +409,7 @@ export function enumerateDays(range) {
  */
 export function workspaceLabel(cwd, aliases = {}) {
   if (cwd && typeof aliases[cwd] === "string") return aliases[cwd];
-  if (cwd === "") return "(未知工作区)";
+  if (cwd === "") return "";
   const parts = cwd.split("/").filter(Boolean);
   const base = parts.length > 0 ? parts[parts.length - 1] : cwd;
   if (typeof aliases[base] === "string") return aliases[base];
@@ -587,7 +588,7 @@ export function aggregate(rows, options = {}) {
     }
     addRow(day, row);
 
-    const wkey = row.cwd || "(unknown)";
+    const wkey = row.cwd || UNKNOWN_WORKSPACE_KEY;
     let workspace = workspaceMap.get(wkey);
     if (workspace === undefined) {
       workspace = { key: wkey, label: workspaceLabel(row.cwd, aliases), path: row.cwd, lastUsedAt: 0, ...emptyBucket() };
@@ -647,7 +648,7 @@ export function aggregate(rows, options = {}) {
   // 避免 400 天枚举上限把最近的数据截断。
   const days = dayCount(range) <= 180 ? enumerateDays(range) : [...dayMap.keys()].sort();
   // 「覆盖 N 个工作区」只数真实工作区，空 cwd 的未知桶不进这个 KPI（明细里仍会显示）
-  const realWorkspaces = [...workspaceMap.keys()].filter((key) => key !== "(unknown)").length;
+  const realWorkspaces = [...workspaceMap.keys()].filter((key) => key !== UNKNOWN_WORKSPACE_KEY).length;
 
   return {
     range: { ...range, timeZone, days: dayCount(range) },

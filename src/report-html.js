@@ -9,19 +9,21 @@
  *   · 交互切换在静态报告里不伪造按钮：默认 Tokens 口径，轮次用第二张小图呈现；
  *   · 时刻图状态行复用 hourTokensNote（回填中 / 未计入 N 个会话）。
  *
+ * 语言：`renderReport(snapshot, { lang })` 按 `lang` 渲染（8 种语言，见 docs/i18n.md）。
+ * 服务端路由必须显式带语言（query `lang` → Accept-Language → en）；缺省 `lang`
+ * 保持旧行为（zh），既有离线测试不需要改。所有文案走 `t(...)`，日期走 localeTag(lang)；
+ * 数字 / Token / 金额仍用 src/format.js 的语言无关紧凑格式。
+ *
  * 所有外部文本（工作区名、会话标题、备注）都经 escapeHtml 转义。
  */
 
 import { barPercent } from "./client/bar-width.js";
 import { hourTokensNote } from "./client/hour-status.js";
-import { translate } from "./client/locales.js";
 import { escapeHtml, formatHours, formatInt, formatPercent, formatProvider, formatSpeed, formatTtft, formatTokens } from "./format.js";
+import { languageOf, localeTag, translator } from "./locales/index.js";
 import { SEMANTIC, TABLEAU10, withAlpha } from "./palette.js";
 import { sectorPath } from "./sector-path.js";
 import { HOUR_CHART_TOP_SPACE, HOUR_DOT_TOP, hourDotRadius } from "./hour-scale.js";
-
-/** 报告固定中文：导出文件是给客户 / 博客看的快照，语言不跟随宿主（有意差异）。 */
-const t = (key, vars) => translate("zh", key, vars);
 
 /** 主题色板（浅色/深色）。报告是独立文件，用不了宿主 token，因此自带一套与看板一致的色板。 */
 const PALETTES = {
@@ -94,20 +96,23 @@ function eachDate(from, to, limit = 1000) {
 /**
  * 卡片头：与看板 CardHead 同构 —— 左侧标题 + 紧右侧 11px muted 说明，右侧可选控件。
  * 报告没有交互控件，因此 actions 只用于静态标记（不伪造按钮）。
+ * 标题 / 说明都传**词典键**（说明可带占位符取值），由本函数统一取词并转义。
+ * @param t - 绑定语言的翻译函数。
+ * @param titleKey - 标题词典键。
+ * @param hintKey - 说明词典键（空串表示无说明）。
+ * @param hintVars - 说明里的 `{name}` 占位符取值。
+ * @returns 卡片头 HTML 字符串。
  */
-function cardHead(title, hint = "") {
+function cardHead(t, titleKey, hintKey = "", hintVars = undefined) {
+  const title = t(titleKey);
+  const hint = hintKey === "" ? "" : t(hintKey, hintVars);
   return `<div class="card-head">
     <div class="card-head-text"><h2>${escapeHtml(title)}</h2>${hint === "" ? "" : `<span class="card-hint" title="${escapeHtml(hint)}">${escapeHtml(hint)}</span>`}</div>
   </div>`;
 }
 
-/** 顶部区间筛选器的选项（与看板 RANGES 的前三档 + 全部一致）。 */
-const REPORT_RANGES = Object.freeze([
-  { key: "7", label: "近 7 天" },
-  { key: "30", label: "近 30 天" },
-  { key: "90", label: "近 90 天" },
-  { key: "all", label: "全部" },
-]);
+/** 顶部区间筛选器的选项（与看板 RANGES 的前三档 + 全部一致；文案走 range.* 词典键）。 */
+const REPORT_RANGES = Object.freeze(["7", "30", "90", "all"]);
 
 /**
  * 顶部区间筛选器的**静态外观**（打印 / 发客户时保留看板的视觉语汇）。
@@ -117,15 +122,17 @@ const REPORT_RANGES = Object.freeze([
  * 不伪造可点击性，导出文件不会有失效链接。当前区间以品牌色实底 + 白字突出，
  * 其余档位为浅底 + 边框（与看板 ChipGroup 同一套视觉）。
  *
+ * @param t - 绑定语言的翻译函数。
  * @param rangeKey - 当前区间键（7 / 30 / 90 / all）。
  * @returns HTML 字符串。
  */
-function rangeFilter(rangeKey) {
+function rangeFilter(t, rangeKey) {
   const current = String(rangeKey ?? "7");
-  const chips = REPORT_RANGES.map(
-    (range) => `<span class="range-chip"${range.key === current ? ' data-active="true"' : ""}>${escapeHtml(range.label)}</span>`,
-  ).join("");
-  return `<div class="range-filter" aria-label="统计区间（当前高亮）">${chips}</div>`;
+  const chips = REPORT_RANGES.map((range) => {
+    const label = t(`range.${range}`);
+    return `<span class="range-chip"${range === current ? ' data-active="true"' : ""}>${escapeHtml(label)}</span>`;
+  }).join("");
+  return `<div class="range-filter" aria-label="${escapeHtml(t("report.rangeFilter.aria"))}">${chips}</div>`;
 }
 
 /**
@@ -146,11 +153,15 @@ function barCell(value, max, text, kind, palette) {
 /**
  * 日历热力图（静态版）：纵轴周一～周日，横轴 Year-Week，颜色深浅＝活跃时长；
  * 右侧紧贴每周几的累计活跃条。数据源是 snapshot.calendar（全部历史，与看板一致）。
+ * @param calendar - snapshot.calendar。
+ * @param palette - 色板。
+ * @param t - 绑定语言的翻译函数（周几 / tooltip / aria 文案）。
+ * @returns HTML 字符串。
  */
-function calendarHeatmap(calendar, palette) {
+function calendarHeatmap(calendar, palette, t) {
   const byDate = new Map((calendar?.days ?? []).map((day) => [day.date, day]));
   const dates = eachDate(calendar?.from ?? "", calendar?.to ?? "");
-  if (dates.length === 0) return `<p class="empty">该区间没有数据</p>`;
+  if (dates.length === 0) return `<p class="empty">${escapeHtml(t("state.empty"))}</p>`;
   const columns = new Map();
   const weekdayTotals = Array.from({ length: 7 }, () => 0);
   for (const date of dates) {
@@ -183,13 +194,14 @@ function calendarHeatmap(calendar, palette) {
     if (ratio > 0.25) return 2;
     return 1;
   };
-  const weekdayLabels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+  const weekdayLabels = [t("cal.mon"), t("cal.tue"), t("cal.wed"), t("cal.thu"), t("cal.fri"), t("cal.sat"), t("cal.sun")];
+  const noRecord = t("tip.noRecord");
   const dayTip = (date, day, weekend) =>
     day === null || day === undefined
-      ? `${date} · 无记录${weekend}`
-      : `${date} · 活跃 ${formatHours(day.activeMs ?? 0)} · Token ${formatTokens(day.tokensTotal ?? 0)}${weekend}`;
+      ? `${date} · ${noRecord}${weekend}`
+      : t("tip.daily", { date, active: formatHours(day.activeMs ?? 0), tokens: formatTokens(day.tokensTotal ?? 0), weekend });
   const weekdayLabelsSvg = weekdayLabels
-    .map((label, row) => `<text x="0" y="${(topPad + row * (cell + gap) + cell * 0.72).toFixed(1)}" font-size="10" fill="${palette.muted}">${escapeHtml(label)}<title>${escapeHtml(`${label} 累计 ${formatHours(weekdayTotals[row])}`)}</title></text>`)
+    .map((label, row) => `<text x="0" y="${(topPad + row * (cell + gap) + cell * 0.72).toFixed(1)}" font-size="10" fill="${palette.muted}">${escapeHtml(label)}<title>${escapeHtml(t("tip.weekday", { weekday: label, total: formatHours(weekdayTotals[row]) }))}</title></text>`)
     .join("");
   const cells = list
     .map((column, index) => {
@@ -200,14 +212,14 @@ function calendarHeatmap(calendar, palette) {
         : `W${String(column.week).padStart(2, "0")}`;
       const columnTotal = [...column.cells.values()].reduce((sum, entry) => sum + (entry.day?.activeMs ?? 0), 0);
       const label = showLabel
-        ? `<text x="${x}" y="11" font-size="9" fill="${palette.muted}">${escapeHtml(labelText)}<title>${escapeHtml(`${column.year} 第 ${String(column.week).padStart(2, "0")} 周 · 活跃 ${formatHours(columnTotal)}`)}</title></text>`
+        ? `<text x="${x}" y="11" font-size="9" fill="${palette.muted}">${escapeHtml(labelText)}<title>${escapeHtml(t("tip.week", { year: column.year, week: String(column.week).padStart(2, "0"), total: formatHours(columnTotal) }))}</title></text>`
         : "";
       const rects = [0, 1, 2, 3, 4, 5, 6]
         .map((row) => {
           const entry = column.cells.get(row);
           if (entry === undefined) return "";
           const activeMs = entry.day?.activeMs ?? 0;
-          const weekend = row >= 5 ? " · 周末" : "";
+          const weekend = row >= 5 ? t("tip.weekend") : "";
           return `<rect data-kind="calendar-cell" data-date="${escapeHtml(entry.date)}"${row >= 5 ? ' data-weekend="true"' : ""} x="${x}" y="${topPad + row * (cell + gap)}" width="${cell}" height="${cell}" rx="3" fill="${palette.calendar[level(activeMs)]}"><title>${escapeHtml(dayTip(entry.date, entry.day ?? null, weekend))}</title></rect>`;
         })
         .join("");
@@ -218,10 +230,10 @@ function calendarHeatmap(calendar, palette) {
     .map((total, row) => {
       const y = topPad + row * (cell + gap);
       const barWidth = (total / maxWeekday) * barArea;
-      return `<g><rect data-kind="weekday-bar" data-weekday="${row}" x="${barX}" y="${(y + cell * 0.12).toFixed(1)}" width="${Math.max(barWidth, total > 0 ? 1.5 : 0).toFixed(1)}" height="${(cell * 0.76).toFixed(1)}" rx="2" fill="${palette.input}" opacity="0.9"><title>${escapeHtml(`${weekdayLabels[row]} 累计 ${formatHours(total)}`)}</title></rect><text x="${barX + barArea + 5}" y="${(y + cell * 0.78).toFixed(1)}" font-size="9" fill="${palette.muted}">${total > 0 ? escapeHtml(formatHours(total)) : ""}</text></g>`;
+      return `<g><rect data-kind="weekday-bar" data-weekday="${row}" x="${barX}" y="${(y + cell * 0.12).toFixed(1)}" width="${Math.max(barWidth, total > 0 ? 1.5 : 0).toFixed(1)}" height="${(cell * 0.76).toFixed(1)}" rx="2" fill="${palette.input}" opacity="0.9"><title>${escapeHtml(t("tip.weekday", { weekday: weekdayLabels[row], total: formatHours(total) }))}</title></rect><text x="${barX + barArea + 5}" y="${(y + cell * 0.78).toFixed(1)}" font-size="9" fill="${palette.muted}">${total > 0 ? escapeHtml(formatHours(total)) : ""}</text></g>`;
     })
     .join("");
-  return `<div class="cal-scroll"><svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" style="max-width:100%;height:auto;display:block" role="img" aria-label="活跃日历">
+  return `<div class="cal-scroll"><svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" style="max-width:100%;height:auto;display:block" role="img" aria-label="${escapeHtml(t("cal.title"))}">
   ${weekdayLabelsSvg}
   ${cells}
   <line x1="${barX - 4}" y1="${topPad}" x2="${barX - 4}" y2="${topPad + 7 * (cell + gap) - gap}" stroke="${palette.border}" />
@@ -234,36 +246,46 @@ function calendarHeatmap(calendar, palette) {
  * 渲染工作区条形排行。
  * @param items - byWorkspace 数组。
  * @param palette - 色板。
- * @param metric - 排序指标。
+ * @param metric - 排序指标（保留参数，报告固定按时长排序）。
+ * @param rangeDays - 区间天数（小字分母）。
+ * @param t - 绑定语言的翻译函数。
+ * @param langTag - 该语言的 BCP 47 标签（日期格式用）。
  * @returns HTML 字符串。
  */
-function workspaceBars(items, palette, metric, rangeDays = 0) {
-  if (items.length === 0) return `<p class="empty">该区间没有数据</p>`;
-  const dateOf = (ms) => (Number.isFinite(ms) && ms > 0 ? new Date(ms).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" }) : "—");
+function workspaceBars(items, palette, metric, rangeDays = 0, t, langTag = localeTag("zh")) {
+  if (items.length === 0) return `<p class="empty">${escapeHtml(t("state.empty"))}</p>`;
+  const dateOf = (ms) => (Number.isFinite(ms) && ms > 0 ? new Date(ms).toLocaleDateString(langTag, { month: "2-digit", day: "2-digit" }) : "—");
   return `<ul class="bars">${items
     .map((item) => {
       const activePct = Math.max(0, Math.min(1, item.activeShare ?? 0)) * 100;
       const tokenPct = Math.max(0, Math.min(1, item.tokenShare ?? 0)) * 100;
-      const wait = item.waitMs > 0 ? ` · 等待用户 ${formatHours(item.waitMs)}` : "";
+      const footVars = {
+        sessions: formatInt(item.sessions),
+        conversations: formatInt(item.conversations),
+        avg: formatHours(item.avgActiveMsPerConversation ?? 0),
+      };
+      const foot = item.waitMs > 0
+        ? t("report.ws.foot.wait", { ...footVars, wait: formatHours(item.waitMs) })
+        : t("report.ws.foot", footVars);
       return `<li>
   <div class="ws-head">
-    <span class="ws-name">${escapeHtml(item.label)}</span>
-    <span class="ws-days">活跃 ${formatInt(item.activeDays ?? 0)} 天</span>
-    <span class="ws-meta">最近使用 ${escapeHtml(dateOf(item.lastUsedAt))}</span>
+    <span class="ws-name">${escapeHtml(item.label || t("common.unknownWorkspace"))}</span>
+    <span class="ws-days">${escapeHtml(t("ws.activeDays", { days: formatInt(item.activeDays ?? 0) }))}</span>
+    <span class="ws-meta">${escapeHtml(t("ws.lastUsed", { date: dateOf(item.lastUsedAt) }))}</span>
   </div>
   <div class="ws-metrics">
     <div class="ws-metric">
       <div class="m-value">${escapeHtml(formatHours(item.activeMs))}<span class="m-share">${escapeHtml(formatPercent(item.activeShare ?? 0))}</span></div>
       <div class="bar-track"><div class="bar-fill" style="width:${activePct.toFixed(2)}%"></div></div>
-      <div class="m-sub">活跃 ${formatInt(item.activeDays ?? 0)}/${formatInt(rangeDays)} 天 · ${formatInt(item.turns)} 轮 · ${formatInt(item.steps)} 步</div>
+      <div class="m-sub">${escapeHtml(t("metric.effortSub", { days: formatInt(item.activeDays ?? 0), total: formatInt(rangeDays), turns: formatInt(item.turns), steps: formatInt(item.steps) }))}</div>
     </div>
     <div class="ws-metric">
       <div class="m-value">${escapeHtml(formatTokens(item.tokensTotal))}<span class="m-share">${escapeHtml(formatPercent(item.tokenShare ?? 0))}</span></div>
       <div class="bar-track"><div class="bar-fill is-tokens" style="width:${tokenPct.toFixed(2)}%"></div></div>
-      <div class="m-sub">输出 ${escapeHtml(formatTokens(item.tokens.output))} · 缓存读取 ${escapeHtml(formatTokens(item.tokens.cacheRead))}</div>
+      <div class="m-sub">${escapeHtml(t("metric.tokensSub", { output: formatTokens(item.tokens.output), cache: formatTokens(item.tokens.cacheRead) }))}</div>
     </div>
   </div>
-  <div class="ws-foot">${formatInt(item.sessions)} 会话 · ${formatInt(item.conversations)} 次对话 · 平均每次对话 ${escapeHtml(formatHours(item.avgActiveMsPerConversation ?? 0))}${wait}</div>
+  <div class="ws-foot">${escapeHtml(foot)}</div>
 </li>`;
     })
     .join("")}</ul>`;
@@ -275,10 +297,11 @@ function workspaceBars(items, palette, metric, rangeDays = 0) {
  * 图例行：左侧三项解释颜色，右侧状态（回填中 / Token 未计入 N 个会话）。
  * @param hours - byHour 数组。
  * @param palette - 色板。
+ * @param t - 绑定语言的翻译函数（图例 / tooltip / aria 文案）。
  * @param status - hourTokensNote 的结果（可为 null）。
  * @returns SVG + 图例 + 状态行的 HTML 字符串。
  */
-function hourChart(hours, palette, status = null) {
+function hourChart(hours, palette, t, status = null) {
   const width = 520;
   const height = 210;
   // 顶部 64px 留给密度点与峰值数值；柱形区从这之下开始
@@ -300,7 +323,7 @@ function hourChart(hours, palette, status = null) {
       const isPeak = hour.hour === peak?.hour && tokens > 0;
       // 峰值柱用深蓝（palette.peak），人类消息点用 amber（palette.weekend），两者不撞色
       const fill = isPeak ? palette.peak : palette.input;
-      const title = `${hour.hour}:00–${hour.hour}:59 · Token ${formatInt(tokens)} · 轮次 ${formatInt(hour.starts ?? 0)} · 人类消息 ${formatInt(humans)}`;
+      const title = t("hour.tip", { hour: hour.hour, tokens: formatInt(tokens), turns: formatInt(hour.starts ?? 0), humans: formatInt(humans) });
       // 柱自带 tooltip，且 24 根柱恒存在（0 值给 1px），悬停总有提示
       return `<g><rect data-kind="hour-bar" x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${barW.toFixed(2)}" height="${Math.max(h, 1).toFixed(2)}" rx="2" fill="${fill}"><title>${escapeHtml(title)}</title></rect></g>`;
     })
@@ -322,7 +345,7 @@ function hourChart(hours, palette, status = null) {
       const r = hourDotRadius(maxHuman > 0 ? humans / maxHuman : 0);
       const cx = pad.left + step * index + step / 2;
       const cy = HOUR_DOT_TOP + r;
-      return `<circle data-kind="hour-dot" cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${r.toFixed(1)}" fill="${palette.weekend}" opacity="0.9"><title>${escapeHtml(`${hour.hour}:00 · 人类消息 ${formatInt(humans)}`)}</title></circle>`;
+      return `<circle data-kind="hour-dot" cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${r.toFixed(1)}" fill="${palette.weekend}" opacity="0.9"><title>${escapeHtml(t("hour.dotTip", { hour: hour.hour, humans: formatInt(humans) }))}</title></circle>`;
     })
     .join("");
   const labels = hours
@@ -334,13 +357,13 @@ function hourChart(hours, palette, status = null) {
     .join("");
   const legend = `<div class="legend hour-legend">
     <div class="legend-group">
-      <span class="legend-item" data-kind="legend-measure"><i class="legend-bar" style="background:${palette.input}"></i>Token 产出</span>
-      <span class="legend-item" data-kind="legend-humans"><i class="legend-dot" style="background:${palette.weekend}"></i>人类消息密度</span>
-      <span class="legend-item" data-kind="legend-peak"><i class="legend-peak" style="background:${palette.peak}"></i>峰值</span>
+      <span class="legend-item" data-kind="legend-measure"><i class="legend-bar" style="background:${palette.input}"></i>${escapeHtml(t("hour.legend.tokens"))}</span>
+      <span class="legend-item" data-kind="legend-humans"><i class="legend-dot" style="background:${palette.weekend}"></i>${escapeHtml(t("hour.legend.humans"))}</span>
+      <span class="legend-item" data-kind="legend-peak"><i class="legend-peak" style="background:${palette.peak}"></i>${escapeHtml(t("hour.legend.peak"))}</span>
     </div>
     ${status === null ? "" : `<span class="status" data-kind="hour-tokens-missing" data-state="${escapeHtml(status.state)}">${escapeHtml(status.text)}</span>`}
   </div>`;
-  return `<svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" role="img" aria-label="时刻分析：Token 产出与人类消息密度">
+  return `<svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" role="img" aria-label="${escapeHtml(t("report.hour.aria"))}">
   <line x1="${pad.left}" y1="${pad.top + innerH}" x2="${width - pad.right}" y2="${pad.top + innerH}" stroke="${palette.border}" />
   ${bars}
   ${peakLabel}
@@ -362,15 +385,16 @@ ${legend}`;
  * @param options.ariaLabel - 图形 aria-label。
  * @param options.centerLabel - 圆心下方小字（如「总活跃时长」「总 Token」）。
  * @param options.colors - 可选扇区色序。
+ * @param t - 绑定语言的翻译函数（空态 / others / tooltip）。
  * @returns HTML 字符串。
  */
-function sharePie(items, palette, { valueOf, format, ariaLabel, centerLabel, colors: customColors }) {
+function sharePie(items, palette, { valueOf, format, ariaLabel, centerLabel, colors: customColors }, t) {
   const active = items.filter((item) => valueOf(item) > 0);
-  if (active.length === 0) return `<p class="empty">该区间没有数据</p>`;
+  if (active.length === 0) return `<p class="empty">${escapeHtml(t("state.empty"))}</p>`;
   const colors = customColors ?? [palette.input, palette.output, palette.accent, "#f59e0b", "#f25a5a", "#a9b8ff", palette.cache];
   const top = active.slice(0, 6).map((item) => ({ label: item.label, value: valueOf(item), item }));
   const rest = active.slice(6);
-  if (rest.length > 0) top.push({ label: "others", value: rest.reduce((sum, item) => sum + valueOf(item), 0), item: null });
+  if (rest.length > 0) top.push({ label: t("pie.others"), value: rest.reduce((sum, item) => sum + valueOf(item), 0), item: null });
   const total = top.reduce((sum, slice) => sum + slice.value, 0) || 1;
   const radius = 62;
   const stroke = 24;
@@ -381,7 +405,7 @@ function sharePie(items, palette, { valueOf, format, ariaLabel, centerLabel, col
     .map((slice, index) => {
       const share = slice.value / total;
       const sweep = share * Math.PI * 2;
-      const arc = `<path d="${sectorPath(outer, inner, angle, angle + sweep)}" fill="${colors[index % colors.length]}" stroke="${palette.surface}" stroke-width="1.6" stroke-linejoin="round"><title>${escapeHtml(slice.label)}：${escapeHtml(format(slice.value))}（${escapeHtml(formatPercent(share))}）</title></path>`;
+      const arc = `<path d="${sectorPath(outer, inner, angle, angle + sweep)}" fill="${colors[index % colors.length]}" stroke="${palette.surface}" stroke-width="1.6" stroke-linejoin="round"><title>${escapeHtml(t("report.pie.tip", { label: slice.label, value: format(slice.value), share: formatPercent(share) }))}</title></path>`;
       angle += sweep;
       return arc;
     })
@@ -440,8 +464,15 @@ function layoutTreemap(items, x, y, w, h, out = []) {
   return out;
 }
 
-/** 模型占比 treemap（面积 = 占比），自带「模型占比 · 面积 = Token」小标题。 */
-function modelTreemap(models, palette, metric = "tokens") {
+/**
+ * 模型占比 treemap（面积 = 占比），自带「模型占比 · 面积 = Token」小标题。
+ * @param models - byModel 数组（label 已由调用方做「未标注模型」兜底）。
+ * @param palette - 色板。
+ * @param metric - tokens / requests / llmMs。
+ * @param t - 绑定语言的翻译函数。
+ * @returns HTML 字符串。
+ */
+function modelTreemap(models, palette, metric = "tokens", t) {
   const valueOf = (item) => (metric === "requests" ? item.requests : metric === "llmMs" ? item.llmMs : item.tokensTotal);
   const sorted = [...models].filter((item) => valueOf(item) > 0).sort((a, b) => valueOf(b) - valueOf(a));
   if (sorted.length === 0) return "";
@@ -450,7 +481,7 @@ function modelTreemap(models, palette, metric = "tokens") {
   const rest = sorted.slice(8);
   const cells = top.map((item, index) => ({ key: item.key, label: item.label, value: valueOf(item), color: series[index % series.length] }));
   if (rest.length > 0) {
-    cells.push({ key: "__others", label: "others", value: rest.reduce((sum, item) => sum + valueOf(item), 0), color: palette.muted });
+    cells.push({ key: "__others", label: t("pie.others"), value: rest.reduce((sum, item) => sum + valueOf(item), 0), color: palette.muted });
   }
   const total = cells.reduce((sum, cell) => sum + cell.value, 0);
   const rects = layoutTreemap(cells, 0, 0, 100, 56);
@@ -462,11 +493,18 @@ function modelTreemap(models, palette, metric = "tokens") {
     return '<g><title>' + escapeHtml(rect.label) + " · " + formatPercent(share) + '</title><rect x="' + rect.x.toFixed(2) + '" y="' + rect.y.toFixed(2) + '" width="' + Math.max(0.4, rect.w).toFixed(2) + '" height="' + Math.max(0.4, rect.h).toFixed(2) + '" fill="' + rect.color + '" stroke="' + palette.surface + '" stroke-width="0.4"/>' + name + pct + "</g>";
   });
   // height:auto + viewBox 固有比例 → SVG 铺满容器宽度，不再等比缩放后在左右留空白带
-  return '<h3 class="sub-title">模型占比 · 面积 = Token</h3><svg class="treemap" viewBox="0 0 100 56" width="100%" style="height:auto" role="img" aria-label="模型占比">' + parts.join("") + "</svg>";
+  return `<h3 class="sub-title">${escapeHtml(t("model.treemapTitle"))}</h3><svg class="treemap" viewBox="0 0 100 56" width="100%" style="height:auto" role="img" aria-label="${escapeHtml(t("model.treemap"))}">${parts.join("")}</svg>`;
 }
 
-/** 按日模型趋势（堆叠柱，取前 6 个模型）。 */
-function modelTrend(daily, models, palette) {
+/**
+ * 按日模型趋势（堆叠柱，取前 6 个模型）。
+ * @param daily - snapshot.modelDaily。
+ * @param models - byModel 数组（label 已兜底）。
+ * @param palette - 色板。
+ * @param t - 绑定语言的翻译函数。
+ * @returns HTML 字符串。
+ */
+function modelTrend(daily, models, palette, t) {
   const rows = (daily ?? []).filter((day) => Object.values(day.values ?? {}).length > 0);
   if (rows.length === 0) return "";
   const paletteSeries = modelSeries(palette);
@@ -489,9 +527,9 @@ function modelTrend(daily, models, palette) {
       if (h <= 0.3) return "";
       y -= h;
       // 每段 rect 自己有 title（父 <g> 的 title 在多数浏览器不弹）
-      return '<rect x="' + (centerX - barWidth / 2).toFixed(2) + '" y="' + y.toFixed(2) + '" width="' + barWidth.toFixed(2) + '" height="' + h.toFixed(2) + '" rx="1.2" fill="' + s.color + '"><title>' + escapeHtml(day.date + " · " + s.label + " " + formatInt(value) + " tokens") + "</title></rect>";
+      return `<rect x="${(centerX - barWidth / 2).toFixed(2)}" y="${y.toFixed(2)}" width="${barWidth.toFixed(2)}" height="${h.toFixed(2)}" rx="1.2" fill="${s.color}"><title>${escapeHtml(t("report.modelTrend.tip", { date: day.date, label: s.label, tokens: formatInt(value) }))}</title></rect>`;
     });
-    return '<g>' + rects.join("") + '<rect data-kind="model-trend-hit" x="' + (centerX - step / 2).toFixed(2) + '" y="' + pad.top + '" width="' + Math.max(step, 1).toFixed(2) + '" height="' + innerH + '" fill="transparent"><title>' + escapeHtml(day.date + " · " + formatInt(totalsPerDay[index]) + " tokens") + "</title></rect></g>";
+    return `<g>${rects.join("")}<rect data-kind="model-trend-hit" x="${(centerX - step / 2).toFixed(2)}" y="${pad.top}" width="${Math.max(step, 1).toFixed(2)}" height="${innerH}" fill="transparent"><title>${escapeHtml(t("report.modelTrend.total", { date: day.date, tokens: formatInt(totalsPerDay[index]) }))}</title></rect></g>`;
   });
   const every = Math.max(1, Math.ceil(rows.length / 8));
   const labels = rows.map((day, index) =>
@@ -500,43 +538,106 @@ function modelTrend(daily, models, palette) {
       : "",
   );
   const legend = series.map((s) => '<span class="legend-item"><i style="background:' + s.color + '"></i>' + escapeHtml(s.label) + "</span>").join("");
-  return '<h3 class="sub-title">按日模型趋势</h3><svg viewBox="0 0 ' + width + " " + height + '" width="100%" height="' + height + '" role="img" aria-label="按日模型趋势">' + bars.join("") + labels.join("") + '</svg><div class="legend">' + legend + "</div>";
+  return `<h3 class="sub-title">${escapeHtml(t("model.trend"))}</h3><svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" role="img" aria-label="${escapeHtml(t("model.trend"))}">${bars.join("")}${labels.join("")}</svg><div class="legend">${legend}</div>`;
 }
 
-/** 模型用量明细表 + 官方计费链接。 */
-function modelSection(snapshot, palette) {
-  const models = snapshot.byModel ?? [];
+/**
+ * 模型用量明细表 + 官方计费链接。
+ * @param snapshot - 快照。
+ * @param palette - 色板。
+ * @param t - 绑定语言的翻译函数。
+ * @returns HTML 字符串。
+ */
+function modelSection(snapshot, palette, t) {
+  // 数据层的未知模型 label 是空串（语言无关），展示层用词典兜底。
+  const models = (snapshot.byModel ?? []).map((item) => ({ ...item, label: item.label || t("common.unknownModel") }));
   if (models.length === 0) return "";
   const pricing = snapshot.pricing ?? { currency: "CNY", links: [], costed: { covered: 0, total: 0 }, totalCost: null, asOf: "" };
   const symbol = pricing.currency === "USD" ? "$" : "¥";
   const cost = (value) => (value === null || value === undefined ? "—" : symbol + (value < 1 ? value.toFixed(4) : value.toFixed(2)));
+  const linkText = (link) => (link.labelKey ? t(link.labelKey) : (link.label ?? link.provider));
   const rows = models
     .map(
-      (item) => '<tr><td class="ws">' + escapeHtml(item.label) + "</td><td>" + formatSpeed(item.speed) + "</td><td>" + formatTtft(item.ttft) + "</td><td title=\"" + escapeHtml(item.provider ?? "—") + "\">" + escapeHtml(formatProvider(item.provider)) + "</td><td>" + formatPercent(item.share) + "</td><td>" + formatInt(item.requests) + "</td><td>" + formatTokens(item.tokens.input) + "</td><td>" + formatTokens(item.tokens.output) + "</td><td>" + formatTokens(item.tokens.cacheRead) + "</td><td>" + (item.cacheHitRate === null || item.cacheHitRate === undefined ? "—" : formatPercent(item.cacheHitRate)) + "</td><td>" + cost(item.cost) + "</td></tr>",
+      (item) => '<tr><td class="ws">' + escapeHtml(item.label) + "</td><td>" + formatSpeed(item.speed) + "</td><td>" + formatTtft(item.ttft) + "</td><td title=\"" + escapeHtml(item.provider || "—") + "\">" + escapeHtml(formatProvider(item.provider)) + "</td><td>" + formatPercent(item.share) + "</td><td>" + formatInt(item.requests) + "</td><td>" + formatTokens(item.tokens.input) + "</td><td>" + formatTokens(item.tokens.output) + "</td><td>" + formatTokens(item.tokens.cacheRead) + "</td><td>" + (item.cacheHitRate === null || item.cacheHitRate === undefined ? "—" : formatPercent(item.cacheHitRate)) + "</td><td>" + cost(item.cost) + "</td></tr>",
     )
     .join("");
-  const links = (pricing.links ?? []).map((link) => '<a href="' + escapeHtml(link.url) + '">' + escapeHtml(link.label ?? link.provider) + "</a>").join(" · ");
-  const totalText = pricing.totalCost === null || pricing.totalCost === undefined ? "" : " · 合计 " + cost(pricing.totalCost);
+  const links = (pricing.links ?? []).map((link) => '<a href="' + escapeHtml(link.url) + '">' + escapeHtml(linkText(link)) + "</a>").join(" · ");
+  const costVars = { asOf: String(pricing.asOf ?? ""), covered: pricing.costed?.covered ?? 0, total: pricing.costed?.total ?? 0 };
+  const costNote = pricing.totalCost === null || pricing.totalCost === undefined
+    ? t("report.model.costNote", costVars)
+    : t("report.model.costNote.total", { ...costVars, totalCost: cost(pricing.totalCost) });
   return `<section class="card">
-  ${cardHead("模型用量", "左＝占比面积 · 右＝按日趋势")}
+  ${cardHead(t, "tab.model", "model.hint")}
   <div class="two-col">
-    <div>${modelTreemap(models, palette, "tokens")}</div>
-    <div>${modelTrend(snapshot.modelDaily, models, palette)}</div>
+    <div>${modelTreemap(models, palette, "tokens", t)}</div>
+    <div>${modelTrend(snapshot.modelDaily, models, palette, t)}</div>
   </div>
   <table>
-    <thead><tr><th>模型</th><th>速度 tok/s</th><th>首字延迟</th><th>供应商</th><th>占比</th><th>请求</th><th>输入</th><th>输出</th><th>缓存读</th><th>缓存命中</th><th>费用(估算)</th></tr></thead>
+    <thead><tr><th>${escapeHtml(t("model.col.model"))}</th><th>${escapeHtml(t("model.col.speed"))}</th><th>${escapeHtml(t("model.col.ttft"))}</th><th>${escapeHtml(t("model.col.provider"))}</th><th>${escapeHtml(t("model.col.share"))}</th><th>${escapeHtml(t("model.col.requests"))}</th><th>${escapeHtml(t("table.input"))}</th><th>${escapeHtml(t("table.output"))}</th><th>${escapeHtml(t("table.cache"))}</th><th>${escapeHtml(t("model.col.hitRate"))}</th><th>${escapeHtml(t("model.col.cost"))}</th></tr></thead>
     <tbody>${rows}</tbody>
   </table>
-  <p class="note-line">费用按官方公开单价估算（as-of ${escapeHtml(String(pricing.asOf ?? ""))}，${pricing.costed?.covered ?? 0}/${pricing.costed?.total ?? 0} 个模型有官方价${totalText}）；仅 DeepSeek 有官方价。</p>
-  <p class="note-line">官方计费标准（价格可能变动，以官方页面为准）：${links}</p>
+  <p class="note-line">${escapeHtml(costNote)}</p>
+  <p class="note-line">${escapeHtml(t("model.priceLinks"))} ${links}</p>
 </section>`;
 }
 
-/** 生成完整报告 HTML。 */
+/**
+ * 「主要会话」卡片：与看板同一套比例条（轮次 / 步骤 / 活跃时长 / 输出 Token）。
+ * 匿名化或 topSessions<=0 时整块不渲染（与旧行为一致）。
+ * @param snapshot - 快照。
+ * @param palette - 色板。
+ * @param t - 绑定语言的翻译函数。
+ * @param options.topSessions - 最多展示多少条会话。
+ * @param options.anonymize - 匿名化时不展示会话标题。
+ * @returns HTML 字符串。
+ */
+function sessionSection(snapshot, palette, t, { topSessions = 12, anonymize = false } = {}) {
+  if (anonymize || topSessions <= 0) return "";
+  const sessionRowsData = snapshot.bySession.slice(0, Math.max(0, topSessions));
+  const sessionColumns = [
+    { key: "turns", label: t("table.turns"), value: (row) => row.turns ?? 0, format: formatInt, kind: "turns" },
+    { key: "steps", label: t("table.steps"), value: (row) => row.steps ?? 0, format: formatInt, kind: "steps" },
+    { key: "activeMs", label: t("table.active"), value: (row) => row.activeMs ?? 0, format: formatHours, kind: "activeMs" },
+    { key: "output", label: t("report.session.outputToken"), value: (row) => row.tokens?.output ?? 0, format: formatTokens, kind: "output" },
+  ];
+  const sessionMaxima = Object.fromEntries(
+    sessionColumns.map((column) => [column.key, Math.max(1, ...sessionRowsData.map((row) => column.value(row)))]),
+  );
+  return `<section class="card">
+    ${cardHead(t, "tab.bySession", "report.session.hint")}
+    <table>
+      <thead><tr><th>${escapeHtml(t("table.session"))}</th><th>${escapeHtml(t("table.workspace"))}</th><th>${escapeHtml(t("table.date"))}</th>${sessionColumns.map((column) => `<th>${escapeHtml(column.label)}</th>`).join("")}</tr></thead>
+      <tbody>${sessionRowsData
+        .map(
+          (row) => `<tr><td class="ws">${escapeHtml(row.title || t("common.untitled"))}</td><td class="ws">${escapeHtml(row.workspaceLabel || t("common.unknownWorkspace"))}</td><td>${escapeHtml(row.date)}</td>${sessionColumns
+            .map((column) => {
+              const value = column.value(row);
+              return `<td>${barCell(value, sessionMaxima[column.key], column.format(value), column.kind, palette)}</td>`;
+            })
+            .join("")}</tr>`,
+        )
+        .join("")}</tbody>
+    </table>
+  </section>`;
+}
+
+/**
+ * 生成完整报告 HTML。
+ *
+ * 语言：`options.lang` 缺省保持 zh（既有离线测试 / 老调用方不改也能过）；
+ * 服务端路由与客户端导出会显式传 `lang`（query → Accept-Language → en）。
+ * 标题 `options.title` 留空时回落词典 `report.title`，因此配置里 defaultTitle 为空
+ * 也能得到本地化标题。
+ * @param snapshot - 快照（口径与看板一致）。
+ * @param options - `{ lang, theme, title, note, anonymize, topSessions, generatedAt, rangeKey }`。
+ * @returns 自包含 HTML 字符串。
+ */
 export function renderReport(snapshot, options = {}) {
+  const lang = languageOf(options?.lang ?? "zh");
+  const t = translator(lang);
+  const langTag = localeTag(lang);
   const {
     theme = "light",
-    title = "工作量报告",
     note = "",
     anonymize = false,
     topSessions = 12,
@@ -544,10 +645,20 @@ export function renderReport(snapshot, options = {}) {
     // 顶部区间筛选器：只做视觉呈现（报告无脚本、无失效链接）。rangeKey 决定哪一档高亮。
     rangeKey = "7",
   } = options;
+  /** 标题：显式传入优先（trim 后非空），否则走词典（配置 defaultTitle 可为空串）。 */
+  const title = String(options.title ?? "").trim() || t("report.title");
   const palette = PALETTES[theme === "dark" ? "dark" : "light"];
   const totals = snapshot.totals;
   const derived = snapshot.derived;
   const range = snapshot.range;
+  const scope = snapshot.scope;
+  // 顶部区间说明：整句一个键（带范围后缀的是另一个变体，避免拼接句子）。
+  // scope 只取 all / main / subagent，展示文案复用 scope.* 词典键。
+  const rangeVars = { from: range.from, to: range.to, days: range.days, timeZone: range.timeZone };
+  const rangeSummary = scope === undefined || scope === null || scope === "all"
+    ? t("report.range.summary", rangeVars)
+    : t("report.range.summary.scope", { ...rangeVars, scope: t(`scope.${scope}`) });
+  const generatedAtText = t("report.generatedAt", { time: new Date(generatedAt).toLocaleString(langTag, { hour12: false }) });
 
   // 时刻图状态行：复用看板同一判据（回填中 → 正在计算中……；空闲 → 未计入 N 个会话）
   const diagnostics = {
@@ -568,42 +679,43 @@ export function renderReport(snapshot, options = {}) {
   // 活跃时长 KPI 用净活跃（totals.activeMs 是官方值，含等待用户）；等待在副标题里单列
   const netActiveMs = totals.netActiveMs ?? totals.activeMs;
   const topModel = snapshot.topModel ?? null;
-  const topModelMetric = { requests: "请求", tokens: "Token", llmMs: "模型耗时" }[topModel?.metric] ?? "请求";
+  // 最活跃模型的「口径」是展示文案：请求 / Token / 模型耗时（短名复用词典）。
+  const topModelMetric = { requests: t("model.requests"), tokens: t("table.tokens"), llmMs: t("report.metric.llmMs") }[topModel?.metric] ?? t("model.requests");
   const kpis = [
-    ["kpi.active", formatHours(netActiveMs), `模型 ${formatHours(totals.llmMs)} · 工具 ${formatHours(totals.toolMs)} · 等待 ${formatHours(totals.waitMs ?? 0)}`],
-    ["kpi.tokens", formatInt(totals.tokensTotal), `输入 ${formatTokens(totals.tokens.input)} · 输出 ${formatTokens(totals.tokens.output)} · 缓存 ${formatTokens(totals.tokens.cacheRead)}`],
+    ["kpi.active", formatHours(netActiveMs), t("report.kpi.active.sub", { llm: formatHours(totals.llmMs), tool: formatHours(totals.toolMs), wait: formatHours(totals.waitMs ?? 0) })],
+    ["kpi.tokens", formatInt(totals.tokensTotal), t("kpi.tokens.sub", { input: formatTokens(totals.tokens.input), output: formatTokens(totals.tokens.output), cache: formatTokens(totals.tokens.cacheRead) })],
     [
       "kpi.modelShare",
       modelRequests > 0 ? formatPercent(modelLlmShare) : "—",
-      modelRequests > 0 ? `模型耗时 ${formatHours(modelLlmMs)} · ${formatInt(modelList.length)} 个模型` : "该区间没有模型记录",
+      modelRequests > 0 ? t("report.kpi.modelShare.sub", { llm: formatHours(modelLlmMs), models: formatInt(modelList.length) }) : t("kpi.modelShare.none"),
     ],
-    ["kpi.activeDays", `${formatInt(totals.activeDays)} / ${formatInt(range.days)}`, `覆盖 ${formatInt(totals.workspaces)} 个工作区`],
+    ["kpi.activeDays", `${formatInt(totals.activeDays)} / ${formatInt(range.days)}`, t("kpi.activeDays.sub", { workspaces: formatInt(totals.workspaces) })],
     // 对话次数与轮次合并（与看板一致，2.3.3）：步骤不再展示
-    ["kpi.conversations", `${formatInt(totals.conversations)} / ${formatInt(totals.turns)}`, `会话总数 ${formatInt(totals.sessions)}（含空会话 ${formatInt(totals.emptySessions)}）`],
+    ["kpi.conversations", `${formatInt(totals.conversations)} / ${formatInt(totals.turns)}`, t("report.kpi.conversations.sub", { sessions: formatInt(totals.sessions), empty: formatInt(totals.emptySessions) })],
     [
       "kpi.modelOutput",
       modelRequests > 0 ? formatInt(Math.round(modelOutputPerRequest)) : "—",
-      modelRequests > 0 ? `共 ${formatInt(modelRequests)} 次请求` : "该区间没有模型记录",
+      modelRequests > 0 ? t("kpi.modelOutput.sub", { requests: formatInt(modelRequests) }) : t("kpi.modelOutput.none"),
     ],
-    ["kpi.speed", formatSpeed(derived.outputSpeed), `首字 ${formatTtft(derived.ttftMean)}`],
-    ["kpi.cache", formatPercent(derived.cacheHitRate), `输出 ${formatTokens(derived.outputPerActiveHour)}/h`],
+    ["kpi.speed", formatSpeed(derived.outputSpeed), t("kpi.speed.sub", { ttft: formatTtft(derived.ttftMean) })],
+    ["kpi.cache", formatPercent(derived.cacheHitRate), t("kpi.cache.sub", { output: formatTokens(derived.outputPerActiveHour) })],
     [
       "kpi.topModel",
-      topModel === null ? "—" : topModel.label,
-      topModel === null ? "该区间没有模型记录" : `${topModelMetric}占比 ${formatPercent(topModel.metricShare)}`,
+      topModel === null ? "—" : (topModel.label || t("common.unknownModel")),
+      topModel === null ? t("kpi.topModel.none") : t("report.kpi.topModel.sub", { metric: topModelMetric, share: formatPercent(topModel.metricShare) }),
     ],
   ];
 
   // 按日期明细：与看板同一套列（日期 / 对话 / 轮次 / 活跃 / Token 合计 / 输入 / 输出 / 缓存），最近 31 天。
   const dailyColumns = [
-    { key: "date", label: "日期", text: (day) => day.date },
-    { key: "conversations", label: "对话", value: (day) => day.conversations ?? 0, format: formatInt, kind: "conversations" },
-    { key: "turns", label: "轮次", value: (day) => day.turns ?? 0, format: formatInt, kind: "turns" },
-    { key: "activeMs", label: "活跃时长", value: (day) => day.activeMs ?? 0, format: formatHours, kind: "activeMs" },
-    { key: "tokens", label: "Token", value: (day) => day.tokensTotal ?? 0, format: formatTokens, kind: "tokens" },
-    { key: "input", label: "输入", text: (day) => formatTokens(day.tokens?.input ?? 0) },
-    { key: "output", label: "输出", text: (day) => formatTokens(day.tokens?.output ?? 0) },
-    { key: "cache", label: "缓存读取", text: (day) => formatTokens(day.tokens?.cacheRead ?? 0) },
+    { key: "date", label: t("table.date"), text: (day) => day.date },
+    { key: "conversations", label: t("table.conversations"), value: (day) => day.conversations ?? 0, format: formatInt, kind: "conversations" },
+    { key: "turns", label: t("table.turns"), value: (day) => day.turns ?? 0, format: formatInt, kind: "turns" },
+    { key: "activeMs", label: t("table.active"), value: (day) => day.activeMs ?? 0, format: formatHours, kind: "activeMs" },
+    { key: "tokens", label: t("table.tokens"), value: (day) => day.tokensTotal ?? 0, format: formatTokens, kind: "tokens" },
+    { key: "input", label: t("table.input"), text: (day) => formatTokens(day.tokens?.input ?? 0) },
+    { key: "output", label: t("table.output"), text: (day) => formatTokens(day.tokens?.output ?? 0) },
+    { key: "cache", label: t("table.cache"), text: (day) => formatTokens(day.tokens?.cacheRead ?? 0) },
   ];
   const dailyRowsData = [...snapshot.byDay]
     .filter((day) => day.sessions > 0)
@@ -625,46 +737,35 @@ export function renderReport(snapshot, options = {}) {
     )
     .join("");
 
-  // 主要会话：与看板同一套比例条（轮次 / 步骤 / 活跃时长 / 输出 Token）。
-  const sessionRowsData = snapshot.bySession.slice(0, Math.max(0, topSessions));
-  const sessionColumns = [
-    { key: "turns", label: "轮次", value: (row) => row.turns ?? 0, format: formatInt, kind: "turns" },
-    { key: "steps", label: "步骤", value: (row) => row.steps ?? 0, format: formatInt, kind: "steps" },
-    { key: "activeMs", label: "活跃时长", value: (row) => row.activeMs ?? 0, format: formatHours, kind: "activeMs" },
-    { key: "output", label: "输出 Token", value: (row) => row.tokens?.output ?? 0, format: formatTokens, kind: "output" },
-  ];
-  const sessionMaxima = Object.fromEntries(
-    sessionColumns.map((column) => [column.key, Math.max(1, ...sessionRowsData.map((row) => column.value(row)))]),
-  );
-
   const workspaceRows = snapshot.byWorkspace
     .map(
-      (item) => `<tr><td class="ws">${escapeHtml(item.label)}</td><td>${formatInt(item.activeDays ?? 0)}</td><td>${formatInt(item.sessions)}</td><td>${formatInt(item.conversations)}</td><td>${formatInt(item.turns)}</td><td>${formatInt(item.steps)}</td><td>${formatHours(item.activeMs)}</td><td>${formatTokens(item.tokensTotal)}</td><td>${formatPercent(item.activeShare ?? 0)}</td><td>${formatPercent(item.tokenShare ?? 0)}</td></tr>`,
+      (item) => `<tr><td class="ws">${escapeHtml(item.label || t("common.unknownWorkspace"))}</td><td>${formatInt(item.activeDays ?? 0)}</td><td>${formatInt(item.sessions)}</td><td>${formatInt(item.conversations)}</td><td>${formatInt(item.turns)}</td><td>${formatInt(item.steps)}</td><td>${formatHours(item.activeMs)}</td><td>${formatTokens(item.tokensTotal)}</td><td>${formatPercent(item.activeShare ?? 0)}</td><td>${formatPercent(item.tokenShare ?? 0)}</td></tr>`,
     )
     .join("");
 
-  const sessionSection =
-    anonymize || topSessions <= 0
-      ? ""
-      : `<section class="card">
-    ${cardHead("主要会话", "条宽＝本列最大值")}
-    <table>
-      <thead><tr><th>会话</th><th>工作区</th><th>日期</th><th>轮次</th><th>步骤</th><th>活跃时长</th><th>输出 Token</th></tr></thead>
-      <tbody>${sessionRowsData
-        .map(
-          (row) => `<tr><td class="ws">${escapeHtml(row.title || "(无标题)")}</td><td class="ws">${escapeHtml(row.workspaceLabel)}</td><td>${escapeHtml(row.date)}</td>${sessionColumns
-            .map((column) => {
-              const value = column.value(row);
-              return `<td>${barCell(value, sessionMaxima[column.key], column.format(value), column.kind, palette)}</td>`;
-            })
-            .join("")}</tr>`,
-        )
-        .join("")}</tbody>
-    </table>
-  </section>`;
+  // 数据层的未知标签是空串（语言无关），饼图 / 表格展示时统一用词典兜底。
+  const workspacePieItems = snapshot.byWorkspace.map((item) => ({ ...item, label: item.label || t("common.unknownWorkspace") }));
+  const modelPieItems = (snapshot.byModel ?? []).map((item) => ({ ...item, label: item.label || t("common.unknownModel") }));
+
+  // 页脚口径长文：按段落拆成 report.footer.* 整句键；链接列表单独渲染。
+  const footerLinks = (snapshot.pricing?.links ?? [])
+    .map((link) => `<a href="${escapeHtml(link.url)}">${escapeHtml(link.labelKey ? t(link.labelKey) : (link.label ?? link.provider))}</a>`)
+    .join(" · ");
+  const footerTexts = {
+    active: t("report.footer.active", { wait: formatHours(totals.waitMs ?? 0) }),
+    // 字段名 <code> 是静态可信标记，作为占位符值原样插入（不是用户数据）。
+    officialField: t("report.footer.officialField", { field: "<code>totals.activeMs</code>" }),
+    wait: t("report.footer.wait"),
+    hour: t("report.footer.hour"),
+    sessions: t("report.footer.sessions", { timeZone: range.timeZone }),
+    model: t("report.footer.model"),
+    cost: t("report.footer.cost"),
+    priceLinks: t("report.footer.priceLinks"),
+    docs: t("report.footer.docs"),
+  };
 
   return `<!doctype html>
-<html lang="zh-CN">
+<html lang="${langTag}">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -800,91 +901,89 @@ export function renderReport(snapshot, options = {}) {
   <header class="hero">
     <div>
       <h1>${escapeHtml(title)}</h1>
-      <p class="range">${escapeHtml(range.from)} ~ ${escapeHtml(range.to)} · ${range.days} 天 · ${escapeHtml(range.timeZone)}${snapshot.scope === "all" ? "" : ` · 范围 ${escapeHtml(snapshot.scope)}`}</p>
+      <p class="range">${escapeHtml(rangeSummary)}</p>
     </div>
-    <div class="hero-meta">DeepSeek Harness<br />生成于 ${escapeHtml(new Date(generatedAt).toLocaleString("zh-CN", { hour12: false }))}</div>
+    <div class="hero-meta">DeepSeek Harness<br />${escapeHtml(generatedAtText)}</div>
   </header>
-  ${rangeFilter(rangeKey)}
+  ${rangeFilter(t, rangeKey)}
   ${note === "" ? "" : `<p class="note">${escapeHtml(note)}</p>`}
   <section class="kpis">
     ${kpis
       .map(
-        ([key, value, sub]) => `<div class="kpi" data-kpi="${escapeHtml(key)}"><div class="label">${escapeHtml(translate("zh", key))}</div><div class="value">${escapeHtml(value)}</div><div class="sub">${escapeHtml(sub)}</div></div>`,
+        ([key, value, sub]) => `<div class="kpi" data-kpi="${escapeHtml(key)}"><div class="label">${escapeHtml(t(key))}</div><div class="value">${escapeHtml(value)}</div><div class="sub">${escapeHtml(sub)}</div></div>`,
       )
       .join("")}
   </section>
 
   <div class="daily-plus-model">
     <section class="card">
-      ${cardHead("每日用量趋势", "颜色＝活跃时长")}
+      ${cardHead(t, "chart.daily", "report.daily.hint")}
       <div class="card-body">
-        <h3 class="sub-title">活跃日历（全部历史）</h3>
-        ${calendarHeatmap(snapshot.calendar, palette)}
+        <h3 class="sub-title">${escapeHtml(t("report.cal.subtitle"))}</h3>
+        ${calendarHeatmap(snapshot.calendar, palette, t)}
       </div>
     </section>
     <section class="card">
-      ${cardHead("模型 Token 占比", "环的大小＝各模型 Token 占比")}
+      ${cardHead(t, "pie.model", "pie.modelHint")}
       <div class="card-body">
-        ${sharePie(snapshot.byModel ?? [], palette, {
+        ${sharePie(modelPieItems, palette, {
           valueOf: (item) => item.tokensTotal ?? 0,
           format: formatTokens,
-          ariaLabel: "模型 Token 占比",
-          centerLabel: "总 Token",
+          ariaLabel: t("pie.model"),
+          centerLabel: t("pie.totalTokens"),
           colors: modelSeries(palette),
-        })}
+        }, t)}
       </div>
     </section>
   </div>
 
   <div class="two-col">
     <section class="card">
-      ${cardHead("时刻分析", "Tokens 口径 · 柱＝Token 产出 · 点＝人类消息密度")}
-      <div class="card-body">${hourChart(snapshot.byHour, palette, hourStatus)}</div>
+      ${cardHead(t, "hour.title", "report.hour.hint")}
+      <div class="card-body">${hourChart(snapshot.byHour, palette, t, hourStatus)}</div>
     </section>
     <section class="card">
-      ${cardHead("工作区占比", "按时长；Token 占比见下表")}
+      ${cardHead(t, "pie.title", "report.workspacePie.hint")}
       <div class="card-body">
-        ${sharePie(snapshot.byWorkspace, palette, {
+        ${sharePie(workspacePieItems, palette, {
           valueOf: (item) => item.activeMs ?? 0,
           format: formatHours,
-          ariaLabel: "工作区占比",
-          centerLabel: "总活跃时长",
-        })}
+          ariaLabel: t("pie.title"),
+          centerLabel: t("pie.totalTime"),
+        }, t)}
       </div>
     </section>
   </div>
 
   <section class="card">
-    ${cardHead("按日期明细", `最近 ${dailyRowsData.length} 天 · 条宽＝本列最大值`)}
+    ${cardHead(t, "report.daily.title", "report.daily.detailHint", { days: dailyRowsData.length })}
     <table>
       <thead><tr>${dailyColumns.map((column) => `<th>${escapeHtml(column.label)}</th>`).join("")}</tr></thead>
-      <tbody>${dailyRows || `<tr><td colspan="8" class="empty">该区间没有数据</td></tr>`}</tbody>
+      <tbody>${dailyRows || `<tr><td colspan="8" class="empty">${escapeHtml(t("state.empty"))}</td></tr>`}</tbody>
     </table>
   </section>
 
   <section class="card">
-    ${cardHead("按工作区分布")}
-    ${workspaceBars(snapshot.byWorkspace, palette, "activeMs", range.days)}
+    ${cardHead(t, "report.workspace.title")}
+    ${workspaceBars(snapshot.byWorkspace, palette, "activeMs", range.days, t, langTag)}
     <table>
-      <thead><tr><th>工作区</th><th>活跃天数</th><th>会话</th><th>对话</th><th>轮次</th><th>步骤</th><th>活跃时长</th><th>Token</th><th>时长占比</th><th>Token 占比</th></tr></thead>
-      <tbody>${workspaceRows || `<tr><td colspan="10" class="empty">该区间没有数据</td></tr>`}</tbody>
+      <thead><tr><th>${escapeHtml(t("table.workspace"))}</th><th>${escapeHtml(t("table.activeDays"))}</th><th>${escapeHtml(t("table.sessions"))}</th><th>${escapeHtml(t("table.conversations"))}</th><th>${escapeHtml(t("table.turns"))}</th><th>${escapeHtml(t("table.steps"))}</th><th>${escapeHtml(t("table.active"))}</th><th>${escapeHtml(t("table.tokens"))}</th><th>${escapeHtml(t("table.activeShare"))}</th><th>${escapeHtml(t("table.tokenShare"))}</th></tr></thead>
+      <tbody>${workspaceRows || `<tr><td colspan="10" class="empty">${escapeHtml(t("state.empty"))}</td></tr>`}</tbody>
     </table>
   </section>
-  ${modelSection(snapshot, palette)}
-  ${sessionSection}
+  ${modelSection(snapshot, palette, t)}
+  ${sessionSection(snapshot, palette, t, { topSessions, anonymize })}
 
   <footer>
-    活跃时长＝净活跃（模型＋工具时间，已剔除等待用户 ${escapeHtml(formatHours(totals.waitMs ?? 0))}；累计，非墙钟）。
-    官方 activeMs 保留在接口字段 <code>totals.activeMs</code> 供核对：净活跃 + 等待用户 = 官方 activeMs（守恒）。
-    等待用户＝交互工具（ask_user_question / exit_plan_mode 白名单）或工具调用期间夹着 user/message、且单次 ≥ 60s 的区间；
-    没有人类输入的长任务（编译 / 跑批）照常算工作。每日图同样用净活跃。
-    时刻图默认 Tokens 口径：柱＝按 assistant/message 消息时间落桶的 Token（与总量同口径），点＝user/message 条数；
-    轮次见主图下方小图。读不出事件日志的会话不计入 Token，图下标注数量。
-    对话＝有步骤的会话数；Token 取自官方投影；按会话创建日在 ${escapeHtml(range.timeZone)} 归属。
-    模型口径：一次 assistant/message = 一次请求；模型取自事件的 provider/model；各模型耗时按流式窗口占比分摊会话模型时间（守恒）。
-    费用＝按官方公开单价估算（DeepSeek 峰谷价：峰时 01:00-04:00 与 06:00-10:00 UTC 周一至周五，谷价为其半；中国法定节假日按峰价计入，略微高估），非官方账单。
-    官方计费标准：${(snapshot.pricing?.links ?? []).map((link) => `<a href="${escapeHtml(link.url)}">${escapeHtml(link.label ?? link.provider)}</a>`).join(" · ")}
-    口径详见仓库 docs/metrics.md。数据全部来自本机。
+    ${escapeHtml(footerTexts.active)}
+    ${footerTexts.officialField}
+    ${escapeHtml(footerTexts.wait)}
+    ${escapeHtml(footerTexts.hour)}
+    ${escapeHtml(footerTexts.sessions)}
+    ${escapeHtml(footerTexts.model)}
+    ${escapeHtml(footerTexts.cost)}
+    ${escapeHtml(footerTexts.priceLinks)}${footerLinks}
+    ${escapeHtml(footerTexts.docs)}
   </footer>
 </main>
 </body>

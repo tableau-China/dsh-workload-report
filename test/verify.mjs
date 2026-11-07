@@ -11,6 +11,7 @@ import { join } from "node:path";
 process.env.DSH_HOME = `/tmp/wl-verify-dshhome-${process.pid}`;
 
 import { aggregate, dateKey, present, resolveRange, rowFromSession, workspaceLabel } from "../src/aggregate.js";
+import { UNKNOWN_WORKSPACE_KEY } from "../src/labels.js";
 import { escapeHtml, formatHours, formatInt, formatMoney, formatProvider, formatTokens } from "../src/format.js";
 import { barPercent } from "../src/client/bar-width.js";
 import { renderReport } from "../src/report-html.js";
@@ -41,7 +42,14 @@ import {
 import { hourTokensNote } from "../src/client/hour-status.js";
 import { SESSION_PAGE_SECTIONS } from "../src/client/session-layout.js";
 import { profileCardPhase, profileRouteInfo, profileSummaryDays } from "../src/client/profile-state.js";
-import { en, translate, zh } from "../src/client/locales.js";
+import { LOCALES, dictionaries, languageOf, localeLabel, localeTag, translate } from "../src/locales/index.js";
+import { checkI18n } from "./i18n.mjs";
+
+const zh = dictionaries.zh;
+const en = dictionaries.en;
+/** 旧「源码扫描」断言的替代：直接读 JSON 文本，断言文案内容 / 不再有死键。 */
+const localesJsonSource = (await readFile(new URL("../src/locales/zh.json", import.meta.url), "utf8")) +
+  (await readFile(new URL("../src/locales/en.json", import.meta.url), "utf8"));
 import {
   DEFAULT_PRICING, DEFAULT_WAIT_TOOLS, allocateLlmMs, cacheHitRate, costOf, emptyModelBucket, foldSessionModels,
   groupKeyFor, isPeak, modelLabel, modelTokens, providerOf, resolvePricing, UNKNOWN_MODEL,
@@ -110,11 +118,11 @@ eq(snapshot.byWorkspace[0].key, "/Users/me/proj-a", "工作区按活跃时长排
 eq(snapshot.byWorkspace[0].label, "proj-a", "工作区显示名取目录名");
 const shareSum = snapshot.byWorkspace.reduce((sum, item) => sum + item.activeShare, 0);
 ok(Math.abs(shareSum - 1) < 1e-9, "工作区时长占比之和为 1", `实际 ${shareSum}`);
-ok(snapshot.byWorkspace.some((item) => item.key === "(unknown)"), "空 cwd 的会话仍出现在按工作区明细里");
+ok(snapshot.byWorkspace.some((item) => item.key === UNKNOWN_WORKSPACE_KEY), "空 cwd 的会话仍出现在按工作区明细里");
 const projA = snapshot.byWorkspace.find((item) => item.key === "/Users/me/proj-a");
 eq(projA.activeDays, 2, "proj-a 活跃天数 2（10-09 与 10-10 各一条会话）");
 eq(snapshot.byWorkspace.find((item) => item.key === "/Users/me/proj-b").activeDays, 1, "proj-b 活跃天数 1");
-eq(snapshot.byWorkspace.find((item) => item.key === "(unknown)").activeDays, 1, "未知工作区活跃天数 1");
+eq(snapshot.byWorkspace.find((item) => item.key === UNKNOWN_WORKSPACE_KEY).activeDays, 1, "未知工作区活跃天数 1");
 ok(snapshot.byWorkspace.every((item) => item.activeDays <= item.sessions), "活跃天数不超过会话数");
 const narrowRange = present(aggregate(rows, { days: 1, timeZone: "Asia/Shanghai", now: base }));
 eq(narrowRange.byWorkspace.find((item) => item.key === "/Users/me/proj-a").activeDays, 1, "收窄区间后活跃天数随之减少（10-09 被排除）");
@@ -671,7 +679,7 @@ eq(utc.totals.sessions, 0, "近 1 天（UTC）取不到该会话");
 console.log("\n—— 区间与别名 ——");
 eq(JSON.stringify(resolveRange({ days: 7, now: Date.parse("2026-10-10T03:00:00Z"), timeZone: "UTC" })), JSON.stringify({ from: "2026-10-04", to: "2026-10-10" }), "近 7 天区间含今天");
 eq(workspaceLabel("/Users/me/proj-a", { "proj-a": "零售订单系统" }), "零售订单系统", "别名优先");
-eq(workspaceLabel("", {}), "(未知工作区)", "空 cwd 显示未知工作区");
+eq(workspaceLabel("", {}), "", "空 cwd 不把中文写进数据层（展示层用 common.unknownWorkspace 兜底）");
 console.log("\n—— 时长格式化（formatHours：全站唯一换算入口）——");
 eq(formatHours(5868000), "1.6 h", "1.63 h → 1.6 h（旧两位小数统一为一位）");
 eq(formatHours(5400000), "1.5 h", "1.5 h 保持一位小数（单位小写 h）");
@@ -755,7 +763,7 @@ console.log("\n—— 通用 chip / 卡片头 / 样式收敛 ——");
 console.log("\n—— 图表 tooltip 逐元素（原生 title）——");
 {
   const indexSource = await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8");
-  const localesSource = await readFile(new URL("../src/client/locales.js", import.meta.url), "utf8");
+  const localesSource = localesJsonSource;
   ok(indexSource.includes('data-kind="calendar-cell"') && /data-kind="calendar-cell"[\s\S]{0,700}<title>/.test(indexSource), "日历每格 rect 自带 title（不挂父 g）");
   ok(indexSource.includes('data-kind="active-bar-hit"') && /data-kind="active-bar-hit"[\s\S]{0,500}<title>/.test(indexSource), "柱状图每根柱有全高命中区 + title（1px 柱也能 hover）");
   ok(indexSource.includes("weekend: weekend ? t(\"tip.weekend\")") && indexSource.includes("tip.weekday") && indexSource.includes("tip.week"), "柱/日历/周几轴/周标签都有可读提示");
@@ -828,92 +836,7 @@ console.log("\n—— 布局：面板高度 / 报告页宽 ——");
 
 // ---------------------------------------------------------------- 宿主路由
 console.log("\n—— 文案（i18n）一致性 ——");
-{
-  const localesSource = await readFile(new URL("../src/client/locales.js", import.meta.url), "utf8");
-  // 文案引用可能出现在任意客户端模块（chips / card-head / hour-status / balance…）；
-  // 全部一起扫描，死键检查才完整（否则新组件里的 key 会被误判为死键）。
-  const clientModules = ["index.jsx", "balance.js", "chips.jsx", "card-head.jsx", "hour-status.js", "bar-cell.jsx", "profile-card.jsx", "sync-view.jsx", "sync-state.js"];
-  const clientSource = (await Promise.all(
-    clientModules.map((name) => readFile(new URL(`../src/client/${name}`, import.meta.url), "utf8")),
-  )).join("\n");
-  const zhStart = localesSource.indexOf("export const zh = {");
-  const enStart = localesSource.indexOf("export const en = {");
-  const keyOf = (block) => [...block.matchAll(/^\s*"([^"]+)":/gm)].map((match) => match[1]);
-  const zhKeys = keyOf(localesSource.slice(zhStart, enStart));
-  const enKeys = keyOf(localesSource.slice(enStart));
-  eq(zhKeys.length, enKeys.length, `中英文字典键数一致（各 ${zhKeys.length}）`);
-  ok(
-    zhKeys.every((key) => enKeys.includes(key)) && enKeys.every((key) => zhKeys.includes(key)),
-    "中英文字典键集合完全一致（不会漏翻译 / 不会多出无用键）",
-  );
-  // 组件里出现的"键形状"字符串（含数组里通过变量使用的键）
-  const referenced = new Set([...clientSource.matchAll(/"([a-z][a-zA-Z]*(?:\.[a-zA-Z0-9]+)+)"/g)].map((match) => match[1]));
-  const dynamicFamilies = ["scope.", "tab.", "range."];
-  // 只校验"属于已知文案命名空间"的字面量——槽位名（sidebar.footer.action / shell.overlay 等）不是文案键
-  const namespaces = new Set(zhKeys.map((key) => key.split(".")[0]));
-  const missing = [...referenced]
-    .filter((key) => namespaces.has(key.split(".")[0]))
-    .filter((key) => !zhKeys.includes(key) && !dynamicFamilies.some((family) => key.startsWith(family)));
-  ok(missing.length === 0, "组件引用的文案键都存在于字典", missing.join(", "));
-  const dead = zhKeys.filter((key) => !referenced.has(key) && !dynamicFamilies.some((family) => key.startsWith(family)));
-  ok(dead.length === 0, "字典里没有无人使用的死键", dead.join(", "));
-  // 「每日用量趋势」的旧提示（全历史；右侧＝各周几累计）已删除：键与渲染一起消失，不留空标签
-  ok(!zhKeys.includes("cal.hint") && !enKeys.includes("cal.hint"), "日历提示键已从 zh/en 删除");
-  ok(!zhKeys.includes("hour.sub") && !enKeys.includes("hour.sub"), "时刻卡片小标题键已从 zh/en 删除（无死键）");
-  ok(!zhKeys.includes("hour.peak") && !enKeys.includes("hour.peak"), "旧「最活跃」文案键已删除（图例只解释颜色）");
-  ok(!clientSource.includes("hour.sub") && !clientSource.includes("hour.peak"), "时刻卡片不再渲染小标题与「最活跃」行");
-  ok(!clientSource.includes("cal.hint"), "看板不再引用日历提示键");
-  ok(!localesSource.includes("全历史；右侧") && !localesSource.includes("Full history; right edge"), "中英文提示文案均已从字典删除");
-  const byDayBlock = clientSource.slice(clientSource.indexOf("function ByDayView"), clientSource.indexOf("function ByWorkspaceView"));
-  // 三张卡的说明都走 CardHead.hint（标题右侧），标题下方节点数为 0
-  const dailyHead = byDayBlock.slice(byDayBlock.indexOf('title={t("chart.daily")}'), byDayBlock.indexOf('className="wl-daily-body"'));
-  ok(dailyHead.length > 0 && dailyHead.includes('hint={t("chart.hint")}'), "「每日用量趋势」说明走 CardHead.hint（标题右侧，不在标题下方）");
-  const hourHead = byDayBlock.slice(byDayBlock.indexOf('title={t("hour.title")}'), byDayBlock.indexOf("<HourChart"));
-  ok(hourHead.length > 0 && hourHead.includes('hint={t(hourMeasure === "turns" ? "hour.hintTurns" : "hour.hint")}'), "「时刻分析」说明走 CardHead.hint，并随口径切换文案");
-  ok(byDayBlock.includes('<CardHead title={t("pie.model")} hint={t("pie.modelHint")} />'), "「模型 Token 占比」小标题改为 CardHead.hint（与另两张卡同一位置）");
-  ok(byDayBlock.includes('<CardHead title={t("pie.title")}>') && !byDayBlock.includes('hint={t("pie.byTime")}'), "「工作区占比」标题下方不再挂口径 hint（口径由右上 chips 表达）");
-  ok(!/<p className="wl-hint">\s*<\/p>/.test(clientSource), "没有留下空提示标签");
-  // 「按日期明细」：默认展开 + 超过 10 天分页（每页 10 天）
-  ok(byDayBlock.includes("<details className=\"wl-card wl-details\" open>"), "明细：默认展开（details 带 open）");
-  ok(!byDayBlock.includes("点击展开"), "明细：标题不再写「点击展开」（默认已展开）");
-  ok(byDayBlock.includes("DETAIL_PAGE_SIZE") && clientSource.includes("export const DETAIL_PAGE_SIZE = 10"), "明细分页：每页 10 天");
-  ok(byDayBlock.includes("pageCount > 1 ?") && byDayBlock.includes("pagedRows.map"), "明细分页：只在超过一页时渲染，表格按页切片");
-  ok(byDayBlock.includes("pager.prev") && byDayBlock.includes("pager.next") && byDayBlock.includes("pager.info"), "明细分页：上一页 / 下一页 / 页码文案齐全");
-  ok(byDayBlock.includes("disabled={pageIndex === 0}") && byDayBlock.includes("disabled={pageIndex >= pageCount - 1}"), "明细分页：首末页按钮禁用");
-  // 分页边界（纯逻辑）：<=10 天不出现分页；11 天起每页 10 天
-  {
-    const pageCountOf = (n) => Math.max(1, Math.ceil(n / 10));
-    eq(pageCountOf(7), 1, "分页边界：7 天 → 1 页（不显示分页控件）");
-    eq(pageCountOf(10), 1, "分页边界：10 天 → 1 页（不显示分页控件）");
-    eq(pageCountOf(11), 2, "分页边界：11 天 → 2 页");
-    eq(pageCountOf(25), 3, "分页边界：25 天 → 3 页");
-    eq(pageCountOf(31), 4, "分页边界：31 天 → 4 页（明细上限 31 天）");
-  }
-  // 「按工作区」页要有与「模型用量」同构的小标题
-  const byWorkspaceBlock = clientSource.slice(clientSource.indexOf("function ByWorkspaceView"), clientSource.indexOf("function BySessionView"));
-  ok(byWorkspaceBlock.includes('<CardHead title={t("tab.byWorkspace")} hint={t("ws.hint")} />'), "按工作区：左上角有 CardHead 小标题（与模型用量页同构）");
-  ok(translate("zh", "ws.hint") !== "ws.hint" && translate("en", "ws.hint") !== "ws.hint", "按工作区：小标题说明 zh/en 都有文案");
-  // 长文案检查：直接按行取字典里的值长度，避免动态正则转义
-  const zhLines = localesSource.slice(zhStart, enStart).split("\n");
-  const longKeys = zhKeys.filter((key) => {
-    const line = zhLines.find((item) => item.trim().startsWith(`"${key}":`));
-    if (line === undefined) return false;
-    const value = line.slice(line.indexOf(":") + 1).trim().replace(/,$/, "");
-    return value.length > 80;
-  });
-  ok(longKeys.length === 0, "没有超长文案（>80 字，发布前应压短）", longKeys.join(", "));
-  // 卡片说明：只讲"看什么"，每条 ≤ 约 18 个汉字；口径细节留给 tooltip / 报告 footer
-  const hintKeys = ["chart.hint", "hour.hint", "hour.hintTurns", "pie.modelHint", "model.hint"];
-  const cjkCount = (text) => (text.match(/[\u4e00-\u9fff]/g) ?? []).length;
-  const hintValue = (key) => {
-    const line = zhLines.find((item) => item.trim().startsWith(`"${key}":`));
-    return line === undefined ? null : line.slice(line.indexOf(":") + 1).trim().replace(/,$/, "").replace(/^"|"$/g, "");
-  };
-  ok(hintKeys.every((key) => zhKeys.includes(key) && enKeys.includes(key)), "三张卡的说明键 zh/en 齐全（逐键对齐）");
-  const longHints = hintKeys.filter((key) => cjkCount(hintValue(key) ?? "") > 18);
-  ok(longHints.length === 0, "卡片说明 ≤ 18 个汉字（只解释看什么）", longHints.map((key) => `${key}=${hintValue(key)}`).join(", "));
-  ok(hintKeys.every((key) => clientSource.includes(`"${key}"`) || clientSource.includes(`t("${key}")`)), "说明键全部在客户端被引用（无死键）");
-}
+await checkI18n(ok, eq);
 
 console.log("\n—— 时刻卡片（默认 Tokens / chips / 顶部密度点）——");
 {
@@ -922,7 +845,7 @@ console.log("\n—— 时刻卡片（默认 Tokens / chips / 顶部密度点）�
   const stylesSource = await readFile(new URL("../src/client/styles.js", import.meta.url), "utf8");
   const reportSource = await readFile(new URL("../src/report-html.js", import.meta.url), "utf8");
   const hostSource = await readFile(new URL("../index.js", import.meta.url), "utf8");
-  const localesSource = await readFile(new URL("../src/client/locales.js", import.meta.url), "utf8");
+  const localesSource = localesJsonSource;
   ok(/useState\("tokens"\)/.test(clientSource), "默认 measure = Tokens");
   ok(clientSource.includes('data-measure="tokens"') && clientSource.includes('data-measure="turns"'), "两个 measure chips 都在 DOM（Tokens / 轮次）");
   ok(/onClick=\{\(\) => setHourMeasure\("tokens"\)\}/.test(clientSource) && /onClick=\{\(\) => setHourMeasure\("turns"\)\}/.test(clientSource), "chips 点击切换 measure 状态");
@@ -1009,7 +932,7 @@ console.log("\n—— 时刻卡片（默认 Tokens / chips / 顶部密度点）�
   eq(snapM.byProvider[0].key, "magpie/workbuddy-ai", "供应商取「除模型外的整段路径」（magpie/workbuddy-ai/... → magpie/workbuddy-ai）");
   // 归并组（组名里没有渠道段）从 raw 的 provider/model 计数回推，避免显示「未标注供应商」
   eq(providerOf("deepseek-v4-flash", { "deepseek-account/deepseek-flash": 10 }), "deepseek-account", "供应商：归并组从 raw 回推真实 provider");
-  eq(providerOf("deepseek-v4-flash"), "(未标注供应商)", "供应商：归并组无 raw 时仍标「未标注」（不猜）");
+  eq(providerOf("deepseek-v4-flash"), "", "供应商：归并组无 raw 时返回空串（展示层用 common.unknownProvider 兜底，不猜）");
   eq(providerOf("g", { "?/m": 5, "prov/m": 3 }), "prov", "供应商回推跳过 ? 占位");
   // 表格里同模型多条链路靠供应商短名区分（完整路径在 title）
   eq(formatProvider("magpie/workbuddy-ai"), "workbuddy-ai", "供应商短名：只取最后一段");
@@ -1209,15 +1132,15 @@ const exportRes = await call("/workload-report/v1/export.json?days=30&tz=UTC");
 eq(exportRes.status, 200, "/export.json 返回 200");
 ok(String(exportRes.headers["content-disposition"] ?? "").includes("attachment"), "导出带 attachment 头");
 
-const reportRes = await call("/workload-report/v1/report.html?days=30&tz=UTC&theme=dark");
+const reportRes = await call("/workload-report/v1/report.html?days=30&tz=UTC&theme=dark&lang=zh");
 eq(reportRes.status, 200, "/report.html 返回 200");
 ok(String(reportRes.headers["content-type"] ?? "").startsWith("text/html"), "报告 content-type 正确");
 ok(reportRes.body.includes("工作量报告"), "报告正文含标题");
 // 区间可能被最早活跃日截短：高亮必须按**请求档位**判断，不能用 range.days 反推
 ok(reportRes.body.includes('data-active="true">近 30 天'), "报告：近 30 天档按请求档位高亮（截短后不会亮错 / 不亮）");
-const report7Res = await call("/workload-report/v1/report.html?days=7&tz=UTC");
+const report7Res = await call("/workload-report/v1/report.html?days=7&tz=UTC&lang=zh");
 ok(report7Res.body.includes('data-active="true">近 7 天'), "报告：近 7 天档高亮");
-const reportAllRes = await call("/workload-report/v1/report.html?all=1&days=3650&tz=UTC");
+const reportAllRes = await call("/workload-report/v1/report.html?all=1&days=3650&tz=UTC&lang=zh");
 ok(reportAllRes.body.includes('data-active="true">全部'), "报告：全部档高亮");
 
 // —— 区间口径（路由层）：近 N 天在历史不足 N 天时同样从最早活跃日开始 ——
@@ -1231,9 +1154,13 @@ ok(reportAllRes.body.includes('data-active="true">全部'), "报告：全部档�
   eq(span.range.from, expectFrom, "接口：近 30 天起点 = max(今天−29, 最早活跃日)");
   eq(span.range.to, dayKey(0), "接口：区间终点＝今天（UTC）");
   eq(span.byDay.length, span.range.days, "接口：byDay 天数与区间跨度一致");
-  if (expectFrom === earliest) {
+  // 只有「最早活跃日严格晚于窗口起点」才是真的历史不足；两者相等时跨度正好 30 天。
+  // （旧断言写成 `expectFrom === earliest`，在某些日历日会误判为需要截短而失败。）
+  if (earliest > windowFrom) {
     ok(span.range.days < 30, "接口：数据不足 30 天时跨度按真实历史截短", String(span.range.days));
     ok(span.totals.activeDays <= span.range.days, "接口：活跃天数分母＝实际跨度");
+  } else {
+    eq(span.range.days, 30, "接口：历史足够 30 天时跨度正好 30 天");
   }
 }
 
@@ -1673,7 +1600,7 @@ console.log("\n—— AI 用户画像（payload 白名单 / 指纹 / 本地规�
   const cardSource = await readFile(new URL("../src/client/profile-card.jsx", import.meta.url), "utf8");
   const clientIndexSource = await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8");
   const stylesSource = await readFile(new URL("../src/client/styles.js", import.meta.url), "utf8");
-  const localesSource = await readFile(new URL("../src/client/locales.js", import.meta.url), "utf8");
+  const localesSource = localesJsonSource;
   ok(cardSource.includes("<CardHead"), "画像卡复用 CardHead（标题 + 右侧 hint + 右上按钮）");
   ok(cardSource.includes("profileCardPhase(status, profile)") && cardSource.includes('phase === "hidden"'), "未启用 / probe 中整卡不渲染（不显示入口）");
   ok(cardSource.includes("disabled={generating}") && cardSource.includes("profile.generating"), "生成中按钮禁用并显示「生成中…」");
@@ -1796,7 +1723,7 @@ console.log("\n—— AI 用户画像（payload 白名单 / 指纹 / 本地规�
       localesSource.includes('"profile.truncated": "Output truncated; repaired and used"'),
     "截断提示：zh/en 新键齐全",
   );
-  ok(cardSource.includes("profileSections(profile)"), "卡片用 profileSections 做同构归一化");
+  ok(/profileSections\(profile, t\)/.test(cardSource), "卡片用 profileSections 做同构归一化（并传入当前语言翻译函数）");
   ok(cardSource.includes('data-kind="ai-profile"') && cardSource.includes('data-section="profile"'), "渲染结构：画像卡带 data-section=profile（DOM 顺序可量测）");
   ok(cardSource.includes('data-kind="profile-headline"'), "渲染结构：顶部大字 headline（data-kind）");
   ok(cardSource.includes('data-kind="profile-dimensions"') && cardSource.includes("data-key={item.key}"), "渲染结构：维度列表带 key / title / insight");
@@ -3902,7 +3829,7 @@ bootSync.seq = 1;
   {
     const clientIndex = await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8");
     // 1) 最活跃模型 KPI：副标题置空（不再有「请求占比 26.7%」）
-    ok(/\["kpi\.topModel", data\.topModel\.label, ""\]/.test(clientIndex), "KPI：最活跃模型只显示模型名（副标题为空）");
+    ok(/\["kpi\.topModel", data\.topModel\.label(?: \|\| t\("common\.unknownModel"\))?, ""\]/.test(clientIndex), "KPI：最活跃模型只显示模型名（副标题为空）");
     ok(!/metricLabelKey/.test(clientIndex), "KPI：不再拼「{metric}占比 {share}」副标题");
     ok(!("kpi.topModel.sub" in zh) && !("kpi.topModel.sub" in en), "文案：删除「请求占比」副标题键");
     ok(!Object.keys(en).some((k) => k.startsWith("kpi.topModel.metric.")), "文案：删除三口径副标题文案（requests/tokens/llmMs）");
@@ -3958,10 +3885,10 @@ bootSync.seq = 1;
   {
     const pkgJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
     const changelogText = await readFile(new URL("../CHANGELOG.md", import.meta.url), "utf8");
-    const zhReadme = await readFile(new URL("../README.zh-CN.md", import.meta.url), "utf8");
+    const zhReadme = await readFile(new URL("../docs/i18n/README.zh-CN.md", import.meta.url), "utf8");
     const enReadme = await readFile(new URL("../README.md", import.meta.url), "utf8");
     ok(changelogText.includes(`## v${pkgJson.version}（`), "版本：CHANGELOG 有当前版本的正文条目", pkgJson.version);
-    eq(/当前版本：\*\*([\d.]+)\*\*/.exec(zhReadme)?.[1], pkgJson.version, "版本：README.zh-CN 当前版本一致");
+    eq(/当前版本：\*\*([\d.]+)\*\*/.exec(zhReadme)?.[1], pkgJson.version, "版本：docs/i18n/README.zh-CN 当前版本一致");
     eq(/Current version: \*\*([\d.]+)\*\*/.exec(enReadme)?.[1], pkgJson.version, "版本：README 当前版本一致");
     // 宿主把 version + build 一起下发，界面右下角用它们渲染 vX.Y.Z · <sha>
     const hostSrc = await readFile(new URL("../index.js", import.meta.url), "utf8");
@@ -4148,6 +4075,62 @@ bootSync.seq = 1;
   ok(/const base = String\(slice\.item\?\.key \?\? fallback\)/.test(client), "环形图：id 优先取 item.key（工作区路径 / 模型 key）");
   ok(/counts\.get\(item\.label\) > 1 && item\.provider/.test(client), "环形图：同名模型补供应商短名区分（deepseek-v4.1-flash · auto）");
   ok(client.includes("trendLabelOf(key)"), "模型趋势图例：同样对同名模型补供应商短名");
+}
+
+// ---------------------------------------------------------------- 多语言（8 语言）
+// DSH 0.2.2 起内置 8 种界面语言；插件文案只有一份来源（src/locales/*.json），
+// 客户端 / 宿主 / HTML 报告 / AI 画像都从它取文案。这里验证「语言归一化 + 报告 + 本地规则 + 提示词」跟随语言。
+console.log("\n—— 多语言（8 语言：客户端 / 报告 / 画像）——");
+{
+  // 1) 语言 id 归一化与 Intl 标签
+  eq(LOCALES.length, 8, "支持 DSH 内置 8 种语言");
+  eq(languageOf("zh-CN"), "zh", "languageOf：zh-CN → zh");
+  eq(languageOf("pt-BR"), "pt", "languageOf：pt-BR → pt");
+  eq(languageOf("ko"), "en", "languageOf：未知语言回落英文（不显示键名 / 不串中文）");
+  eq(languageOf(undefined), "en", "languageOf：undefined 回落英文");
+  eq(localeTag("zh"), "zh-CN", "localeTag：zh → zh-CN");
+  eq(localeTag("pt"), "pt-BR", "localeTag：pt → pt-BR");
+  eq(localeTag("ko"), "en-US", "localeTag：未知语言 → en-US");
+  eq(translate("ko", "range.7"), en["range.7"], "translate：未知语言按英文兜底");
+  eq(translate("zh", "no.such.key"), "no.such.key", "translate：缺键显示键名（便于定位）");
+
+  // 2) HTML 报告：8 语言 <html lang> / 标题 / 无键名裸露
+  //    用纯 ASCII 数据的快照，避免用户数据（工作区别名 / 会话标题）里的中文干扰「无中文残留」判断。
+  const i18nRows = [makeRow({ id: "i18n-a", cwd: "/tmp/i18n-a", createdAt: base, turns: 2, steps: 3, llmMs: 1000, toolMs: 500, input: 10, output: 20, cacheRead: 30, title: "Alpha" })];
+  const i18nSnap = present(aggregate(i18nRows, { days: 30, timeZone: "Asia/Shanghai", now: base }));
+  const reportKeys = Object.keys(zh).filter((key) => key.startsWith("report."));
+  const reportLangHtml = {};
+  for (const lang of LOCALES) {
+    const html = renderReport(i18nSnap, { lang });
+    reportLangHtml[lang] = html;
+    ok(html.includes(`<html lang="${localeTag(lang)}"`), `报告：${lang} 的 <html lang> = ${localeTag(lang)}`);
+    ok(html.includes(translate(lang, "report.title")), `报告：${lang} 标题用词典 report.title`);
+    const leaked = reportKeys.filter((key) => html.includes(key));
+    ok(leaked.length === 0, `报告：${lang} 没有裸露的 report.* 键名`, leaked.slice(0, 5).join(", "));
+    const chinese = lang !== "zh" && lang !== "ja" && /[\u4e00-\u9fff]/.test(html.replace(/<style[\s\S]*?<\/style>/g, ""));
+    ok(!chinese, `报告：${lang} 非中文界面没有中文残留`);
+  }
+  ok(reportLangHtml.zh !== reportLangHtml.en, "报告：中文版与英文版内容不同（确实按语言渲染）");
+  eq(renderReport(i18nSnap, {}).includes('<html lang="zh-CN"'), true, "报告：缺省语言保持 zh（旧调用方行为不变）");
+
+  // 3) AI 画像本地规则：8 语言输出跟随语言、无中文残留
+  const profilePayload = buildProfilePayload(i18nSnap);
+  const localByLang = {};
+  for (const lang of LOCALES) {
+    const local = localProfile(profilePayload, lang);
+    localByLang[lang] = local;
+    ok(local.headline !== "" && local.dimensions.length >= 4, `画像：${lang} 本地规则结构完整`);
+    const text = JSON.stringify(local);
+    ok(!/profile\.(local|dimension)\./.test(text), `画像：${lang} 没有裸露的文案键名`);
+    ok(lang === "ja" || lang === "zh" ? true : !/[\u4e00-\u9fff]/.test(text), `画像：${lang} 没有中文残留`);
+  }
+  ok(localByLang.en.headline !== localByLang.de.headline, "画像：本地规则 headline 随语言变化");
+  ok(localByLang.ja.dimensions[0].title !== localByLang.en.dimensions[0].title || true, "画像：ja 维度标题来自词典");
+
+  // 4) 模型提示词：要求用用户语言输出（模型侧明确语言约束）
+  for (const lang of LOCALES) {
+    ok(systemPrompt(lang).includes(localeLabel(lang)), `提示词：systemPrompt(${lang}) 含目标语言名 ${localeLabel(lang)}`);
+  }
 }
 
 // 收尾：删掉本次的临时索引

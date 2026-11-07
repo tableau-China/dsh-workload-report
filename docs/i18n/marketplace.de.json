@@ -1,0 +1,19 @@
+{
+  "language": "de",
+  "title": "DSH Workload-Report: Token-Nutzung und Arbeitszeit",
+  "tagline": "Arbeitszeit und Token-Verbrauch nach Datum, Workspace und Modell — mit eigenständigem HTML-Report.",
+  "description": "DSH-Plugin (DeepSeek Harness) für Arbeitszeit und Token-Nutzung: Kalender-Heatmap, Tageszeit-Analyse, Modellgeschwindigkeit, TTFT und geschätzte Kosten. HTML-Report als eigenständige, anonymisierbare Datei; KI-Profil nur aus Aggregaten und auf Klick; Sync optional; 8 Sprachen.",
+  "category": "usage",
+  "keywords": [
+    "DeepSeek Harness",
+    "DSH Plugin",
+    "Workload-Report",
+    "Token-Nutzung",
+    "Arbeitszeit",
+    "Nutzungs-Dashboard",
+    "HTML-Report",
+    "Modellnutzung",
+    "KI-Nutzerprofil",
+    "Multi-Device-Sync"
+  ]
+}

@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { formatInt } from "../format.js";
+import { localeTag } from "../locales/index.js";
 import { profileSections } from "../profile-view.js";
 import { CardHead } from "./card-head.jsx";
 import { profileCardPhase, profileRouteInfo, profileSummaryDays } from "./profile-state.js";
@@ -30,11 +31,11 @@ const CODE_KEYS = {
   AI_FAILED: "profile.code.failed",
 };
 
-/** 生成时间的小字格式：只到分钟，跟随界面语言。 */
+/** 生成时间的小字格式：只到分钟，跟随界面语言（8 种语言的 Intl 标签统一由 localeTag 提供）。 */
 function timeText(ms, lang) {
   if (!Number.isFinite(Number(ms)) || Number(ms) <= 0) return "";
   try {
-    return new Date(Number(ms)).toLocaleString(lang === "zh" ? "zh-CN" : "en-US", {
+    return new Date(Number(ms)).toLocaleString(localeTag(lang), {
       month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
     });
   } catch {
@@ -44,7 +45,8 @@ function timeText(ms, lang) {
 
 /**
  * @param props.t - 翻译函数。
- * @param props.lang - zh | en（决定文案与缓存语言）。
+ * @param props.lang - 任意 DSH 界面语言 id（zh / en / ja / es / fr / de / ru / pt），
+ *   同时作为 /profile 的缓存语言与词典语言。
  * @param props.days - 当前区间天数（画像请求会抬到至少 minDays）。
  * @param props.scope - all | main | subagent。
  * @param props.allTime - 是否「全部」区间。
@@ -156,7 +158,7 @@ export function ProfileCard({ t, lang = "zh", days, scope, allTime = false, tz }
   const usage = profile?.usage;
   const generatedAt = profile?.generatedAt;
   const timestamp = timeText(generatedAt, lang);
-  const view = phase === "result" ? profileSections(profile) : null;
+  const view = phase === "result" ? profileSections(profile, t) : null;
   const summaryDays = profileSummaryDays(profile, probe, Math.max(30, Number(days) || 0));
   const route = profileRouteInfo(probe);
 

@@ -1,0 +1,8 @@
+{
+  "language": "es",
+  "title": "Informe de carga de trabajo para DSH",
+  "tagline": "Tiempo de trabajo y uso de tokens en una vista, con informe HTML para clientes.",
+  "description": "Plugin de DeepSeek Harness (DSH): tiempo de trabajo y uso de tokens por fecha, espacio de trabajo, modelo y sesión. Calendario, análisis por hora, TTFT, coste estimado e informe HTML autocontenido para clientes. Perfil con IA bajo demanda, sincronización opcional y 8 idiomas.",
+  "category": "usage",
+  "keywords": ["DeepSeek Harness", "plugin DSH", "informe de carga", "uso de tokens", "tiempo de trabajo", "panel de uso", "espacio de trabajo", "informe HTML", "perfil con IA", "sincronización multidispositivo", "token usage", "workload report"]
+}

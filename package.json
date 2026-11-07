@@ -1,7 +1,7 @@
 {
   "name": "dsh-workload-report",
-  "version": "2.4.1",
-  "description": "DeepSeek Harness (DSH) plugin — see your effort and token usage by date and workspace: calendar heatmap, time-of-day analysis, workspace share, a shareable self-contained HTML report, and multi-device sync (Tencent COS / GitHub / Gitea / shared folder).",
+  "version": "2.5.0",
+  "description": "DeepSeek Harness (DSH) plugin: workload, active time and token usage by date, workspace and model — calendar heatmap, model cost/speed, a client-ready self-contained HTML report, AI usage profile, multi-device sync, and 8 interface languages.",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -16,7 +16,6 @@
     "src",
     "cordis.patch.yml",
     "README.md",
-    "README.zh-CN.md",
     "CHANGELOG.md",
     "LICENSE",
     "docs"
@@ -24,10 +23,12 @@
   "scripts": {
     "build": "node build.mjs",
     "verify": "node test/verify.mjs",
-    "test": "node test/verify.mjs",
+    "test": "node test/verify.mjs && node test/i18n.mjs",
     "bench:open": "node test/bench-open.mjs",
     "e2e:boot": "./test/e2e-boot.sh",
     "e2e": "node test/e2e-ui.mjs",
+    "e2e:i18n": "node test/e2e-i18n.mjs",
+    "check:i18n": "node test/i18n.mjs",
     "check:release": "node test/check-release.mjs"
   },
   "keywords": [
@@ -53,7 +54,24 @@
     "multi-device",
     "cos",
     "tencent-cos",
-    "object-storage"
+    "object-storage",
+    "token-usage",
+    "usage-tracking",
+    "ai-coding",
+    "developer-productivity",
+    "analytics",
+    "html-report",
+    "ai-agent",
+    "llm",
+    "local-first",
+    "deepseek-harness-plugin",
+    "工作量报告",
+    "Token 使用量",
+    "トークン使用量",
+    "Token-Nutzung",
+    "utilisation des tokens",
+    "uso de tokens",
+    "использование токенов"
   ],
   "author": {
     "name": "XILEJUN",
@@ -69,7 +87,8 @@
     "url": "https://github.com/tableau-China/dsh-workload-report/issues"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22",
+    "dsh": ">=0.2.1-alpha.0"
   },
   "dsh": {
     "bundle": {

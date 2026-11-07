@@ -8,7 +8,8 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { STYLES } from "./styles.js";
-import { NS, en, languageOf, translate, zh } from "./locales.js";
+import { NS, dictionaries, languageOf, localeTag, translate } from "../locales/index.js";
+import { UNKNOWN_MODEL_KEY } from "../labels.js";
 import { formatHours, formatInt, formatMoney, formatPercent, formatProvider, formatSpeed, formatTtft, formatTokens } from "../format.js";
 import { TABLEAU10 } from "../palette.js";
 import { balanceChip } from "./balance.js";
@@ -105,13 +106,13 @@ function createPanelControl() {
 /** 模块级 locale 运行时（与宿主 locale 服务订阅）。 */
 let localeRuntime = null;
 
-/** 读取当前语言并给出翻译函数。 */
-const FALLBACK_LOCALE = { active: "zh", revision: 0 };
+/** locale 服务不可用时的占位快照：与宿主一致，默认英文。 */
+const FALLBACK_SNAPSHOT = { active: "en", revision: 0 };
 
 function useLocale() {
   const snapshot = useSyncExternalStore(
     (callback) => (typeof localeRuntime?.subscribe === "function" ? localeRuntime.subscribe(callback) : () => {}),
-    () => (typeof localeRuntime?.getSnapshot === "function" ? localeRuntime.getSnapshot() : FALLBACK_LOCALE),
+    () => (typeof localeRuntime?.getSnapshot === "function" ? localeRuntime.getSnapshot() : FALLBACK_SNAPSHOT),
   );
   const lang = languageOf(snapshot.active);
   return { lang, t: (key, vars) => translate(lang, key, vars) };
@@ -561,7 +562,7 @@ export { sectorPath };
  * 环形占比图（Top N + others）：工作区按时长 / Token 可切换；模型固定 Token（不切换）。
  * 首页「模型 Token 占比」直接复用本组件——几何、色板、描边只有这一份实现。
  */
-function WorkspacePie({ items, t, metric = "activeMs", ariaLabel = null, fullLabels = false }) {
+function WorkspacePie({ items, t, metric = "activeMs", ariaLabel = null, fullLabels = false, unknownKey = null }) {
   const slices = useMemo(() => {
     const valueOf = (item) => (metric === "activeMs" ? item.activeMs : item.tokensTotal);
     const sorted = [...items].filter((item) => valueOf(item) > 0).sort((a, b) => valueOf(b) - valueOf(a));
@@ -579,13 +580,14 @@ function WorkspacePie({ items, t, metric = "activeMs", ariaLabel = null, fullLab
       used.add(id);
       return { ...slice, id };
     };
-    const slicesOut = top.map((item, index) => withId({ label: item.label, value: valueOf(item), item }, `slice-${index}`));
+    const labelOf = (item) => item.label || (unknownKey === null ? "" : t(unknownKey));
+    const slicesOut = top.map((item, index) => withId({ label: labelOf(item), value: valueOf(item), item }, `slice-${index}`));
     if (rest.length > 0) {
-      slicesOut.push(withId({ label: "others", value: rest.reduce((sum, item) => sum + valueOf(item), 0), item: null }, "__others"));
+      slicesOut.push(withId({ label: t("pie.others"), value: rest.reduce((sum, item) => sum + valueOf(item), 0), item: null }, "__others"));
     }
     const total = slicesOut.reduce((sum, slice) => sum + slice.value, 0);
     return { slices: slicesOut, total };
-  }, [items, metric]);
+  }, [items, metric, t, unknownKey]);
 
   const palette = TABLEAU10;
 
@@ -888,9 +890,10 @@ function ModelSection({ data, t }) {
     return (key) => {
       const item = models.find((entry) => entry.key === key);
       if (item === undefined) return key;
+      const label = item.label || t("common.unknownModel");
       return (counts.get(item.label) ?? 0) > 1 && item.provider
-        ? `${item.label} · ${formatProvider(item.provider)}`
-        : item.label;
+        ? `${label} · ${formatProvider(item.provider)}`
+        : label;
     };
   })();
 
@@ -898,9 +901,9 @@ function ModelSection({ data, t }) {
   const cells = useMemo(() => {
     const top = ranked.filter((item) => metricValue(item) > 0).slice(0, 8);
     const rest = ranked.filter((item) => metricValue(item) > 0).slice(8);
-    const list = top.map((item) => ({ key: item.key, label: item.label, value: metricValue(item), item }));
+    const list = top.map((item) => ({ key: item.key, label: item.label || t("common.unknownModel"), value: metricValue(item), item }));
     if (rest.length > 0) {
-      list.push({ key: "__others", label: "others", value: rest.reduce((sum, item) => sum + metricValue(item), 0), item: null });
+      list.push({ key: "__others", label: t("pie.others"), value: rest.reduce((sum, item) => sum + metricValue(item), 0), item: null });
     }
     return list;
   }, [ranked, metric, t]);
@@ -1044,7 +1047,7 @@ function ModelSection({ data, t }) {
               <td>
                 <button type="button" className="wl-model-name" onClick={() => toggle(item.key)}>
                   <i style={{ background: colorOf(item.key) }} />
-                  {item.label}
+                  {item.label || t("common.unknownModel")}
                 </button>
                 {Object.keys(item.raw ?? {}).length > 1 ? (
                   <span className="wl-hint wl-hint-block">{t("model.merged", { list: Object.keys(item.raw).map((k) => k.split("/").pop()).join(" + ") })}</span>
@@ -1080,7 +1083,7 @@ function ModelSection({ data, t }) {
         {(pricing.links ?? []).map((link, index) => (
           <span key={link.url}>
             {index > 0 ? " · " : ""}
-            <a href={link.url} target="_blank" rel="noreferrer noopener">{link.label ?? link.provider}</a>
+            <a href={link.url} target="_blank" rel="noreferrer noopener">{link.labelKey ? t(link.labelKey) : (link.label ?? link.provider)}</a>
           </span>
         ))}
       </p>
@@ -1197,8 +1200,8 @@ function layoutTreemap(items, x, y, w, h, out = []) {
   return out;
 }
 
-/** 未标注模型的 key（与宿主 src/models.js 保持一致）。 */
-const UNKNOWN_KEY = "(\u672a\u6807\u6ce8\u6a21\u578b)";
+/** 未标注模型的归并键：数据层与宿主共用（展示文案走 common.unknownModel）。 */
+const UNKNOWN_KEY = UNKNOWN_MODEL_KEY;
 
 /** KPI 卡片组；data 为 null 时渲染骨架（标签先就位，只有数值位显示「加载中…」）。 */
 function Kpis({ data, t }) {
@@ -1292,7 +1295,7 @@ function Kpis({ data, t }) {
     data.topModel === null || data.topModel === undefined
       ? ["kpi.topModel", "\u2014", t("kpi.topModel.none")]
       // 只显示模型名：不再带「请求占比 26.7%」这类副标题（用户要求，2.1.1）
-      : ["kpi.topModel", data.topModel.label, ""],
+      : ["kpi.topModel", data.topModel.label || t("common.unknownModel"), ""],
   ];
   return (
     <div className="wl-kpis">
@@ -1434,7 +1437,7 @@ function ByDayView({ data, t }) {
         {models.length === 0 ? (
           <p className="wl-state">{isModelFolding(data) ? t("model.folding") : t("state.empty")}</p>
         ) : (
-          <WorkspacePie items={models} t={t} metric="tokens" ariaLabel={t("pie.model")} fullLabels />
+          <WorkspacePie items={models} t={t} metric="tokens" ariaLabel={t("pie.model")} fullLabels unknownKey="common.unknownModel" />
         )}
       </div>
       </div>
@@ -1474,7 +1477,7 @@ function ByDayView({ data, t }) {
               <Chip active={pieMetric === "tokens"} onClick={() => setPieMetric("tokens")}>{t("pie.byTokens")}</Chip>
             </ChipGroup>
           </CardHead>
-          <WorkspacePie items={data.byWorkspace} t={t} metric={pieMetric} />
+          <WorkspacePie items={data.byWorkspace} t={t} metric={pieMetric} unknownKey="common.unknownWorkspace" />
         </div>
       </div>
 
@@ -1549,14 +1552,14 @@ function ByDayView({ data, t }) {
  *   右「我的付出 / Token 消耗」= 两条同口径 bar（各占全部的比例）+ 明细小字
  * 名称不占用 bar 上方的纵向空间，项目名更突出；两条 bar 口径一致，可比较性不变。
  */
-function ByWorkspaceView({ data, t }) {
+function ByWorkspaceView({ data, t, lang }) {
   const items = data.byWorkspace;
   const pct = (share) => `${(Math.max(0, Math.min(1, share ?? 0)) * 100).toFixed(2)}%`;
   // 会话 / 轮次：`conversations` 的口径是"至少 1 个 step 的会话数"，天然 ≈ 会话数；
   // 真正表示"对话了几次"的是轮次（turns），所以这里展示 sessions + turns，并给轮次一条 bar。
   const totalTurns = items.reduce((sum, item) => sum + (item.turns ?? 0), 0) || 1;
   const avgPerTurn = (item) => (item.turns > 0 ? item.activeMs / item.turns : 0);
-  const dateOf = (ms) => (ms > 0 ? new Date(ms).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" }) : "—");
+  const dateOf = (ms) => (ms > 0 ? new Date(ms).toLocaleDateString(localeTag(lang), { month: "2-digit", day: "2-digit" }) : "—");
 
   return (
     <>
@@ -1579,7 +1582,7 @@ function ByWorkspaceView({ data, t }) {
                 {/* 名称独立成左列：与右侧两条 bar 同处一行，名称不再压在 bar 上方 */}
                 <div className="wl-ws-row" data-kind="ws-row">
                   <div className="wl-ws-left">
-                    <span className="wl-ws-name" title={item.path}>{item.label}</span>
+                    <span className="wl-ws-name" title={item.path}>{item.label || t("common.unknownWorkspace")}</span>
                     <span className="wl-ws-days">{t("ws.activeDays", { days: formatInt(item.activeDays ?? 0) })}</span>
                     <span className="wl-ws-meta">{t("ws.lastUsed", { date: dateOf(item.lastUsedAt) })}</span>
                   </div>
@@ -1648,7 +1651,7 @@ function ByWorkspaceView({ data, t }) {
             ) : (
               items.map((item) => (
                 <tr key={item.key}>
-                  <td className="wl-name" title={item.path}>{item.label}</td><td>{formatInt(item.activeDays ?? 0)}</td>
+                  <td className="wl-name" title={item.path}>{item.label || t("common.unknownWorkspace")}</td><td>{formatInt(item.activeDays ?? 0)}</td>
                   <td>{formatInt(item.sessions)}</td><td>{formatInt(item.conversations)}</td><td>{formatInt(item.turns)}</td>
                   <td>{formatInt(item.steps)}</td><td>{formatHours(item.activeMs)}</td><td>{formatTokens(item.tokensTotal)}</td>
                   <td>{formatPercent(item.activeShare)}</td><td>{formatPercent(item.tokenShare)}</td>
@@ -1731,8 +1734,8 @@ function BySessionView({ data, t, lang = "zh", days = 0, scope = "all", allTime 
                   ) : (
                     rows.map((row) => (
                       <tr key={row.id}>
-                        <td className="wl-name" title={row.title}>{row.title || "(无标题)"}</td>
-                        <td className="wl-name">{row.workspaceLabel}</td>
+                        <td className="wl-name" title={row.title}>{row.title || t("common.untitled")}</td>
+                        <td className="wl-name">{row.workspaceLabel || t("common.unknownWorkspace")}</td>
                         <td>{row.date}</td>
                         {SESSION_METRICS.map(({ key, labelKey, format }) => {
                           const value = sessionMetric(row, key);
@@ -1839,7 +1842,7 @@ function Overlay({ control }) {
       scope,
       tz: localTimeZone(),
       theme: isDarkTheme() ? "dark" : "light",
-      title: lang === "zh" ? "工作量报告" : "Workload Report",
+      lang,
     });
     if (allTime) query.set("all", "1");
     window.open(`${API_PATH}/report.html?${query.toString()}`, "_blank", "noopener");
@@ -1940,7 +1943,7 @@ function Overlay({ control }) {
               </div>
               {tab === "byDay" ? <ByDayView data={state.data} t={t} /> : null}
               {tab === "model" ? <ModelSection data={state.data} t={t} /> : null}
-              {tab === "byWorkspace" ? <ByWorkspaceView data={state.data} t={t} /> : null}
+              {tab === "byWorkspace" ? <ByWorkspaceView data={state.data} t={t} lang={lang} /> : null}
               {tab === "bySession" ? (
                 <BySessionView data={state.data} t={t} lang={lang} days={days} scope={scope} allTime={allTime} />
               ) : null}
@@ -1993,7 +1996,7 @@ export function apply(ctx) {
 
   ctx.effect(() => {
     localeRuntime = ctx.locale;
-    const unregister = ctx.locale.register(NS, { zh, en });
+    const unregister = ctx.locale.register(NS, dictionaries);
     return () => {
       unregister();
       if (localeRuntime === ctx.locale) localeRuntime = null;

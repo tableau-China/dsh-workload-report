@@ -1,20 +1,27 @@
 # Workload Report for DSH
 
 > **See your effort and your token spend on the same picture** — by **date** and by **workspace**: a calendar heatmap, time-of-day analysis, workspace share, model usage, and a **one-click self-contained HTML report** you can send straight to a client.
-> A DeepSeek Harness (DSH) plugin. Current version: **2.4.1**.
+> A DeepSeek Harness (DSH) plugin. Current version: **2.5.0**.
 
 [![npm](https://img.shields.io/npm/v/dsh-workload-report?style=flat-square&logo=npm)](https://www.npmjs.com/package/dsh-workload-report)
 [![license](https://img.shields.io/github/license/tableau-China/dsh-workload-report?style=flat-square)](./LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/tableau-China/dsh-workload-report/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/tableau-China/dsh-workload-report/actions)
 [![node](https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&logo=node.js)](https://nodejs.org)
 
-[中文](./README.zh-CN.md) · English
+[中文](./docs/i18n/README.zh-CN.md) · [日本語](./docs/i18n/README.ja.md) · [Deutsch](./docs/i18n/README.de.md) · [Français](./docs/i18n/README.fr.md) · [Español](./docs/i18n/README.es.md) · [Русский](./docs/i18n/README.ru.md) · [Português](./docs/i18n/README.pt.md) · English
 
 ## What it is
 
 DSH shows stats for the **current session**. This plugin adds the cross-session, cross-project, cross-time view: which dates and which workspaces your effort went to, which hours you were productive, which models consumed the tokens, and what it cost — plus a static report for clients, teammates or monthly reviews.
 
 **Not only cost, but the work behind it.** Active time, active days and turns show what you actually did; tokens and estimated cost show what it consumed. Numbers use the same definitions everywhere, so the dashboard and the exported report agree.
+
+## Who it is for
+
+- **Freelancers and studios** who need to show a client where the time went — instead of saying "I was busy".
+- **Developers using several models** who want active time, tokens, speed and estimated cost in one place, per date and per workspace.
+- **Anyone preparing a monthly or project review** who would rather export one self-contained HTML report than build a spreadsheet.
+- **Multi-machine setups**: merge usage from your laptop and desktop with the optional device sync.
 
 ## Install & entry point
 
@@ -29,9 +36,32 @@ dsh plugin --profile web add github:tableau-China/dsh-workload-report#v2.0.0
 dsh plugin --profile web add link:$PWD
 ```
 
-Restart the Web profile after installing. The entry appears at the **bottom of the sidebar**: **Workload report** (**工作量报告** in Chinese). The built client bundle (`lib/client.js`) is committed, so installing from GitHub/npm needs no local build.
+**DSH Desktop**: open **Settings → Plugins**, search for `dsh-workload-report`, and install it there — no command line needed. For `dsh web`, run the command above and restart the Web profile.
+
+The entry appears at the **bottom of the sidebar**: **Workload report** — its label follows the DSH interface language (8 languages, see [Languages](#languages)). The built client bundle (`lib/client.js`) is committed, so installing from GitHub/npm needs no local build.
 
 Uninstall: `dsh plugin --profile web remove dsh-workload-report`.
+
+## Languages
+
+The plugin has **no language setting of its own**: the dashboard, the exported HTML report, the AI-profile card (local fallback rules *and* model output), the sync dialogs and their server-side error messages all follow the **DSH interface language** (Settings → General → Language) and switch live.
+
+| Language | Locale id | Dashboard | HTML report | AI profile | Sync dialogs |
+| --- | --- | --- | --- | --- | --- |
+| English | `en` | ✓ | ✓ | ✓ | ✓ |
+| 中文（简体） | `zh` | ✓ | ✓ | ✓ | ✓ |
+| 日本語 | `ja` | ✓ | ✓ | ✓ | ✓ |
+| Español | `es` | ✓ | ✓ | ✓ | ✓ |
+| Français | `fr` | ✓ | ✓ | ✓ | ✓ |
+| Deutsch | `de` | ✓ | ✓ | ✓ | ✓ |
+| Русский | `ru` | ✓ | ✓ | ✓ | ✓ |
+| Português (Brasil) | `pt` | ✓ | ✓ | ✓ | ✓ |
+
+- **Single source of truth**: every user-visible string lives in `src/locales/<lang>.json`; `zh.json` is the key baseline and `en.json` is the fallback. `npm run check:i18n` enforces identical key sets, key order and `{placeholders}` across all 8 languages, plus "no hard-coded copy in source" and "no dead keys".
+- **Report language**: the exported report is rendered server-side with `?lang=<id>` (the dashboard passes the active language). `<html lang>` and date formatting follow the language; the methodology footer is translated too.
+- **AI profile**: the model is explicitly asked to write the headline / dimensions / advice / risk in the active language; the deterministic local fallback uses the same dictionaries.
+- **Sync / server messages**: user-visible results and errors carry a stable code + params; the client renders them from the dictionaries, so no raw server-side Chinese leaks into another language.
+- **Adding a language**: copy `en.json`, translate, register it in `src/locales/index.js` — full workflow in [docs/i18n.md](./docs/i18n.md), terminology in [docs/i18n-glossary.md](./docs/i18n-glossary.md). On DSH versions without the locale service (pre-0.2.2), only `zh` / `en` are selectable and the plugin keeps working.
 
 ## Data sources & principles
 
@@ -53,9 +83,18 @@ Uninstall: `dsh plugin --profile web remove dsh-workload-report`.
 - **By workspace**: three bars per row — **sessions / turns · my effort · token spend** (one shared scale); the workspace list carries its own card head with a one-line hint (same structure as the model-usage page).
 - **Export a self-contained HTML report**: one file with inline CSS and inline SVG, **no scripts and no external assets**; light/dark themes, custom title/note, optional `anonymize=1` to hide workspace names and session titles. The report mirrors the dashboard: nine KPIs, a calendar plus a **model token-share donut** (two independent cards whose widths align exactly with the time-of-day / workspace rows below), hourly density dots + turns mini-chart, ratio bars, and the same definitions. A **static range filter** at the top highlights the current range — visual only, with no links. Only official pricing pages are linked.
 - **GitHub Star entry**: "GitHub logo + ★ Star" in the **top-right** of the panel, opening the repo in a new tab; deliberately **not** in the exported report (the report goes to clients, whose only external links are official pricing pages).
-- **Theme and locale aware**: **data visualisation uses the Tableau 10 palette** (`src/palette.js`, identical in the dashboard and the exported report); UI chrome (buttons / tabs / links) keeps host theme tokens (`--dsw-*`) so it follows the harness light/dark theme. All UI strings are aligned between Chinese and English.
+- **Theme and locale aware**: **data visualisation uses the Tableau 10 palette** (`src/palette.js`, identical in the dashboard and the exported report); UI chrome (buttons / tabs / links) keeps host theme tokens (`--dsw-*`) so it follows the harness light/dark theme. The dashboard, exported report, AI profile and sync dialogs are **localised into all 8 languages** shipped by DSH 0.2.2 (English, Chinese, Japanese, Spanish, French, German, Russian, Brazilian Portuguese) and follow the host language live — see [Languages](#languages).
 - **AI user profile (included by default, manual trigger)**: a dedicated top-level tab at the **right end of the navigation** (blue-tinted, distinct from the other tabs); the Top sessions tab keeps its sessions table only. It shows a three-line notice first and calls the model only after you click Generate. It generates a headline + 4–6 numeric dimensions + 2–3 advice items + risk from **aggregate statistics only** (window = max(current range, 30 days)) — never conversations, titles, or paths. The same statistics fingerprint reuses the disk cache; any failure falls back to deterministic local rules. See [AI user profile](#ai-user-profile).
 - **Fast open**: opening the panel triggers **zero** event-log reads (`readSession`); cold open 25 ms, warm open ~1 ms (measured on an isolated instance). Model folding is driven by background timers, never by opening the panel.
+
+## What's new in 2.5.0
+
+- **Six new interface languages**: Japanese, Spanish, French, German, Russian and Brazilian Portuguese — alongside English and Chinese. The dashboard, exported report, AI profile and sync dialogs all follow the DSH language live, with an English fallback for anything untranslated.
+- **One dictionary source**: UI copy moved from a single JS file with two languages to per-language JSON dictionaries (`src/locales/*.json`, 398 keys) shared by the browser half, the Node half and the static report. `npm run check:i18n` guards key-set / key-order / placeholder parity.
+- **The HTML report is language-aware**: `?lang=` on `/report.html` renders the whole report (including the methodology footer) in that language; `<html lang>` and dates follow it.
+- **AI profile follows the language**: the model is told to write in the active language, and the deterministic local fallback rules are fully translated (whole-sentence templates with `{placeholders}` instead of string concatenation).
+- **No Chinese server-side leaks**: sync / settings / credential results now return a stable `code` + `params`; the client renders them from the dictionaries (falling back to the server message only for unknown codes).
+- **Data layer is language-neutral**: unknown workspace / model / provider / session-title labels are no longer baked into the API payloads — each surface renders its localised placeholder.
 
 ## What's new in 2.4.0
 
@@ -243,6 +282,36 @@ Parameters: `from`/`to` (YYYY-MM-DD, take precedence over `days`), `days`, `all=
 - Deleting the index is safe: the plugin cold-reads historical sessions again. Cold reads use official interfaces and concurrency 8 (about 2 minutes for 300+ sessions on the author's machine).
 - Very early **v0-format sessions** may not be readable at all. They are excluded from statistics and the UI reports how many; the time-of-day card shows **“Token 未计入 N 个会话”** when their token distribution cannot be read.
 
+## FAQ
+
+### How do I see my total token usage across all DSH sessions?
+
+Install the plugin, restart DSH, and open **Workload report** at the bottom of the sidebar. The **Total tokens** KPI sums every session in the selected range (today / 7 / 30 / 90 days / all time); the daily table and the workspace and model tabs break it down. Unlike a per-session stats line, this view is cross-session, cross-project and cross-device.
+
+### How is this different from a token or cost dashboard?
+
+Token and cost dashboards answer "how much did it consume?". This plugin answers **"where did my effort go?"** — it measures **active time** (model time + tool time, with waiting-for-user time excluded), attributes it to **dates and workspaces**, and puts it next to token usage. You can see a 46%-of-effort project, a 3.7 B-token month, and a client-ready report — from the same data.
+
+### Can I send the report to a client or my manager?
+
+Yes. **Export HTML report** produces one self-contained file (inline CSS and SVG, no scripts, no external assets) that opens anywhere. Use `anonymize=1` to hide workspace names and session titles, and `title` / `note` to brand it. The report mirrors the dashboard: nine KPIs, calendar heatmap, model token share, time-of-day analysis, workspace share and detail tables — with the metric definitions in the footer, so the numbers are explainable.
+
+### Can I merge usage from several computers?
+
+Yes, optionally. Device sync merges per-session aggregate rows from several machines through **Tencent COS, GitHub, Gitea or a shared folder** (iCloud / Syncthing / NAS). It is **off by default** and only syncs the numbers — no conversation content, titles, prompts or attachments. Each device writes its own file, so there is nothing to merge by hand.
+
+### Does the plugin send my data anywhere?
+
+No, by default everything stays on your machine. The plugin registers **read-only** local HTTP routes, uses only official DSH interfaces, and writes only its own local index and cache. Two features can use the network and are opt-in: the balance chip (off by default) and the AI profile (only after you click Generate; it sends aggregate statistics only). The exported report is a local file.
+
+### Which interface languages are supported?
+
+The dashboard, the exported report, the AI profile and the sync dialogs follow the **DSH interface language** and are localized into all 8 languages shipped with DSH 0.2.2: English, Chinese, Japanese, Spanish, French, German, Russian and Brazilian Portuguese. Switching the language in **Settings → General → Language** switches the plugin live — no reload, no plugin setting.
+
+### How do I install it in DSH Desktop or dsh web?
+
+In **DSH Desktop**: Settings → Plugins → search `dsh-workload-report` → install. In **dsh web**: `dsh plugin add dsh-workload-report`, then restart the Web profile. You can also install from GitHub (`dsh plugin --profile web add github:tableau-China/dsh-workload-report#main`). The built client bundle is committed, so no local build is required.
+
 ## Documentation
 
 | Document | What it covers |
@@ -252,6 +321,9 @@ Parameters: `from`/`to` (YYYY-MM-DD, take precedence over `days`), `days`, `all=
 | [docs/ui-conventions.md](./docs/ui-conventions.md) | Shared UI components, card heads, legend/status rules, tooltip rules |
 | [docs/report-parity.md](./docs/report-parity.md) | Dashboard → report parity checklist, intentional differences, structural assertions |
 | [docs/ai-profile.md](./docs/ai-profile.md) | AI user profile: whitelist payload, cache fingerprint, fallback codes, privacy |
+| [docs/discoverability.md](./docs/discoverability.md) | How this project is made discoverable: keywords, channels, submission checklists, launch plan |
+| [docs/i18n.md](./docs/i18n.md) | 8-language architecture, maintenance rules, how to add a language |
+| [docs/i18n-glossary.md](./docs/i18n-glossary.md) | Terminology and translation rules for translators |
 | [docs/preaggregation.md](./docs/preaggregation.md) | Pre-aggregation assessment: measurements, costs, trigger conditions (verdict: not needed yet) |
 | [CHANGELOG.md](./CHANGELOG.md) | Version history and testing notes |
 | [PROGRESS.md](./PROGRESS.md) | Decisions, measurements, environment gotchas and release notes |
@@ -270,15 +342,17 @@ All statistics stay on your machine. The plugin registers **read-only** HTTP rou
 | --- | --- |
 | `pnpm add -D esbuild puppeteer-core` | Install build and browser-test dependencies (or point `ESBUILD_PATH` / `WL_PUPPETEER_DIR` at existing installs) |
 | `node build.mjs` | Bundle `src/client/` into `lib/client.js` (ModuleLoader factory format) with esbuild |
-| `node test/verify.mjs` | **1608 offline assertions**: aggregation semantics with one shared range rule, time zones, turn-based hour bucketing and conservation, hourly tokens by message time, human-message density, wait exclusion (all three rules + long-task exemption + `excludeWait:false` regression), index/read fallbacks, report structure parity, the AI-profile tab as a right-aligned navigation entry, the 30-day profile window, multi-device sync (payload / merge / credentials / settings / device filter / pull-cache persistence), output-speed and TTFT definitions, zero model calls on first open, i18n key alignment, and balance states |
+| `node test/verify.mjs` | **1738 offline assertions**: aggregation semantics with one shared range rule, time zones, turn-based hour bucketing and conservation, hourly tokens by message time, human-message density, wait exclusion (all three rules + long-task exemption + `excludeWait:false` regression), index/read fallbacks, report structure parity, the AI-profile tab as a right-aligned navigation entry, the 30-day profile window, multi-device sync (payload / merge / credentials / settings / device filter / pull-cache persistence), output-speed and TTFT definitions, zero model calls on first open, i18n key alignment, balance states, and 8-language rendering (dashboard helpers / report / AI profile / prompt) |
 | `./test/e2e-boot.sh 3299` | Boot an **isolated instance** (own DSH_HOME and port) without touching your running GUI |
+| `node test/i18n.mjs` | **I18n dictionary checks** (85 assertions): key sets / order / placeholders / empty values / untranslated / hard-coded copy / dead keys across all 8 languages; `--lang de` checks one language |
 | `node test/e2e-ui.mjs` | Real-browser E2E: calendar/bar switching, geometry, donuts, report export, time-of-day card |
+| `node test/e2e-i18n.mjs` | Real-browser E2E in all 8 languages: injects `navigator.languages`, opens the panel and the HTML report, asserts copy against the dictionaries and saves screenshots |
 
 CI runs `build.mjs` + `verify.mjs`, and fails if the committed `lib/client.js` differs from a fresh build.
 
 ## Compatibility
 
-- DSH `0.2.x`, **including `alpha` prereleases** (developed and verified against `@deepseek-ai/dsh@0.2.1-alpha.2`). The plugin depends only on official interfaces (`sessionProjections` / `sessionProjectionCache` / `sessionQuery`) and Node built-ins, never on internal file formats.
+- DSH `0.2.x`, **including `alpha` prereleases** (developed and verified against `@deepseek-ai/dsh@0.2.1-alpha.2` and `0.2.2-rc.1`). The manifest declares `engines.dsh >= 0.2.1-alpha.0` with **no upper bound**, so upgrading DSH to a newer 0.x build does not exclude the plugin by version range; newer versions are allowed to load but only the versions above are explicitly verified. The plugin depends only on official interfaces (`sessionProjections` / `sessionProjectionCache` / `sessionQuery`) and Node built-ins, never on internal file formats.
 - The first launch cold-reads historical sessions whose projection checkpoints are missing; the API returns progressively filled data with `indexing: true`, and restarts reuse the persisted index.
 - Very early **v0-format sessions** may not be migratable/readable by the current harness. They are excluded from statistics and the UI reports how many.
 

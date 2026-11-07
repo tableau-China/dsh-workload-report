@@ -1,0 +1,16 @@
+# 这个文件就是向 awesome-dsh-plugin 提交 PR 的全部内容：
+#   目标路径：data/plugins/tableau-China__dsh-workload-report.yml
+#   分类：usage（该列表的 Usage & Billing 分类）
+#   PR 要求见 https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/blob/main/contributing.md
+# 提交前确认（评审会逐条核对）：
+#   - package.json 声明 dsh.bundle（已有 cordis.patch.yml）
+#   - 仓库带 dsh-plugin topic（已有）
+#   - 描述与代码一致、不带营销词、英文以句号结尾
+#   - 仓库创建满 1 天（已满足）
+url: https://github.com/tableau-China/dsh-workload-report
+name: tableau-China/dsh-workload-report
+category: usage
+description:
+  en: Workload and token-usage report for DeepSeek Harness: active time and tokens by date, workspace and model, a calendar heatmap, model speed and estimated cost, a self-contained HTML report you can send to a client, an optional AI usage profile, optional multi-device sync, and 8 interface languages.
+  zh: DeepSeek Harness 工作量与 Token 用量报告：按日期、工作区、模型查看活跃时长与 Token，含日历热力图、模型速度与估算费用、可直接发给客户的自包含 HTML 报告、AI 用户画像、可选多设备同步，界面支持 8 种语言。
+icon: https://raw.githubusercontent.com/tableau-China/dsh-workload-report/main/assets/icon-180.png

@@ -2,6 +2,46 @@
 
 日期用 `YYYY-MM-DD`；只记录影响后续决策的事实。
 
+## 2026-11-07 v2.5.0：六国语言（接入 DSH 内置 8 种界面语言）
+
+### 事实
+
+- **DSH 0.2.2 内置 8 种界面语言**（英 / 中 / 日 / 西 / 法 / 德 / 俄 / 巴西葡），语言包由宿主 `dsh-client-locale`
+  通过 `addLanguage` 注册；插件只要把 8 部词典整体 `ctx.locale.register(NS, dictionaries)`，再订阅 `ctx.locale`
+  快照即可实时跟随，**不要**自己 `addLanguage`（重复 id 会抛错）。
+- **文案从 JS 常量改为 JSON 词典**：`src/locales/<lang>.json` × 8、398 键；`zh.json` 是键集基准、`en.json` 是兜底。
+  宿主半部不持有界面语言，报告 / 画像路由显式收 `lang`（`?lang=` → `Accept-Language` → `en`）。
+- **报告 / 画像 / 同步三条服务端链路都做了本地化**：报告 36 个 `report.*` 键（页脚口径长文按段落拆）；
+  画像本地规则改整句模板（43 个 `profile.local.*`）、提示词加输出语言约束；同步/凭据/自检结果统一
+  `{code: "sync.err.*"/"sync.ok.*", params}`，客户端按词典渲染、未知 code 才回落 message。
+- **数据层去中文**：`workspaceLabel` / `modelLabel` / `providerOf` 对未知值返回空串，展示层用 `common.unknown*`
+  兜底；`UNKNOWN_MODEL` 改为内部归并键 `__unknown_model__`（`src/labels.js`），避免中文写进接口字段。
+- **验证**：`npm test` 1738 项离线断言 + 85 项 i18n 检查全绿；`test/e2e-i18n.mjs` 真实浏览器 8 语言
+  155 项断言全绿、16 张截图；顺手修掉一条日期相关的 flaky 断言（历史恰好 30 天时误判截短）。
+- **维护入口**：`docs/i18n.md`（架构 + 新增语言步骤）、`docs/i18n-glossary.md`（术语表）、`npm run check:i18n`。
+- 未发布 npm / 未推送远端（按流程等确认）。
+
+## 2026-11-07 可发现性调研：渠道、关键词与 npm README 陷阱
+
+### 事实
+
+- **生态规模**：GitHub `dsh-plugin` topic 约 28,200 个公开仓库；官方 2026-11-05 公布
+  DSH 日活 154 万、月活 548 万、第三方插件约 3.49 万个（GitHub 2.94 万 / npm 1.85 万），
+  并宣布将建官方插件市场 + 创作者扶持（Token 激励 / 流量推荐）。
+- **事实上的社区 registry** 是 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)（23.3k★）：
+  一个插件一个 `data/plugins/<owner>__<repo>.yml`，合并后自动生成 README 与 npm `dsh-plugin-catalog`，
+  并被 dsh-market（11k★）、dshmarket.com、awesome-dsh-plugin.com、dsh-plugin.org、dsh-get、DSH Discover 索引复用。
+  dsh-market 的 README 明确说：**不要向它提插件 PR，去 awesome 仓库提**。
+- **dsh-find-plugin**（月下载 1.8 万）在对话里按 GitHub `dsh-plugin` topic **按 star 排序**推荐 → star 数直接决定曝光；
+  本项目 0★，排在 2.8 万仓库末尾。
+- **npm README 陷阱**：npm 发布时用 glob `{README,README.*}` 选首页正文；根目录同时有 `README.zh-CN.md` 时
+  glob 实测返回 `['README.zh-CN.md', 'README.md']` → npm 首页显示中文（2.4.1 的 readmeFilename 即中文）。
+  修复：非英文 README 全部移入 `docs/i18n/`，根目录只留 `README.md`。
+- **远端滞后**：本地 main 比 origin/main 领先 12 个提交，GitHub 上仍是 v1.0.5（TimeMirror 品牌旧版），
+  npm 最新 2.4.1（无 6 国语言）——**发布前所有对外搜索面都是旧内容**。
+- 产出资产：`docs/discoverability.md`（手册）、`docs/i18n/README.<lang>.md` ×8、`docs/i18n/marketplace.<lang>.json`、
+  `docs/distribution/{awesome-dsh-plugin.yml,marketplace-index.json,community-posts.md}`、`assets/icon-180.png`。
+
 ## 2026-10-25 v2.0.3：画像卡改绿色 + 宽屏放宽 + 报告列宽自适应
 
 ### 事实

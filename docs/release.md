@@ -27,13 +27,25 @@
 
 **批准暂存版本**除了 CLI，也可以在 npm 网页的包页面 → "Staged" 条目上直接 Approve。
 
+## 一·六、README 命名约束（npm 首页）
+
+npm 发布时用 glob `{README,README.*}` 选**一个** README 作为 npm 首页正文；根目录同时存在
+`README.zh-CN.md` / `README.ja.md` 等文件时，npm 可能选中非英文版本（实测 2.4.1 的 npm 首页就是中文）。
+**约束：仓库根目录只放英文 `README.md`**，其它语言 README 一律放 `docs/i18n/README.<lang>.md`，
+从英文 README 顶部语言导航进入。发版后可用下面命令确认：
+
+```bash
+npm view dsh-workload-report readmeFilename   # 期望 README.md
+ls README*                                     # 期望只有 README.md
+```
+
 ## 二、日常发版（推荐：CI 暂存 + 一次 OTP 批准）
 
 ```bash
 cd ~/WorkBuddy/ds_Harness/dsh-workload-report
 
 # 1) 改代码后先本地自检
-node build.mjs && node test/verify.mjs        # 构建 + 566 项离线断言
+node build.mjs && npm test                    # 构建 + 1738 项离线断言 + 85 项 i18n 检查
 
 # 2) 更新 CHANGELOG.md（新增该版本条目）并提交
 git add -A && git commit -m "feat: …"
@@ -45,7 +57,7 @@ npm version patch -m "release: v%s"           # 或 minor / major
 git push --follow-tags
 ```
 
-workflow（[.github/workflows/release.yml](../.github/workflows/release.yml)）会依次：校验 tag 与 `package.json` 版本一致 → 构建并校验入库 `lib/client.js` → 跑 566 项离线断言 → 检查该版本未被发布 → **`npm stage publish`**（用 `NPM_TOKEN` 密钥，无需 OTP）。
+workflow（[.github/workflows/release.yml](../.github/workflows/release.yml)）会依次：校验 tag 与 `package.json` 版本一致 → 构建并校验入库 `lib/client.js` → 跑 1738 项离线断言 + 85 项 i18n 检查 → 检查该版本未被发布 → **`npm stage publish`**（用 `NPM_TOKEN` 密钥，无需 OTP）。
 
 跑完后 Actions 的 Summary 会给出 stage id 与下一步命令；你本地执行一次：
 

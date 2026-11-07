@@ -24,6 +24,7 @@ import {
   profileFingerprint,
   repairProfileJson,
 } from "./ai-profile.js";
+import { localeLabel } from "./locales/index.js";
 
 /**
  * 默认配置（profile 的 cordis.patch.yml 可覆盖 aiProfile）。
@@ -285,8 +286,19 @@ const PAYLOAD_KEY_HELP = PROFILE_PAYLOAD_KEYS.join(", ");
 /**
  * 系统提示：只根据聚合统计，输出严格 JSON（不指定 reasoningEffort）。
  * 硬性要求写死在 prompt 里：引用数字、可用键、schema、空泛建议禁止。
+ *
+ * 提示词本身用中文 / 英文写死（模型两种都能读），但**输出语言**必须跟随界面语言：
+ * 用 localeLabel(lang) 明确要求 headline / 维度标题 / 结论 / 证据 / 建议 / 风险
+ * 全部用该语言书写；JSON 键名与枚举值（rhythm / focus / stack / collab / trend）
+ * 保持英文，否则解析层 normalizeDimensionKey 与前端 data-key 会对不上。
+ *
+ * @param lang - 任意 DSH 界面语言 id（zh / en / ja / es / fr / de / ru / pt）。
  */
 export function systemPrompt(lang) {
+  const target = localeLabel(lang);
+  /** 输出语言约束（英文分支用英文写；其它语言分支用中文写但要求目标语言输出）。 */
+  const outputRuleEn = "5) Output language: write headline, every dimensions[].title / insight / evidence, every advice[].text / why, and risk entirely in " + target + ". Keep JSON keys and the enum values (rhythm / focus / stack / collab / trend) in English. Character limits count Unicode characters, so keep every field within its limit in " + target + ".";
+  const outputRuleZh = "5) 输出语言：headline、每条 dimensions[].title / insight / evidence、每条 advice[].text / why、risk 全部使用" + target + "书写；JSON 键名与枚举值（rhythm / focus / stack / collab / trend）保持英文；字符上限按 Unicode 字符计，翻译后仍必须落在上限内。";
   if (lang === "en") {
     return [
       "You are a senior productivity analyst. Write a profile using ONLY the supplied aggregate numbers.",
@@ -295,6 +307,7 @@ export function systemPrompt(lang) {
       "2) Every dimension insight MUST cite concrete numbers, e.g. \"afternoon 34%\" or \"42 m per conversation\". Insights without a number are invalid.",
       "3) No generic advice such as \"take more rest\" or \"stay focused\"; every advice item must cite its numeric basis in why.",
       "4) Be differentiated: lead with the 1-2 most distinctive facts instead of listing everything.",
+      outputRuleEn,
       "Output exactly one strict JSON object; no Markdown, no code fence, no explanation.",
       'Schema: {"headline":"one-sentence profile, <=30 chars","dimensions":[{"key":"rhythm|focus|stack|collab|trend","title":"<=8 chars","insight":"<=60 chars, MUST contain a number","evidence":"<=40 chars, list the cited numbers"}],"advice":[{"text":"<=40 chars","why":"<=40 chars, numeric basis"}],"risk":"<=40 chars or null"}',
       "dimensions: 4-6 items, key chosen from rhythm / focus / stack / collab / trend; advice: 2-3 items; risk: only when the numbers show a real risk, otherwise null.",
@@ -309,6 +322,7 @@ export function systemPrompt(lang) {
     "2) 每条 insight 必须引用数字（如「午后 34%」「单会话 42 m」）；没有数字的结论视为不合格。",
     "3) 禁止空泛建议（如「注意休息」「保持专注」）；每条建议都要在 why 里给出数字依据。",
     "4) 要有差异化：先写最突出的 1–2 个事实，不要面面俱到。",
+    outputRuleZh,
     "只输出一个严格 JSON 对象；不要 Markdown、不要代码围栏、不要解释。",
     'schema：{"headline":"一句话画像，≤30字","dimensions":[{"key":"rhythm|focus|stack|collab|trend","title":"≤8字","insight":"≤60字，必须含数字","evidence":"≤40字，列出引用的数字"}],"advice":[{"text":"≤40字","why":"≤40字，数字依据"}],"risk":"≤40字或 null"}',
     "dimensions 4–6 条，key 从 rhythm(节奏) / focus(专注) / stack(工具栈) / collab(协作) / trend(趋势) 中选；advice 2–3 条；risk 只在数字显示确有风险时填写，否则 null。",
@@ -532,7 +546,7 @@ export class ProfileService {
   /**
    * 路由入口。
    * @param options.query - /snapshot 同款查询（days / scope / all / tz）。
-   * @param options.lang - zh | en。
+   * @param options.lang - 任意 DSH 界面语言 id（zh / en / ja / es / fr / de / ru / pt）。
    * @param options.force - 跳过缓存重新生成。
    * @param options.probe - 只返回 enabled / 登录状态，不生成、不读快照。
    * @param options.provider / options.model - 调试覆盖（仅 enabled 生效；不写配置、不需要重启）。

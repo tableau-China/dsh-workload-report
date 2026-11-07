@@ -18,12 +18,15 @@
  *
  * 三种都保持 pullEveryMs=30min 的理由：拉取是只读且便宜的（列一次目录 + 读几个小文件），
  * 但要让本机看到别的机器的新数据，拉取必须比推送频繁——否则两边都要等对方推。
+ *
+ * 这里**只有 id**：展示文案在词典里（FREQUENCY_TEXT_KEYS / FREQUENCY_NOTE_KEYS），
+ * 数据层不写死任何语言的文案。
  */
 export const SYNC_FREQUENCY_OPTIONS = [
-  { id: "6h", label: "每 6 小时" },
-  { id: "12h", label: "每 12 小时" },
-  { id: "boot", label: "每次开机" },
-  { id: "manual", label: "仅手动" },
+  { id: "6h" },
+  { id: "12h" },
+  { id: "boot" },
+  { id: "manual" },
 ];
 
 /** 同步频率候选（2.2.0 起正式启用，见下方 SYNC_FREQUENCY_OPTIONS / frequencyPlan）。 */

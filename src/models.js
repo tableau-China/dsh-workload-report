@@ -9,10 +9,11 @@
  * 本模块是纯函数，不读磁盘、不发请求，宿主与离线测试共用。
  */
 
+import { UNKNOWN_MODEL_KEY } from "./labels.js";
 import { scaleTokenBuckets } from "./hour-scale.js";
 
-/** 未标注模型（缺 provider/model 或 usage）的桶名。 */
-export const UNKNOWN_MODEL = "(未标注模型)";
+/** 未标注模型（缺 provider/model 或 usage）的桶名：内部归并键，展示层用 common.unknownModel。 */
+export const UNKNOWN_MODEL = UNKNOWN_MODEL_KEY;
 
 /** 默认交互工具白名单：这些工具的调用时长整段计为「等待用户」，不计入活跃时长。 */
 export const DEFAULT_WAIT_TOOLS = ["ask_user_question", "exit_plan_mode"];
@@ -619,9 +620,9 @@ export const DEFAULT_PRICING = {
   asOf: "2026-10-13",
   currency: "CNY",
   links: [
-    { provider: "DeepSeek", url: "https://api-docs.deepseek.com/zh-cn/quick_start/pricing/", label: "DeepSeek 模型 & 价格" },
-    { provider: "Kimi (Moonshot)", url: "https://platform.kimi.com/docs/pricing/chat", label: "Kimi 模型推理定价" },
-    { provider: "Anthropic Claude", url: "https://platform.claude.com/docs/en/about-claude/pricing", label: "Claude API pricing" },
+    { provider: "DeepSeek", url: "https://api-docs.deepseek.com/zh-cn/quick_start/pricing/", labelKey: "model.priceLinks.deepseek" },
+    { provider: "Kimi (Moonshot)", url: "https://platform.kimi.com/docs/pricing/chat", labelKey: "model.priceLinks.kimi" },
+    { provider: "Anthropic Claude", url: "https://platform.claude.com/docs/en/about-claude/pricing", labelKey: "model.priceLinks.claude" },
   ],
   tables: {
     CNY: {
@@ -711,7 +712,7 @@ export function costOf(bucket, pricing) {
  */
 export function modelLabel(key, aliases = {}) {
   if (typeof aliases[key] === "string" && aliases[key] !== "") return aliases[key];
-  if (key === UNKNOWN_MODEL) return UNKNOWN_MODEL;
+  if (key === UNKNOWN_MODEL) return "";
   const parts = String(key).split("/").filter((part) => part !== "");
   const short = parts.length > 0 ? parts[parts.length - 1] : String(key);
   if (typeof aliases[short] === "string" && aliases[short] !== "") return aliases[short];
@@ -756,5 +757,5 @@ export function providerOf(key, raw = null) {
     }
     if (best !== "") return best;
   }
-  return "(未标注供应商)";
+  return "";
 }

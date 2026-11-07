@@ -28,6 +28,7 @@ import { DEFAULT_WAIT_MIN_MS, DEFAULT_WAIT_TOOLS, foldSessionModels, resolvePric
 import { SYNC_DEFAULTS, SyncService, TRANSPORTS } from "./src/sync-service.js";
 import { COS_REGIONS, PLATFORM_PRESETS, TRANSPORT_META, applySettingsPatch, editableView, saveViaConfigEditor } from "./src/sync-settings.js";
 import { frequencyPlan } from "./src/client/sync-state.js";
+import { FALLBACK_LOCALE, LOCALES, languageOf } from "./src/locales/index.js";
 
 /** 插件版本：getBalance 的客户端元数据（x-client-version）用它，避免手写常量与 package.json 漂移。 */
 const PLUGIN_VERSION = createRequire(import.meta.url)("./package.json").version ?? "0.0.0";
@@ -86,7 +87,8 @@ const DEFAULTS = {
   defaultDays: 7,
   defaultScope: "all",
   workspaceAliases: {},
-  defaultTitle: "工作量报告",
+  /** 报告标题；留空 = 按报告语言使用词典里的 report.title（多语言默认）。 */
+  defaultTitle: "",
   /** 冷读并发度（几百个会话同时折叠会压住服务器）。 */
   indexConcurrency: 8,
   /**
@@ -1481,6 +1483,28 @@ export function apply(ctx, config = {}) {
   syncTimers.refresh();
   ctx.effect(() => () => syncTimers.stop?.(), "workload-report: device sync timers");
 
+  /**
+   * 请求语言：显式 ?lang= 优先；否则取 Accept-Language 里第一个受支持语言；最后英文。
+   * 宿主半部不持有界面语言，客户端导出报告 / 生成画像时必须显式带上 lang。
+   */
+  const requestLang = (req, params) => {
+    const explicit = params.get("lang");
+    if (explicit !== null && explicit.trim() !== "") return languageOf(explicit);
+    const header = String(req?.headers?.["accept-language"] ?? "");
+    for (const part of header.split(",")) {
+      const primary = part.split(";")[0].trim().toLowerCase().split("-")[0];
+      if (LOCALES.includes(primary)) return primary;
+    }
+    return FALLBACK_LOCALE;
+  };
+
+  /** 服务端错误回包：稳定 code + params 给客户端用词典渲染，message 只作日志/兜底。 */
+  const errorPayload = (error, fallbackCode) => ({
+    error: reasonOf(error),
+    code: typeof error?.code === "string" && error.code !== "" ? error.code : fallbackCode,
+    params: error !== null && typeof error === "object" && error.params !== null && typeof error.params === "object" ? error.params : {},
+  });
+
   const handle = async (req, res) => {
     try {
       const url = new URL(req.url ?? "/", "http://workload-report.invalid");
@@ -1540,22 +1564,27 @@ export function apply(ctx, config = {}) {
         if (body === undefined) return;
         // 用 configEditor 回调里的**磁盘现值**作为基准，避免用内存快照覆盖掉别处的改动
         let nextSync = null;
-        let validationError = null;
+        let validationIssue = null;
         const saved = await saveViaConfigEditor(ctx, (diskCurrent) => {
           try {
             nextSync = applySettingsPatch(diskCurrent, body.values ?? body);
             return nextSync;
           } catch (error) {
-            validationError = reasonOf(error);
+            validationIssue = error;
             throw error;
           }
         });
-        if (saved.ok !== true && validationError !== null) {
-          sendJson(res, 400, { error: validationError });
+        if (saved.ok !== true && validationIssue !== null) {
+          sendJson(res, 400, errorPayload(validationIssue, "sync.err.settingsInvalid"));
           return;
         }
         if (saved.ok !== true) {
-          sendJson(res, saved.status === "unavailable" ? 501 : 400, { error: saved.message ?? "保存失败", status: saved.status });
+          sendJson(res, saved.status === "unavailable" ? 501 : 400, {
+            error: saved.message ?? "保存失败",
+            code: saved.code ?? "sync.err.saveUnavailable",
+            params: saved.params ?? {},
+            status: saved.status,
+          });
           return;
         }
         // 保存后热应用：把新配置喂给运行中的 SyncService（嵌套段深合并，避免整段替换丢字段），
@@ -1576,7 +1605,7 @@ export function apply(ctx, config = {}) {
         if (index.deviceSync?.enabled !== true) {
           // 关闭态一律只读：POST 也拒绝，避免「用户以为同步没开」时仍能写入机密
           if (req.method === "POST") {
-            sendJson(res, 409, { error: "同步未启用：请先在「同步设置」里开启同步，再保存凭据" });
+            sendJson(res, 409, { error: "同步未启用：请先在「同步设置」里开启同步，再保存凭据", code: "sync.err.disabled", params: {} });
             return;
           }
           sendJson(res, 200, { enabled: false, vault: false, fields: [] });
@@ -1611,7 +1640,7 @@ export function apply(ctx, config = {}) {
           const probe = await index.deviceSync.probe();
           sendJson(res, 200, { ok: true, result, probe, fields: await index.deviceSync.credentialStatus(bodyTransport) });
         } catch (error) {
-          sendJson(res, 400, { error: reasonOf(error) });
+          sendJson(res, 400, errorPayload(error, "sync.err.credentialsFailed"));
         }
         return;
       }
@@ -1660,7 +1689,7 @@ export function apply(ctx, config = {}) {
       if (route === "/profile") {
         // AI 用户画像（默认包含、手动触发）：只读、旁路调用，不阻塞 /snapshot 与报告。
         // probe=1 只回答 enabled / 登录状态 / 模型；force=1 跳过缓存重新生成。
-        const lang = params.get("lang") === "en" ? "en" : "zh";
+        const lang = requestLang(req, params);
         let body;
         try {
           body = await index.profile.handle({
@@ -1713,6 +1742,7 @@ export function apply(ctx, config = {}) {
             ? String(snapshot.range?.days ?? "7")
             : String(query.days);
         const html = renderReport(snapshot, {
+          lang: requestLang(req, params),
           theme: params.get("theme") === "dark" ? "dark" : "light",
           title: params.get("title") ?? merged.defaultTitle,
           note: params.get("note") ?? "",

@@ -103,6 +103,49 @@ function reasonOf(error) {
   return String(error);
 }
 
+/**
+ * 带稳定错误码的同步错误。
+ *
+ * 约定（见 docs/i18n.md §5）：
+ *   · `code` 是**完整词典键**（如 `sync.err.pathTemplate`），客户端直接 `t(code, params)`；
+ *   · `params` 是模板占位符（其中 `fields` 可以是「词典键数组」，由客户端翻成字段名）；
+ *   · `message` 固定中文，只进日志 / 老客户端兜底，**不面向用户**。
+ */
+export class SyncError extends Error {
+  constructor(code, params = {}, message = "") {
+    super(typeof message === "string" && message !== "" ? message : String(code));
+    this.name = "SyncError";
+    this.code = code;
+    this.params = params !== null && typeof params === "object" ? params : {};
+  }
+}
+
+/**
+ * 底层异常 → `{ code, params }`：只认本模块约定的完整词典键，其余一律用兜底码，
+ * 并把原始 message 放进 `params.detail`（模板里 `{detail}` 会原样带出，供用户排查）。
+ */
+export function syncFailureOf(error, fallbackCode, fallbackParams = {}) {
+  const code = typeof error?.code === "string" && error.code.startsWith("sync.") ? error.code : fallbackCode;
+  if (code !== error?.code) return { code, params: { detail: reasonOf(error), ...fallbackParams } };
+  const params = error.params !== null && typeof error.params === "object" ? error.params : {};
+  return { code, params };
+}
+
+/**
+ * 连接自检失败 → 统一结果形状 `{ ok:false, code, params, message }`。
+ * HTTP 401 / 403 / 404 收敛成具体原因，其余保留原文（`{detail}`）。
+ */
+function probeFailureOf(error, message) {
+  const { code, params } = syncFailureOf(error, "sync.err.probeFailed");
+  if (code === "sync.err.httpStatus") {
+    const status = Number(params.status);
+    if (status === 401) return { ok: false, code: "sync.err.unauthorized", params: {}, message };
+    if (status === 403) return { ok: false, code: "sync.err.forbidden", params: {}, message };
+    if (status === 404) return { ok: false, code: "sync.err.notFound", params: {}, message };
+  }
+  return { ok: false, code, params, message };
+}
+
 /** DSH home：环境变量优先，其次 ~/.dsh。 */
 export function defaultHome() {
   const env = process.env.DSH_HOME;
@@ -222,7 +265,7 @@ export class CosTransport {
    */
   async request(method, uriPath, { query = {}, headers = {}, body = "" } = {}) {
     const secret = await this.credentials();
-    if (secret === null) throw new Error("COS 凭据缺失（secretId/secretKey）");
+    if (secret === null) throw new SyncError("sync.err.noCredentials", { transport: "COS" }, "COS 凭据缺失（secretId/secretKey）");
     // COS 规范：HttpString 里的 UriPathname 是**解码后**的路径；
     // 实际发请求时用编码后的路径。两者不同，混用会导致 SignatureDoesNotMatch。
     const decodedPath = safeDecode(uriPath);
@@ -239,8 +282,9 @@ export class CosTransport {
       .join("&");
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    let response;
     try {
-      const response = await fetch(`https://${this.host}${uriPath}${encodedQuery ? `?${encodedQuery}` : ""}`, {
+      response = await fetch(`https://${this.host}${uriPath}${encodedQuery ? `?${encodedQuery}` : ""}`, {
         method,
         headers: {
           host: this.host,
@@ -251,11 +295,13 @@ export class CosTransport {
         body: method === "GET" || method === "HEAD" ? undefined : body,
         signal: controller.signal,
       });
-      const text = await response.text();
-      return { status: response.status, text, ok: response.ok };
+    } catch (error) {
+      throw new SyncError("sync.err.networkError", {}, `COS 请求失败：${reasonOf(error)}`);
     } finally {
       clearTimeout(timer);
     }
+    const text = await response.text();
+    return { status: response.status, text, ok: response.ok };
   }
 
   /** COS 的 key 需要逐段 UrlEncode（保留分隔用的 "/"）。 */
@@ -272,7 +318,9 @@ export class CosTransport {
   async read(key) {
     const result = await this.request("GET", CosTransport.encodeKey(key));
     if (result.status === 404) return null;
-    if (!result.ok) throw new Error(`COS GET ${key} → ${result.status} ${CosTransport.errorCode(result.text) ?? result.text.slice(0, 120)}`);
+    if (!result.ok) {
+      throw new SyncError("sync.err.httpStatus", { status: result.status }, `COS GET ${key} → ${result.status} ${CosTransport.errorCode(result.text) ?? result.text.slice(0, 120)}`);
+    }
     return result.text;
   }
 
@@ -281,7 +329,9 @@ export class CosTransport {
       headers: { "content-type": "application/json" },
       body: content,
     });
-    if (!result.ok) throw new Error(`COS PUT ${key} → ${result.status} ${CosTransport.errorCode(result.text) ?? result.text.slice(0, 120)}`);
+    if (!result.ok) {
+      throw new SyncError("sync.err.httpStatus", { status: result.status }, `COS PUT ${key} → ${result.status} ${CosTransport.errorCode(result.text) ?? result.text.slice(0, 120)}`);
+    }
     return true;
   }
 
@@ -291,23 +341,25 @@ export class CosTransport {
     if (prefix) query.prefix = prefix;
     const result = await this.request("GET", "/", { query });
     if (!result.ok) {
-      throw new Error(`COS ListObjects → ${result.status} ${CosTransport.errorCode(result.text) ?? result.text.slice(0, 120)}`);
+      throw new SyncError("sync.err.httpStatus", { status: result.status }, `COS ListObjects → ${result.status} ${CosTransport.errorCode(result.text) ?? result.text.slice(0, 120)}`);
     }
     return [...result.text.matchAll(/<Key>([^<]+)<\/Key>/g)].map((match) => match[1]);
   }
 
-  /** 连通性自检：能读自己的 key 就算通（不写脏数据）。返回诊断信息。 */
+  /** 连通性自检：能读自己的 key 就算通（不写脏数据）。返回诊断信息（code 为完整词典键）。 */
   async probe() {
-    if (!this.configured) return { ok: false, code: "NOT_CONFIGURED", message: "未配置 cos.bucket / cos.region" };
+    if (!this.configured) {
+      return { ok: false, code: "sync.err.notConfigured", params: { fields: ["set.bucket", "set.region"] }, message: "未配置 cos.bucket / cos.region" };
+    }
     const secret = await this.credentials();
-    if (secret === null) return { ok: false, code: "NO_CREDENTIALS", message: "未找到 COS 凭据（secretId/secretKey 文件或环境变量）" };
+    if (secret === null) {
+      return { ok: false, code: "sync.err.noCredentials", params: { transport: "COS" }, message: "未找到 COS 凭据（secretId/secretKey 文件或环境变量）" };
+    }
     try {
       const listed = await this.list(this.config.keyPrefix ?? "");
-      return { ok: true, code: "OK", message: `可列对象（${listed.length} 个）`, objects: listed.length };
+      return { ok: true, code: "sync.ok.reachable", params: { count: listed.length }, message: `可列对象（${listed.length} 个）`, objects: listed.length };
     } catch (error) {
-      const message = reasonOf(error);
-      const code = /→ 403/.test(message) ? "FORBIDDEN" : /→ 404/.test(message) ? "NOT_FOUND" : "ERROR";
-      return { ok: false, code, message };
+      return probeFailureOf(error, reasonOf(error));
     }
   }
 }
@@ -343,13 +395,19 @@ export class ContentsTransport {
     return field === null ? null : field.value;
   }
 
+  /** 传输展示名（只给提示文案用；COS / GitHub / Gitea 是专有名词，不翻译）。 */
+  get transportLabel() {
+    return this.config.transportKind === "gitea" ? "Gitea" : "GitHub";
+  }
+
   async request(path, { method = "GET", body } = {}) {
     const token = await this.credentials();
-    if (token === null) throw new Error("同步凭据缺失（tokenFile 或 WR_SYNC_TOKEN）");
+    if (token === null) throw new SyncError("sync.err.noCredentials", { transport: this.transportLabel }, "同步凭据缺失（tokenFile 或 WR_SYNC_TOKEN）");
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    let response;
     try {
-      const response = await fetch(`${this.api}${path}`, {
+      response = await fetch(`${this.api}${path}`, {
         method,
         headers: {
           Authorization: `token ${token}`,
@@ -358,13 +416,17 @@ export class ContentsTransport {
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: controller.signal,
       });
-      const text = await response.text();
-      if (response.status === 404) return null;
-      if (!response.ok) throw new Error(`${method} ${path} → ${response.status} ${text.slice(0, 160)}`);
-      try { return JSON.parse(text); } catch { return text; }
+    } catch (error) {
+      throw new SyncError("sync.err.networkError", {}, `同步请求失败：${reasonOf(error)}`);
     } finally {
       clearTimeout(timer);
     }
+    const text = await response.text();
+    if (response.status === 404) return null;
+    if (!response.ok) {
+      throw new SyncError("sync.err.httpStatus", { status: response.status }, `${method} ${path} → ${response.status} ${text.slice(0, 160)}`);
+    }
+    try { return JSON.parse(text); } catch { return text; }
   }
 
   async read(key) {
@@ -373,7 +435,7 @@ export class ContentsTransport {
     if (json === null) return null;
     if (typeof json === "string") return json;
     if (typeof json?.content === "string") return Buffer.from(json.content, "base64").toString("utf8");
-    throw new Error(`${key}: 无法解析 contents 响应`);
+    throw new SyncError("sync.err.badResponse", {}, `${key}: 无法解析 contents 响应`);
   }
 
   async write(key, content) {
@@ -386,7 +448,7 @@ export class ContentsTransport {
     };
     if (existing?.sha) body.sha = existing.sha;
     const result = await this.request(`/repos/${this.config.repo}/contents/${key}`, { method: "PUT", body });
-    if (result?.commit === undefined && result?.content === undefined) throw new Error(`写入 ${key} 失败`);
+    if (result?.commit === undefined && result?.content === undefined) throw new SyncError("sync.err.badResponse", {}, `写入 ${key} 失败`);
     return true;
   }
 
@@ -404,16 +466,18 @@ export class ContentsTransport {
   }
 
   async probe() {
-    if (!this.configured) return { ok: false, code: "NOT_CONFIGURED", message: "未配置 github.repo" };
+    if (!this.configured) {
+      return { ok: false, code: "sync.err.notConfigured", params: { fields: ["set.repo"] }, message: "未配置 github.repo" };
+    }
     const token = await this.credentials();
-    if (token === null) return { ok: false, code: "NO_CREDENTIALS", message: "未找到同步凭据（tokenFile 或 WR_SYNC_TOKEN）" };
+    if (token === null) {
+      return { ok: false, code: "sync.err.noCredentials", params: { transport: this.transportLabel }, message: "未找到同步凭据（tokenFile 或 WR_SYNC_TOKEN）" };
+    }
     try {
       const files = await this.list(this.config.keyPrefix ?? "");
-      return { ok: true, code: "OK", message: `可访问（${files.length} 个文件）`, objects: files.length };
+      return { ok: true, code: "sync.ok.reachable", params: { count: files.length }, message: `可访问（${files.length} 个文件）`, objects: files.length };
     } catch (error) {
-      const message = reasonOf(error);
-      const code = /→ 401/.test(message) ? "UNAUTHORIZED" : /→ 403/.test(message) ? "FORBIDDEN" : /→ 404/.test(message) ? "NOT_FOUND" : "ERROR";
-      return { ok: false, code, message };
+      return probeFailureOf(error, reasonOf(error));
     }
   }
 }
@@ -462,12 +526,14 @@ export class LocalTransport {
   }
 
   async probe() {
-    if (!this.configured) return { ok: false, code: "NOT_CONFIGURED", message: "未配置 local.dir" };
+    if (!this.configured) {
+      return { ok: false, code: "sync.err.notConfigured", params: { fields: ["set.dir"] }, message: "未配置 local.dir" };
+    }
     try {
       const files = await this.list(this.config.keyPrefix ?? "");
-      return { ok: true, code: "OK", message: `目录可读（${files.length} 个文件）`, objects: files.length };
+      return { ok: true, code: "sync.ok.reachable", params: { count: files.length }, message: `目录可读（${files.length} 个文件）`, objects: files.length };
     } catch (error) {
-      return { ok: false, code: "ERROR", message: reasonOf(error) };
+      return probeFailureOf(error, reasonOf(error));
     }
   }
 }
@@ -731,8 +797,8 @@ export class SyncService {
     this.cacheSavedAt = 0;
     this.cacheLoadedSessions = 0;
     this.stats = {
-      lastPushAt: 0, lastPushError: null, lastPushRows: 0,
-      lastPullAt: 0, lastPullError: null, lastPullFetched: 0,
+      lastPushAt: 0, lastPushError: null, lastPushCode: null, lastPushParams: {}, lastPushRows: 0,
+      lastPullAt: 0, lastPullError: null, lastPullCode: null, lastPullParams: {}, lastPullFetched: 0,
       pushing: false, pulling: false,
       lastProbe: null,
     };
@@ -900,10 +966,11 @@ export class SyncService {
   /**
    * 保存凭据到 DSH 凭据存储。值只在此函数内出现，绝不进日志或响应。
    * @param values - { 'secret-id': '…', 'secret-key': '…' } 或 { token: '…' }。
+   * @returns {Promise<{ ok: true, code: string, params: object, saved: string[] }>}
    */
   async saveCredentials(values, transportOverride = null) {
     const transport = transportOverride ?? this.config.transport;
-    if (transport === "local") throw new Error("共享目录传输不需要凭据");
+    if (transport === "local") throw new SyncError("sync.err.credentialsNotNeeded", {}, "共享目录传输不需要凭据");
     const allowed = new Set(fieldsOf(transport).map((field) => field.id));
     const saved = [];
     for (const [id, value] of Object.entries(values ?? {})) {
@@ -913,21 +980,21 @@ export class SyncService {
       await this.vault.write(transport, id, text);
       saved.push(id);
     }
-    if (saved.length === 0) throw new Error("没有可保存的凭据字段");
+    if (saved.length === 0) throw new SyncError("sync.err.noCredentialFields", {}, "没有可保存的凭据字段");
     this.ctx?.logger?.info?.(`[workload-report] 已保存 ${saved.length} 项同步凭据到 DSH 凭据存储（不记录内容）`);
-    return { saved };
+    return { ok: true, code: "sync.ok.credentialsSaved", params: { count: saved.length }, saved };
   }
 
   /** 清空本插件的同步凭据（加密库中的记录）。 */
   async clearCredentials(transportOverride = null) {
     const transport = transportOverride ?? this.config.transport;
-    if (transport === "local") return { cleared: [] };
+    if (transport === "local") return { ok: true, code: "sync.ok.credentialsCleared", params: { count: 0 }, cleared: [] };
     const cleared = [];
     for (const field of fieldsOf(transport)) {
       await this.vault.delete(transport, field.id);
       cleared.push(field.id);
     }
-    return { cleared };
+    return { ok: true, code: "sync.ok.credentialsCleared", params: { count: cleared.length }, cleared };
   }
 
   /** 机器身份：id 稳定、name 可变，两者都进载荷。 */
@@ -953,9 +1020,14 @@ export class SyncService {
       .replace(/\{machineName\}/g, encodeURIComponent(name));
   }
 
-  /** 推送本机索引行。 */
+  /**
+   * 推送本机索引行。
+   * @returns {Promise<{ ok: boolean, code: string, params: object, error?: string,
+   *   rows?: number, key?: string, skipped?: boolean }>}
+   *   code 是完整词典键（`sync.ok.pushed` / `sync.err.*`），客户端直接 t(code, params)。
+   */
   async push(rows) {
-    if (!this.canPush) return { skipped: true };
+    if (!this.canPush) return { ok: false, code: "sync.err.disabled", params: {}, skipped: true };
     if (this.pushingPromise !== null) return this.pushingPromise;
     this.stats.pushing = true;
     this.pushingPromise = (async () => {
@@ -970,13 +1042,18 @@ export class SyncService {
         this.stats.lastPushAt = Date.now();
         this.stats.lastPushRows = payload.rows.length;
         this.stats.lastPushError = null;
+        this.stats.lastPushCode = null;
+        this.stats.lastPushParams = {};
         await this.saveCache(); // 时间戳跨重启保留
         this.ctx?.logger?.info?.(`[workload-report] 已同步 ${payload.rows.length} 个会话 → ${key}`);
-        return { ok: true, rows: payload.rows.length, key };
+        return { ok: true, code: "sync.ok.pushed", params: { n: payload.rows.length }, rows: payload.rows.length, key };
       } catch (error) {
+        const { code, params } = syncFailureOf(error, "sync.err.pushFailed");
         this.stats.lastPushError = reasonOf(error);
+        this.stats.lastPushCode = code;
+        this.stats.lastPushParams = params;
         this.ctx?.logger?.warn?.(`[workload-report] 同步推送失败: ${this.stats.lastPushError}`);
-        return { ok: false, error: this.stats.lastPushError };
+        return { ok: false, code, params, error: this.stats.lastPushError };
       } finally {
         this.stats.pushing = false;
         this.pushingPromise = null;
@@ -985,9 +1062,13 @@ export class SyncService {
     return this.pushingPromise;
   }
 
-  /** 拉取其他设备的载荷。 */
+  /**
+   * 拉取其他设备的载荷。
+   * @returns {Promise<{ ok: boolean, code: string, params: object, error?: string,
+   *   fetched?: number, total?: number, skipped?: number }>}
+   */
   async pull() {
-    if (!this.canPull) return { skipped: true };
+    if (!this.canPull) return { ok: false, code: "sync.err.disabled", params: {}, skipped: true };
     if (this.pullingPromise !== null) return this.pullingPromise;
     this.stats.pulling = true;
     this.pullingPromise = (async () => {
@@ -1042,13 +1123,18 @@ export class SyncService {
         this.stats.lastPullFetched = fetched;
         this.stats.lastPullSkipped = skipped;
         this.stats.lastPullError = null;
+        this.stats.lastPullCode = null;
+        this.stats.lastPullParams = {};
         await this.saveCache(); // 关键：拉到的其它设备数据落盘，重启/离线后仍可见
         this.ctx?.logger?.info?.(`[workload-report] 拉到 ${fetched} 个其他设备（共 ${this.sources.size} 个来源${skipped > 0 ? `，跳过 ${skipped} 个` : ""}）`);
-        return { ok: true, fetched, total: this.sources.size, skipped };
+        return { ok: true, code: "sync.ok.pulled", params: { n: fetched, total: this.sources.size, skipped }, fetched, total: this.sources.size, skipped };
       } catch (error) {
+        const { code, params } = syncFailureOf(error, "sync.err.pullFailed");
         this.stats.lastPullError = reasonOf(error);
+        this.stats.lastPullCode = code;
+        this.stats.lastPullParams = params;
         this.ctx?.logger?.warn?.(`[workload-report] 同步拉取失败: ${this.stats.lastPullError}`);
-        return { ok: false, error: this.stats.lastPullError };
+        return { ok: false, code, params, error: this.stats.lastPullError };
       } finally {
         this.stats.pulling = false;
         this.pullingPromise = null;
@@ -1057,11 +1143,15 @@ export class SyncService {
     return this.pullingPromise;
   }
 
-  /** 连通性自检（不会写任何数据）。 */
+  /**
+   * 连通性自检（不会写任何数据）。
+   * @returns {Promise<{ ok: boolean, code: string, params: object, message: string }>}
+   *   code 是完整词典键：成功 `sync.ok.reachable` + {count}，失败 `sync.err.*`。
+   */
   async probe() {
     const transport = this.transport();
     if (typeof transport.probe !== "function") {
-      return { ok: false, code: "UNSUPPORTED", message: "该传输不支持自检" };
+      return { ok: false, code: "sync.err.unsupported", params: {}, message: "该传输不支持自检" };
     }
     await this.identify();
     const result = await transport.probe();

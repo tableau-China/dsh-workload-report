@@ -19,13 +19,18 @@ export const PROFILE_EVIDENCE_MAX = PROFILE_LINE_MAX;
 /** 允许的维度 key；顺序即前端默认展示顺序。 */
 export const PROFILE_DIMENSION_KEYS = Object.freeze(["rhythm", "focus", "stack", "collab", "trend"]);
 
-/** 维度 key 的中文短名（模型漏标题 / 本地兜底时用）。 */
-export const PROFILE_DIMENSION_LABELS = Object.freeze({
-  rhythm: "节奏",
-  focus: "专注",
-  stack: "工具栈",
-  collab: "协作",
-  trend: "趋势",
+/**
+ * 维度 key → 词典键（模型漏填标题 / 本地规则 / 旧缓存兜底时用）。
+ *
+ * 文案在 `src/locales/*.json`；标题有 8 字符上限（PROFILE_TITLE_MAX），
+ * 各语言翻译必须短（德语 / 西语 / 葡语的「趋势」类词最容易超）。
+ */
+export const PROFILE_DIMENSION_LABEL_KEYS = Object.freeze({
+  rhythm: "profile.dimension.rhythm",
+  focus: "profile.dimension.focus",
+  stack: "profile.dimension.stack",
+  collab: "profile.dimension.collab",
+  trend: "profile.dimension.trend",
 });
 
 /** 文本压到 ≤max 个字符（按 Unicode 码点，超出用省略号，仍不超过 max）。 */

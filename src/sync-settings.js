@@ -13,15 +13,15 @@
  *   · 任何机密字段都不会进入本模块的写入路径。
  */
 
-import { SYNC_DEFAULTS, TRANSPORTS } from "./sync-service.js";
+import { SYNC_DEFAULTS, SyncError, TRANSPORTS, syncFailureOf } from "./sync-service.js";
 import { frequencyPlan, normalizeFrequency } from "./client/sync-state.js";
 
 /** 传输方式的展示信息（GUI 用）。 */
 export const TRANSPORT_META = {
-  cos: { label: "腾讯云 COS", needsCredential: true, fields: ["bucket", "region"] },
-  github: { label: "GitHub 仓库", needsCredential: true, fields: ["repo", "branch", "baseUrl"] },
-  gitea: { label: "Gitea 仓库", needsCredential: true, fields: ["repo", "branch", "baseUrl"] },
-  local: { label: "共享目录", needsCredential: false, fields: ["dir"] },
+  cos: { label: "腾讯云 COS", labelKey: "set.transport.cos", needsCredential: true, fields: ["bucket", "region"] },
+  github: { label: "GitHub 仓库", labelKey: "set.transport.github", needsCredential: true, fields: ["repo", "branch", "baseUrl"] },
+  gitea: { label: "Gitea 仓库", labelKey: "set.transport.gitea", needsCredential: true, fields: ["repo", "branch", "baseUrl"] },
+  local: { label: "共享目录", labelKey: "set.transport.local", needsCredential: false, fields: ["dir"] },
 };
 
 /** 各传输的已知 COS 地域（GUI 下拉候选项；允许自由填写）。 */
@@ -96,7 +96,9 @@ export function applySettingsPatch(current, patch = {}) {
 
   if (patch.enabled !== undefined) next.enabled = patch.enabled === true;
   if (patch.transport !== undefined) {
-    if (!TRANSPORTS.includes(patch.transport)) throw new Error(`不支持的传输方式：${patch.transport}`);
+    if (!TRANSPORTS.includes(patch.transport)) {
+      throw new SyncError("sync.err.badTransport", { transport: String(patch.transport) }, `不支持的传输方式：${patch.transport}`);
+    }
     next.transport = patch.transport;
   }
   if (patch.machineName !== undefined) next.machineName = sanitizeText(patch.machineName, 60);
@@ -104,13 +106,15 @@ export function applySettingsPatch(current, patch = {}) {
     const path = sanitizeText(patch.path, 200);
     // 必须含 {machineId}，否则多台机器会互相覆盖
     if (path.length > 0 && !path.includes("{machineId}")) {
-      throw new Error("路径模板必须包含 {machineId}，否则多台设备会写到同一个文件");
+      throw new SyncError("sync.err.pathTemplate", {}, "路径模板必须包含 {machineId}，否则多台设备会写到同一个文件");
     }
     if (path.length > 0) next.path = path;
   }
   if (patch.syncFrequency !== undefined) {
     const freq = normalizeFrequency(patch.syncFrequency);
-    if (freq !== patch.syncFrequency) throw new Error(`不支持的同步频率：${patch.syncFrequency}`);
+    if (freq !== patch.syncFrequency) {
+      throw new SyncError("sync.err.frequencyInvalid", { frequency: String(patch.syncFrequency) }, `不支持的同步频率：${patch.syncFrequency}`);
+    }
     next.syncFrequency = freq;
     // 频率决定推送周期（拉取恒 30 分钟）；两者一起写，避免出现「选了 12h 但周期还是 6h」
     const plan = frequencyPlan(freq);
@@ -129,7 +133,9 @@ export function applySettingsPatch(current, patch = {}) {
   if (patch.github !== undefined && patch.github !== null) {
     if (patch.github.repo !== undefined) {
       const repo = sanitizeText(patch.github.repo, 200).replace(/^https?:\/\/[^/]+\//, "").replace(/\.git$/, "");
-      if (repo.length > 0 && !/^[^/\s]+\/[^/\s]+$/.test(repo)) throw new Error("仓库要写成 owner/name");
+      if (repo.length > 0 && !/^[^/\s]+\/[^/\s]+$/.test(repo)) {
+        throw new SyncError("sync.err.repoFormat", {}, "仓库要写成 owner/name");
+      }
       if (repo.length > 0) next.github.repo = repo;
     }
     if (patch.github.branch !== undefined) {
@@ -138,7 +144,9 @@ export function applySettingsPatch(current, patch = {}) {
     }
     if (patch.github.baseUrl !== undefined) {
       const url = sanitizeText(patch.github.baseUrl, 200).replace(/\/+$/, "");
-      if (url.length > 0 && !/^https?:\/\//.test(url)) throw new Error("服务地址必须以 http:// 或 https:// 开头");
+      if (url.length > 0 && !/^https?:\/\//.test(url)) {
+        throw new SyncError("sync.err.baseUrlProtocol", {}, "服务地址必须以 http:// 或 https:// 开头");
+      }
       if (url.length > 0) next.github.baseUrl = url;
     }
   }
@@ -149,16 +157,23 @@ export function applySettingsPatch(current, patch = {}) {
   // 当前传输是否配齐（只校验「必填」，不校验凭据——凭据在加密库里）
   const meta = TRANSPORT_META[next.transport];
   if (next.enabled === true) {
+    /** 必填项：`{ 词典键, 中文名 }`——key 给客户端翻译，message 只做宿主日志 / 兜底。 */
     const missing = [];
     if (next.transport === "cos") {
-      if (next.cos.bucket.length === 0) missing.push("桶名");
-      if (next.cos.region.length === 0) missing.push("地域");
+      if (next.cos.bucket.length === 0) missing.push({ key: "set.bucket", label: "桶名" });
+      if (next.cos.region.length === 0) missing.push({ key: "set.region", label: "地域" });
     } else if (next.transport === "github" || next.transport === "gitea") {
-      if (next.github.repo.length === 0) missing.push("仓库");
+      if (next.github.repo.length === 0) missing.push({ key: "set.repo", label: "仓库" });
     } else if (next.transport === "local") {
-      if (next.local.dir.length === 0) missing.push("目录");
+      if (next.local.dir.length === 0) missing.push({ key: "set.dir", label: "目录" });
     }
-    if (missing.length > 0) throw new Error(`开启同步前请先填写：${missing.join("、")}`);
+    if (missing.length > 0) {
+      throw new SyncError(
+        "sync.err.missingFields",
+        { fields: missing.map((item) => item.key) },
+        `开启同步前请先填写：${missing.map((item) => item.label).join("、")}`,
+      );
+    }
   }
   void meta;
   return next;
@@ -194,9 +209,12 @@ export function slimConfig(config) {
 /**
  * 通过 DSH 的 configEditor 保存（会热应用）。
  *
+ * 失败时带稳定 `code`（完整词典键，如 `sync.err.saveUnavailable`）与 `params`，
+ * `message` 固定中文只进日志 / 兜底；路由会把它序列化成 `{error, code, params}`。
+ *
  * @param ctx - Cordis ctx。
  * @param buildNext - (currentSyncConfig) => 新配置；抛错即中止保存。
- * @returns {Promise<{ ok: boolean, status: string, message?: string }>}
+ * @returns {Promise<{ ok: boolean, status: string, code?: string, params?: object, message?: string }>}
  */
 export async function saveViaConfigEditor(ctx, buildNext) {
   let editor;
@@ -207,11 +225,17 @@ export async function saveViaConfigEditor(ctx, buildNext) {
     editor = undefined;
   }
   if (typeof editor?.edit !== "function") {
-    return { ok: false, status: "unavailable", message: "当前 DSH 版本不支持从界面保存配置，请手动编辑 profile 的 cordis.patch.yml" };
+    return {
+      ok: false,
+      status: "unavailable",
+      code: "sync.err.saveUnavailable",
+      params: {},
+      message: "当前 DSH 版本不支持从界面保存配置，请手动编辑 profile 的 cordis.patch.yml",
+    };
   }
   const entry = ctx?.fiber?.entry;
   if (entry === undefined) {
-    return { ok: false, status: "no-entry", message: "拿不到本插件的配置条目，无法保存" };
+    return { ok: false, status: "no-entry", code: "sync.err.noEntry", params: {}, message: "拿不到本插件的配置条目，无法保存" };
   }
   try {
     await editor.edit(entry, (raw) => {
@@ -221,6 +245,7 @@ export async function saveViaConfigEditor(ctx, buildNext) {
     });
     return { ok: true, status: "saved" };
   } catch (error) {
-    return { ok: false, status: "failed", message: error instanceof Error ? error.message : String(error) };
+    const { code, params } = syncFailureOf(error, "sync.err.saveFailed");
+    return { ok: false, status: "failed", code, params, message: error instanceof Error ? error.message : String(error) };
   }
 }

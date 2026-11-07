@@ -1,20 +1,27 @@
 # DSH 工作量报告
 
 > **把「我的付出」和「Token 消耗」放在同一张图上**——按**日期**与**工作区**看清时间投入到哪、Token 花在哪：日历热力图、时刻分析、工作区占比、模型用量，以及一键导出**可直接发给客户的自包含 HTML 报告**。
-> DeepSeek Harness（DSH）插件。当前版本：**2.4.1**。
+> DeepSeek Harness（DSH）插件。当前版本：**2.5.0**。
 
 [![npm](https://img.shields.io/npm/v/dsh-workload-report?style=flat-square&logo=npm)](https://www.npmjs.com/package/dsh-workload-report)
-[![license](https://img.shields.io/github/license/tableau-China/dsh-workload-report?style=flat-square)](./LICENSE)
+[![license](https://img.shields.io/github/license/tableau-China/dsh-workload-report?style=flat-square)](../../LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/tableau-China/dsh-workload-report/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/tableau-China/dsh-workload-report/actions)
 [![node](https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&logo=node.js)](https://nodejs.org)
 
-中文 · [English](./README.md)
+[English](../../README.md) · **[中文](./README.zh-CN.md)** · [日本語](./README.ja.md) · [Deutsch](./README.de.md) · [Français](./README.fr.md) · [Español](./README.es.md) · [Русский](./README.ru.md) · [Português](./README.pt.md)
 
 ## 它是什么
 
 DSH 自己只提供**当前会话**的统计行。这个插件补上跨会话、跨项目、跨时间的视角：日期与工作区分别投入了多少、几点最在状态、Token 被哪些模型消耗、大概花了多少钱，并能导出一份适合给客户 / 团队 / 月报的静态报告。
 
 **不只看花了多少，更看做了什么。** 活跃时长、活跃天数与轮次回答「我做了什么」；Token 与费用估算回答「消耗了多少」。所有页面与导出报告使用同一套口径，数字互相对得上。
+
+## 适合谁
+
+- **自由职业者 / 工作室**：给客户汇报时不用再说「我最近很忙」——直接给出时间花在哪个项目、占了多少、消耗了多少 Token。
+- **同时用好几个模型的开发者**：活跃时长、Token、输出速度、估算费用放一屏，按日期和工作区都能拆开看。
+- **写月报 / 项目复盘的人**：一键导出一份自包含 HTML 报告，不用手工拼表格。
+- **多台设备的人**：可选设备同步，把笔记本和台式机的用量合成一份（默认关闭）。
 
 ## 安装与入口
 
@@ -29,9 +36,30 @@ dsh plugin --profile web add github:tableau-China/dsh-workload-report#v2.0.0
 dsh plugin --profile web add link:$PWD
 ```
 
-装完重启 Web profile，入口在**侧边栏底部**：**工作量报告**（英文界面为 **Workload report**）。构建产物 `lib/client.js` 已入库，从 GitHub / npm 安装**不需要本地构建**。
+**DSH 桌面端**：设置 → 插件 → 搜索 `dsh-workload-report` 安装即可，不用命令行；`dsh web` 则执行上面的命令后重启 Web profile。入口在**侧边栏底部**：**工作量报告**（文案跟随 DSH 界面语言，8 种语言，见[多语言](#多语言8-种界面语言)；英文界面为 **Workload report**）。构建产物 `lib/client.js` 已入库，从 GitHub / npm 安装**不需要本地构建**。
 
 卸载：`dsh plugin --profile web remove dsh-workload-report`。
+
+## 多语言（8 种界面语言）
+
+插件**没有自己的语言开关**：看板、导出的 HTML 报告、AI 画像（本地规则与模型输出）、同步弹窗及其服务端错误，全部跟随 **DSH 界面语言**（设置 → 通用 → 语言）实时切换。
+
+| 语言 | locale id | 看板 | HTML 报告 | AI 画像 | 同步弹窗 |
+| --- | --- | --- | --- | --- | --- |
+| 英语 English | `en` | ✓ | ✓ | ✓ | ✓ |
+| 中文（简体） | `zh` | ✓ | ✓ | ✓ | ✓ |
+| 日语 日本語 | `ja` | ✓ | ✓ | ✓ | ✓ |
+| 西班牙语 Español | `es` | ✓ | ✓ | ✓ | ✓ |
+| 法语 Français | `fr` | ✓ | ✓ | ✓ | ✓ |
+| 德语 Deutsch | `de` | ✓ | ✓ | ✓ | ✓ |
+| 俄语 Русский | `ru` | ✓ | ✓ | ✓ | ✓ |
+| 葡萄牙语（巴西）Português | `pt` | ✓ | ✓ | ✓ | ✓ |
+
+- **单一文案来源**：所有用户可见文案在 `src/locales/<lang>.json`；`zh.json` 是键集基准、`en.json` 是兜底。`npm run check:i18n` 强制 8 种语言键集、键顺序、`{占位符}` 完全一致，并检查「源码零写死文案」「无死键」。
+- **报告语言**：导出报告由服务端按 `?lang=<id>` 渲染（看板导出时自动带上当前语言）；`<html lang>`、日期格式、页脚口径说明都跟随语言。
+- **AI 画像**：提示词明确要求模型用当前语言写 headline / 维度 / 建议 / 风险；本地规则兜底用同一份词典。
+- **同步 / 服务端消息**：用户可见的结果与错误统一 `code + params`，客户端按词典渲染，不会把服务端中文漏到其它语言界面。
+- **新增一种语言**：复制 `en.json` → 翻译 → 在 `src/locales/index.js` 注册；完整流程见 `docs/i18n.md`，术语表见 `docs/i18n-glossary.md`。旧版 DSH（< 0.2.2）没有语言服务时只有 `zh` / `en` 可选，插件照常工作。
 
 ## 数据来源与原则
 
@@ -55,10 +83,19 @@ dsh plugin --profile web add link:$PWD
 - **按工作区**：每行三列 bar —— **会话 / 轮次 · 我的付出 · Token 消耗**（同一比例尺）；工作区条形列表有独立卡片头（标题 + 右侧一行说明），与「模型用量」页同构。
 - **导出自包含 HTML 报告**：单文件、内联 CSS + 内联 SVG，**无脚本、无外部资源**；支持浅 / 深色、自定义标题与备注、`anonymize=1` 匿名化工作区与会话标题。报告与看板同口径：8 张 KPI、活跃日历 + **模型 Token 占比环形图**（两张独立卡片，列宽与下方「时刻分析 / 工作区占比」严格对齐）、小时密度点 + 轮次小图、表格比例条；顶部有**区间筛选器的静态样式**（当前区间实底高亮，纯视觉、无链接）；外链仅官方计费页。
 - **GitHub Star 入口**：面板右上角「GitHub logo + ★ Star」，新标签打开仓库；导出报告里不放（报告发给客户，外链只留官方计费页）。
-- **主题与语言自适应**：**数据可视化统一使用 Tableau 10 色板**（`src/palette.js`，看板与导出报告同色）；界面框架色（按钮 / 页签 / 链接）仍使用宿主主题 token（`--dsw-*`），自动跟随浅 / 深色；中英文文案逐键对齐。
+- **主题与语言自适应**：**数据可视化统一使用 Tableau 10 色板**（`src/palette.js`，看板与导出报告同色）；界面框架色（按钮 / 页签 / 链接）仍使用宿主主题 token（`--dsw-*`），自动跟随浅 / 深色；**界面文案 8 种语言**（英 / 中 / 日 / 西 / 法 / 德 / 俄 / 巴西葡，与 DSH 0.2.2 内置语言一致）实时跟随宿主语言切换——看板、导出报告、AI 画像与同步弹窗全覆盖，见[多语言](#多语言8-种界面语言)。
 - **AI 用户画像（默认包含，手动触发）**：导航**最右侧的独立顶层页签**（蓝色底强调，与其它页签可辨）；「主要会话」页只保留会话表。首开只显示三行提示，点「生成画像」才调用模型；只凭**聚合统计**生成「headline + 4–6 个维度（每条结论引用数字 + 证据）+ 2–3 条建议 + 风险提示」，绝不发送对话、标题或路径；汇总窗口固定为 **max(当前区间, 30 天)**；同一统计指纹直接复用磁盘缓存；输出被截断时先修复 JSON，修不好才降级为同构的本地规则版。详见 [AI 用户画像](#ai-用户画像)。
 - **打开即快**：打开面板**零次**读事件日志（`readSession`），冷开 25 ms、热开约 1 ms（隔离实例实测）；模型折叠完全由后台定时器驱动，不因打开面板而触发。
 - **多设备同步（2.0.0，默认关闭）**：多台机器的用量合成一份报告。COS / GitHub / Gitea / 共享目录四种存储任选，设置与凭据都在界面里填、保存即热应用；看板顶部设备 chips 可按设备筛选（**选中谁就只看谁，含本机**），按逐会话行合并，活跃天数不重复计天；**拉取结果落盘（2.4.0）**，重启 / 离线后仍能看到其它设备的设备清单与图表。见[多设备同步](#多设备同步200)。
+
+## 2.5.0 更新要点
+
+- **新增六国语言**：日语、西班牙语、法语、德语、俄语、巴西葡萄牙语（连同中英文共 8 种，与 DSH 0.2.2 内置语言一致）。看板、导出报告、AI 画像、同步弹窗实时跟随 DSH 语言，缺译自动回落英文。
+- **单一词典来源**：文案从「一个 JS 文件两种语言」改为按语言拆分的 JSON 词典（`src/locales/*.json`，398 键），客户端、宿主、静态报告共用；`npm run check:i18n` 校验键集 / 键顺序 / 占位符。
+- **HTML 报告支持语言**：`/report.html?lang=` 整份报告（含页脚口径长文）按语言渲染；`<html lang>` 与日期格式跟随。
+- **AI 画像跟随语言**：提示词要求模型用当前语言输出；本地规则兜底全部翻译（整句模板 + `{占位符}`，不再拼接句子）。
+- **服务端不再漏中文**：同步设置 / 凭据 / 自检结果统一 `code + params`，客户端按词典渲染，未知 code 才回落到服务端 message。
+- **数据层语言无关**：未知工作区 / 模型 / 供应商 / 会话标题不再把中文写进接口字段，各展示面用本地化兜底文案。
 
 ## 2.4.0 更新要点
 
@@ -81,7 +118,7 @@ dsh plugin --profile web add link:$PWD
 
 ## 口径说明
 
-完整定义见 **[docs/metrics.md](./docs/metrics.md)**；时长统一使用语言无关的 `H / M / S` 格式（与 Token 的 K/M/B 同理）。
+完整定义见 **[docs/metrics.md](../../docs/metrics.md)**；时长统一使用语言无关的 `H / M / S` 格式（与 Token 的 K/M/B 同理）。
 
 - **活跃时长** = 模型时间 + 工具时间 − 等待用户，是**引擎累计工作时间**，不是墙钟时长（并发会话与子代理各自累加）；等待用户单列为 `waitMs`。
 - **时刻分析** 默认 **Token 产出**（可切 **轮次**），顶部叠人类消息密度点；读不出事件日志的会话不计入 Token 图，并在卡片注明数量。
@@ -132,7 +169,7 @@ dsh plugin --profile web add link:$PWD
       cacheTtlMs: 86400000         # 指纹缓存时长（毫秒）；0 = 不落盘
 ```
 
-默认价目内置、离线可用；如合同价不同，可用 `pricing.overrides` / `pricing.asOf` / `pricing.links` 覆盖，详见 [docs/models.md](./docs/models.md)。
+默认价目内置、离线可用；如合同价不同，可用 `pricing.overrides` / `pricing.asOf` / `pricing.links` 覆盖，详见 [docs/models.md](../../docs/models.md)。
 
 ## 多设备同步（2.0.0）
 
@@ -140,7 +177,7 @@ dsh plugin --profile web add link:$PWD
 
 **不需要改 YAML。** 打开看板 → 设备筛选行右侧「设备同步」→ **直接弹出一个大弹窗**（原「设备同步」页已并入，没有第二层）：
 
-![同步设置弹窗](./docs/images/sync-dialog-overview.png)
+![同步设置弹窗](../../docs/images/sync-dialog-overview.png)
 
 1. **标题旁的状态图标**：`✓` 已配置且连接正常，`!` 已配置但连不上，`○` 未配置 / 未开启 / 未测试；
    状态区是**一行**（大徽标 + 结论 + 上次推送 · 上次拉取）。
@@ -158,7 +195,7 @@ dsh plugin --profile web add link:$PWD
    选了「仅手动」时，选项后面会出现「立即推送 / 立即拉取」两个按钮。
 9. 点唯一的「保存设置」：先写 profile 配置（热应用），再写凭据并自检一次连接。
 
-想用配置文件的场景（服务器 / CI）也支持，见 [docs/sync.md](./docs/sync.md) 第四节。
+想用配置文件的场景（服务器 / CI）也支持，见 [docs/sync.md](../../docs/sync.md) 第四节。
 
 四种传输任选：
 
@@ -178,7 +215,7 @@ dsh plugin --profile web add link:$PWD
 - **桶 / 仓库必须是私有的**：载荷含 `cwd` 绝对路径。界面上**不再提供「抹掉路径」开关**（含义难以理解，且默认即为关闭）；
   确实需要时可以手改配置 `sync.redactPaths: true`，把路径抹成别名或短哈希。
 
-完整配置项、最小权限策略与验收标准见 [docs/sync.md](./docs/sync.md)。
+完整配置项、最小权限策略与验收标准见 [docs/sync.md](../../docs/sync.md)。
 
 ## 版本号
 
@@ -235,7 +272,7 @@ dsh plugin --profile web add link:$PWD
 - **不写入 HTML 报告**：静态导出有意不展示画像（见 `docs/report-parity.md`）——给客户或打印的文件里，
   不应夹带 AI 对个人的判断。
 
-完整说明：[docs/ai-profile.md](./docs/ai-profile.md)。
+完整说明：[docs/ai-profile.md](../../docs/ai-profile.md)。
 
 ## 只读接口
 
@@ -261,18 +298,51 @@ dsh plugin --profile web add link:$PWD
 - 删除索引是安全的：插件会重新冷读历史会话。冷读走官方接口、并发 8（作者本机 300+ 会话约 2 分钟）。
 - 极早期的 **v0 格式会话**可能完全读不出：它们不计入统计，界面会写明数量；无法得到 Token 小时分布时，时刻卡会写 **「Token 未计入 N 个会话」**。
 
+## 常见问题（FAQ）
+
+### 怎么查看所有 DSH 会话的累计 Token 用量？
+
+安装插件、重启 DSH 后，打开侧边栏底部的**工作量报告**。KPI 里的**总 Token** 合计所选区间的全部会话（今天 / 近 7 / 30 / 90 天 / 全部），下方按日期明细、按工作区、按模型三个页签可继续拆解。它补的正是「只看当前会话统计行」看不到的跨会话、跨项目、跨设备视角。
+
+### 它和 Token / 费用面板有什么不同？
+
+Token 面板回答「花了多少」；这个插件回答**「我的时间花到哪了」**——统计**活跃时长**（模型 + 工具时间，剔除等待用户），归到**日期与工作区**，再与 Token 并排呈现。你能看到「某项目占 46% 投入、30 天里 18 天在场、消耗 3.7 B Token」，并直接导出给客户。
+
+### 能给客户 / 领导看吗？
+
+可以。**导出 HTML 报告**是一个自包含文件（内联 CSS + SVG，无脚本、无外部资源），任何浏览器都能打开；`anonymize=1` 可隐藏工作区名与会话标题，`title` / `note` 可自定义标题与备注。报告与看板同口径：9 张 KPI、日历热力图、模型 Token 占比、时刻分析、工作区占比和明细表，页脚写好口径定义。
+
+### 多台电脑的用量能合并吗？
+
+可以，但默认关闭。设备同步通过**腾讯云 COS / GitHub / Gitea / 共享目录**合并各机器的逐会话汇总行，**只同步数字**，不含对话内容、标题、提示词或附件；每台机器只写自己的文件，无需手工合并。
+
+### 插件会把数据发到网上吗？
+
+默认不会。插件只注册本机**只读** HTTP 路由、只用官方 DSH 接口，只写自己的本地索引与缓存。两个可选能力会联网：余额 chip（默认关闭）与 AI 用户画像（只有点击「生成画像」后才把聚合统计发给模型）。导出报告是本地文件。
+
+### 支持哪些界面语言？
+
+看板、导出报告、AI 画像与同步弹窗都跟随 **DSH 界面语言**，支持 DSH 0.2.2 内置的 8 种语言：英 / 中 / 日 / 西 / 法 / 德 / 俄 / 巴西葡。在**设置 → 通用 → 语言**切换后插件实时跟随，无需重载、无需单独设置。
+
+### 桌面端 / dsh web 怎么安装？
+
+**DSH 桌面端**：设置 → 插件 → 搜索 `dsh-workload-report` 安装；**dsh web**：`dsh plugin add dsh-workload-report` 后重启 Web profile。也支持从 GitHub 安装（`dsh plugin --profile web add github:tableau-China/dsh-workload-report#main`），构建产物已入库，不需要本地构建。
+
 ## 文档索引
 
 | 文档 | 内容 |
 | --- | --- |
-| [docs/metrics.md](./docs/metrics.md) | 口径：活跃 / 净活跃 / 等待、时刻分析、Token、日历、工作区 |
-| [docs/models.md](./docs/models.md) | 模型归属、归并、缓存命中率、峰谷价与费用估算 |
-| [docs/ui-conventions.md](./docs/ui-conventions.md) | 共享 UI 组件、卡片头、图例 / 状态、tooltip 约定 |
-| [docs/report-parity.md](./docs/report-parity.md) | 看板 → 报告对齐清单、有意差异、结构断言 |
-| [docs/ai-profile.md](./docs/ai-profile.md) | AI 用户画像：白名单 payload、缓存指纹、降级 code、隐私 |
-| [docs/preaggregation.md](./docs/preaggregation.md) | 预聚合评估：实测数据、代价、触发条件（结论：当前不需要） |
-| [CHANGELOG.md](./CHANGELOG.md) | 版本变更与测试记录 |
-| [PROGRESS.md](./PROGRESS.md) | 决策、量测、环境坑与发布记录 |
+| [docs/metrics.md](../../docs/metrics.md) | 口径：活跃 / 净活跃 / 等待、时刻分析、Token、日历、工作区 |
+| [docs/models.md](../../docs/models.md) | 模型归属、归并、缓存命中率、峰谷价与费用估算 |
+| [docs/ui-conventions.md](../../docs/ui-conventions.md) | 共享 UI 组件、卡片头、图例 / 状态、tooltip 约定 |
+| [docs/report-parity.md](../../docs/report-parity.md) | 看板 → 报告对齐清单、有意差异、结构断言 |
+| [docs/ai-profile.md](../../docs/ai-profile.md) | AI 用户画像：白名单 payload、缓存指纹、降级 code、隐私 |
+| [docs/preaggregation.md](../../docs/preaggregation.md) | 预聚合评估：实测数据、代价、触发条件（结论：当前不需要） |
+| [CHANGELOG.md](../../CHANGELOG.md) | 版本变更与测试记录 |
+| [docs/discoverability.md](../../docs/discoverability.md) | 让项目更容易被搜到：关键词、渠道、投稿清单、发布计划 |
+| [docs/i18n.md](../../docs/i18n.md) | 8 语言架构、维护规则、如何新增一种语言 |
+| [docs/i18n-glossary.md](../../docs/i18n-glossary.md) | 术语表与翻译规范（给译者） |
+| [PROGRESS.md](../../PROGRESS.md) | 决策、量测、环境坑与发布记录 |
 
 ## 隐私
 
@@ -288,15 +358,17 @@ dsh plugin --profile web add link:$PWD
 | --- | --- |
 | `pnpm add -D esbuild puppeteer-core` | 安装构建与浏览器测试依赖（也可用 `ESBUILD_PATH` / `WL_PUPPETEER_DIR` 指向已有安装） |
 | `node build.mjs` | 用 esbuild 把 `src/client/` 打成 `lib/client.js`（ModuleLoader 工厂格式） |
-| `node test/verify.mjs` | **1608 项离线断言**：聚合口径与四档区间同源、时区、轮次落桶与守恒、按消息时间的小时 Token、人类消息密度、等待剔除（三层判定 + 长任务豁免 + `excludeWait:false` 回归）、索引 / 冷读兜底、报告结构对齐、画像独立页签右对齐与 30 天窗口、多设备同步（载荷 / 合并 / 凭据 / 设置 / 设备筛选 / 拉取缓存持久化）、速度与首字延迟口径、首开零模型调用、i18n 逐键对齐、余额状态 |
+| `node test/verify.mjs` | **1738 项离线断言**：聚合口径与四档区间同源、时区、轮次落桶与守恒、按消息时间的小时 Token、人类消息密度、等待剔除（三层判定 + 长任务豁免 + `excludeWait:false` 回归）、索引 / 冷读兜底、报告结构对齐、画像独立页签右对齐与 30 天窗口、多设备同步（载荷 / 合并 / 凭据 / 设置 / 设备筛选 / 拉取缓存持久化）、速度与首字延迟口径、首开零模型调用、i18n 逐键对齐、余额状态、8 语言渲染（看板辅助函数 / 报告 / AI 画像 / 提示词） |
 | `./test/e2e-boot.sh 3299` | 起一个**隔离实例**（独立 DSH_HOME + 端口），不影响正在用的 GUI |
+| `node test/i18n.mjs` | **词典一致性检查**（85 项断言）：8 语言键集 / 键顺序 / 占位符 / 空值 / 漏译 / 写死文案 / 死键；`--lang de` 查单一语言 |
 | `node test/e2e-ui.mjs` | 真实浏览器 E2E：日历 / 柱状切换、几何校验、环形图、报告导出、时刻卡 |
+| `node test/e2e-i18n.mjs` | 真实浏览器 8 语言 E2E：注入 `navigator.languages`，打开看板与报告页，按词典断言文案并截图 |
 
 CI 会跑 `build.mjs` + `verify.mjs`，并校验入库的 `lib/client.js` 与源码一致。
 
 ## 兼容性
 
-- DSH `0.2.x`，**含 `alpha` 预发布版**（开发与验证基于 `@deepseek-ai/dsh@0.2.1-alpha.2`）。插件只依赖官方接口（`sessionProjections` / `sessionProjectionCache` / `sessionQuery`）与 Node 内置模块，不碰内部文件格式。
+- DSH `0.2.x`，**含 `alpha` 预发布版**（开发与验证基于 `@deepseek-ai/dsh@0.2.1-alpha.2` 与 `0.2.2-rc.1`）。manifest 声明 `engines.dsh >= 0.2.1-alpha.0` 且**不设上限**：升级到新的 0.x 时不会因为版本范围把插件拒之门外；更高版本允许加载，但只有上面两个版本是显式验证过的。插件只依赖官方接口（`sessionProjections` / `sessionProjectionCache` / `sessionQuery`）与 Node 内置模块，不碰内部文件格式。
 - 首次启动会对投影检查点未命中的历史会话做一次冷读；期间接口返回逐步填充的数据并带 `indexing: true`，结果落盘后重启即复用。
 - 极早期的 **v0 格式会话**可能无法被当前 Harness 迁移 / 读取；这类会话不计入统计，界面会写明数量。
 
@@ -306,4 +378,4 @@ CI 会跑 `build.mjs` + `verify.mjs`，并校验入库的 `lib/client.js` 与源
 
 ## License
 
-[MIT](./LICENSE)
+[MIT](../../LICENSE)

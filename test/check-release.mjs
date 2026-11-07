@@ -33,11 +33,11 @@ ok(changelog.includes(`## v${version}（`), `CHANGELOG 有 v${version} 的正文
 ok(new RegExp(`\\| \\*\\*${version.replaceAll(".", "\\.")}\\*\\* \\|`).test(changelog), `CHANGELOG 版本表包含 ${version}`);
 
 // README 中英文声明的当前版本
-const zh = read("README.zh-CN.md");
+const zh = read("docs/i18n/README.zh-CN.md");
 const en = read("README.md");
 const zhMatch = /当前版本：\*\*([\d.]+)\*\*/.exec(zh);
 const enMatch = /Current version: \*\*([\d.]+)\*\*/.exec(en);
-ok(zhMatch !== null && zhMatch[1] === version, "README.zh-CN 的「当前版本」与 package.json 一致", zhMatch?.[1]);
+ok(zhMatch !== null && zhMatch[1] === version, "docs/i18n/README.zh-CN 的「当前版本」与 package.json 一致", zhMatch?.[1]);
 ok(enMatch !== null && enMatch[1] === version, "README 的 Current version 与 package.json 一致", enMatch?.[1]);
 
 // CHANGELOG 里不能有比当前版本更高的条目（防止漏发版却写了新版本）

@@ -1,0 +1,144 @@
+{
+  "format": 1,
+  "title": {
+    "en": "DSH Workload Report — official plugin index",
+    "zh": "DSH 工作量报告插件索引"
+  },
+  "description": {
+    "en": "The index for the dsh-workload-report plugin.",
+    "zh": "dsh-workload-report 插件索引。"
+  },
+  "metadata": {
+    "categories": {
+      "usage": {
+        "title": {
+          "en": "Usage & workload",
+          "zh": "用量与工作量"
+        }
+      }
+    }
+  },
+  "plugins": [
+    {
+      "name": "dsh-workload-report",
+      "title": {
+        "en": "DSH Workload Report — effort and token usage, with a client-ready HTML report",
+        "zh": "DSH 工作量报告 —— 我的付出与 Token 消耗，可导出给客户的 HTML 报告",
+        "ja": "DSH ワークロードレポート — DeepSeek Harness の作業時間とトークン使用量を可視化",
+        "de": "DSH Workload-Report: Token-Nutzung und Arbeitszeit",
+        "fr": "Rapport de charge et tokens pour DeepSeek Harness",
+        "es": "Informe de carga de trabajo para DSH",
+        "ru": "Отчёт о нагрузке и токенах для DeepSeek Harness",
+        "pt": "DSH Workload Report: tokens e carga de trabalho"
+      },
+      "description": {
+        "en": "DeepSeek Harness (DSH) plugin: active time and token usage in one view, by date, workspace, model and session. Calendar heatmap, time-of-day analysis, model speed, TTFT and estimated cost; a client-ready self-contained HTML report; an optional AI usage profile; optional multi-device sync; 8 interface languages. Read-only and local by default.",
+        "zh": "DeepSeek Harness（DSH）插件：活跃时长与 Token 用量同屏，按日期、工作区、模型、会话拆解；日历热力图、时刻分析、模型速度/首字延迟/估算费用；可匿名化的自包含 HTML 报告；AI 用户画像；可选多设备同步；界面支持 8 种语言。只读接口、默认零外发。",
+        "ja": "DeepSeek Harness（DSH）プラグイン。セッション・プロジェクト・期間をまたいで作業時間（モデル時間 + ツール時間 − ユーザー待ち）とトークン使用量を集計し、日付・ワークスペース・モデル・セッション別に可視化します。カレンダーヒートマップ、時間帯分析、モデル別の速度・TTFT・概算コストに加え、顧客にそのまま送れる匿名化対応の自己完結 HTML レポートを書き出せます。統計はすべて本機に保存され、AI ユーザープロファイルは手動トリガー、複数デバイス同期は既定オフです。日本語を含む 8 言語の UI に追従します。",
+        "de": "DSH-Plugin (DeepSeek Harness) für Arbeitszeit und Token-Nutzung: Kalender-Heatmap, Tageszeit-Analyse, Modellgeschwindigkeit, TTFT und geschätzte Kosten. HTML-Report als eigenständige, anonymisierbare Datei; KI-Profil nur aus Aggregaten und auf Klick; Sync optional; 8 Sprachen.",
+        "fr": "Plugin DeepSeek Harness (DSH) : temps de travail et tokens par date, espace de travail et modèle. Heatmap calendaire, analyse horaire, TTFT, coût estimé, rapport HTML autonome anonymisable, profil IA manuel sur agrégats, synchronisation multi-appareils optionnelle, 8 langues.",
+        "es": "Plugin de DeepSeek Harness (DSH): tiempo de trabajo y uso de tokens por fecha, espacio de trabajo, modelo y sesión. Calendario, análisis por hora, TTFT, coste estimado e informe HTML autocontenido para clientes. Perfil con IA bajo demanda, sincronización opcional y 8 idiomas.",
+        "ru": "Плагин DeepSeek Harness (DSH): рабочее время и использование токенов по датам, рабочим пространствам и моделям. Календарная тепловая карта, анализ по часам, TTFT, оценка стоимости, автономный HTML-отчёт с анонимизацией, ИИ-профиль по агрегатам, синхронизация устройств, 8 языков.",
+        "pt": "Plugin do DeepSeek Harness (DSH) com visão entre sessões: tempo de trabalho e tokens por data, espaço de trabalho e modelo; mapa de calor, análise por hora, relatório HTML autocontido para clientes, perfil de IA manual e sincronização opcional entre dispositivos. 8 idiomas."
+      },
+      "icon": "https://raw.githubusercontent.com/tableau-China/dsh-workload-report/main/assets/icon-180.png",
+      "author": "XILEJUN (tableau-China)",
+      "homepage": "https://vizwise.cn/posts/dsh-workload-report",
+      "repository": {
+        "url": "https://github.com/tableau-China/dsh-workload-report"
+      },
+      "metadata": {
+        "category": "usage",
+        "keywords": [
+          "DeepSeek Harness plugin",
+          "DSH plugin",
+          "token usage dashboard",
+          "AI coding workload report",
+          "active time tracking",
+          "client HTML report",
+          "multi-device sync",
+          "8 languages",
+          "DeepSeek Harness 插件",
+          "DSH 插件",
+          "Token 用量统计",
+          "工作量报告",
+          "AI 编程效率",
+          "客户报告",
+          "多设备同步",
+          "8 种语言",
+          "DeepSeek Harness",
+          "DSH プラグイン",
+          "トークン使用量",
+          "作業時間",
+          "ワークスペース",
+          "カレンダーヒートマップ",
+          "時間帯分析",
+          "AI ユーザープロファイル",
+          "デバイス同期",
+          "HTML レポート",
+          "DSH Plugin",
+          "Workload-Report",
+          "Token-Nutzung",
+          "Arbeitszeit",
+          "Nutzungs-Dashboard",
+          "HTML-Report",
+          "Modellnutzung",
+          "KI-Nutzerprofil",
+          "Multi-Device-Sync",
+          "plugin DSH",
+          "rapport de charge",
+          "tableau de bord",
+          "utilisation des tokens",
+          "temps de travail",
+          "espace de travail",
+          "heatmap calendaire",
+          "rapport HTML",
+          "synchronisation multi-appareils",
+          "workload report",
+          "token usage",
+          "informe de carga",
+          "uso de tokens",
+          "tiempo de trabajo",
+          "panel de uso",
+          "espacio de trabajo",
+          "informe HTML",
+          "perfil con IA",
+          "sincronización multidispositivo",
+          "плагин DSH",
+          "отчёт о нагрузке",
+          "панель использования",
+          "использование токенов",
+          "рабочее время",
+          "рабочее пространство",
+          "календарная тепловая карта",
+          "HTML-отчёт",
+          "синхронизация устройств",
+          "carga de trabalho",
+          "painel de uso",
+          "relatório HTML",
+          "tempo de trabalho",
+          "estatísticas de uso",
+          "perfil de IA",
+          "sincronização entre dispositivos"
+        ],
+        "labels": [],
+        "sortKeys": {}
+      },
+      "dist-tags": {
+        "latest": "2.5.0"
+      },
+      "versions": [
+        {
+          "version": "2.5.0",
+          "publishTimestamp": 1794018389,
+          "source": {
+            "type": "npm"
+          },
+          "engines": {
+            "dsh": ">=0.2.1-alpha.0"
+          }
+        }
+      ]
+    }
+  ]
+}

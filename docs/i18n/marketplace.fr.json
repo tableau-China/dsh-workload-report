@@ -1,0 +1,8 @@
+{
+  "language": "fr",
+  "title": "Rapport de charge et tokens pour DeepSeek Harness",
+  "tagline": "Tableau de bord DSH : temps de travail et tokens par date, espace de travail et modèle.",
+  "description": "Plugin DeepSeek Harness (DSH) : temps de travail et tokens par date, espace de travail et modèle. Heatmap calendaire, analyse horaire, TTFT, coût estimé, rapport HTML autonome anonymisable, profil IA manuel sur agrégats, synchronisation multi-appareils optionnelle, 8 langues.",
+  "category": "usage",
+  "keywords": ["DeepSeek Harness", "plugin DSH", "rapport de charge", "tableau de bord", "utilisation des tokens", "temps de travail", "espace de travail", "heatmap calendaire", "rapport HTML", "synchronisation multi-appareils", "workload report", "token usage"]
+}
