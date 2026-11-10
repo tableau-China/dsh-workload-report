@@ -37,6 +37,10 @@ function waitThresholdOf(waitMinMs) {
  * DeepSeek 官方定价页注 1 原文：*"Use deepseek-flash as the model name. The legacy names
  * deepseek-v4-flash and deepseek-v4-flash-vision-exp are still accepted…"*
  * —— 两者是同一模型（DeepSeek-V4.1-Flash）的新旧名称，合并不会污染口径。
+ *
+ * 2.5.1 起**只合并同一 provider 下的新旧名**（见 groupKeyFor）：官方账户 `deepseek-account`
+ * 与 API Key `deepseek-official` 都用 `deepseek-flash`，跨 provider 合并会让两种凭据的用量
+ * 与费用再也分不开。组名带上 provider 前缀后，`modelLabel` / `costOf` 的裸名回退照常工作。
  */
 export const DEFAULT_MODEL_GROUPS = [
   { group: "deepseek-v4-flash", match: ["deepseek-flash", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"] },
@@ -46,16 +50,21 @@ export const DEFAULT_MODEL_GROUPS = [
  * 计算某个 provider/model 的归并组名。
  * @param provider - 提供方 id（可为空）。
  * @param model - 模型 id（可为空）。
- * @param groups - 用户自定义分组（覆盖内置同组规则）。
+ * @param groups - 用户自定义分组（覆盖内置同组规则；显式指定的合并口径保持不变）。
  * @returns 组名；无匹配时返回 "provider/model" 原文。
+ *
+ * 内置规则命中时组名带 provider 前缀（`deepseek-account/deepseek-v4-flash`），
+ * 这样官方账户与 API Key 的用量各自成行；自定义规则仍按用户写的组名原样返回。
  */
 export function groupKeyFor(provider, model, groups = []) {
   const p = typeof provider === "string" ? provider.trim() : "";
   const m = typeof model === "string" ? model.trim() : "";
   if (m === "") return UNKNOWN_MODEL;
-  const all = [...normalizeGroups(groups), ...DEFAULT_MODEL_GROUPS];
-  for (const rule of all) {
+  for (const rule of normalizeGroups(groups)) {
     if (rule.match.includes(m)) return rule.group;
+  }
+  for (const rule of DEFAULT_MODEL_GROUPS) {
+    if (rule.match.includes(m)) return p === "" ? rule.group : `${p}/${rule.group}`;
   }
   return p === "" ? m : `${p}/${m}`;
 }
@@ -615,7 +624,25 @@ function numOr0(value) {
  * DeepSeek：`https://api-docs.deepseek.com/quick_start/pricing/`（USD）与 `/zh-cn/…`（CNY）
  * 峰时 = 01:00–04:00 与 06:00–10:00 UTC 周一至周五；谷价 = 峰价一半。
  * 缓存写入官方未单独计价 → 记 0（若你的合约不同，用 pricing.overrides 覆盖）。
+ *
+ * 官方 Messages 目录里叫 `deepseek-flash`（= V4.1 Flash）/ `deepseek-v4-pro`，
+ * 渠道侧常用 `deepseek-v4.1-flash` / `deepseek-v4.1-pro`。两组名字**同价**，
+ * 因此共用一份常量，避免两处价格各自漂移；`pricing.overrides` 可按任意键精确覆盖。
  */
+const FLASH_CNY = { miss: { off: 1, peak: 2 }, cacheHit: { off: 0.02, peak: 0.04 }, output: { off: 4, peak: 8 }, cacheWrite: { off: 0, peak: 0 } };
+const PRO_CNY = { miss: { off: 4.5, peak: 9 }, cacheHit: { off: 0.15, peak: 0.3 }, output: { off: 13.5, peak: 27 }, cacheWrite: { off: 0, peak: 0 } };
+const FLASH_USD = { miss: { off: 0.15, peak: 0.3 }, cacheHit: { off: 0.003, peak: 0.006 }, output: { off: 0.6, peak: 1.2 }, cacheWrite: { off: 0, peak: 0 } };
+const PRO_USD = { miss: { off: 0.66, peak: 1.32 }, cacheHit: { off: 0.022, peak: 0.044 }, output: { off: 1.98, peak: 3.96 }, cacheWrite: { off: 0, peak: 0 } };
+
+/**
+ * 同一模型的其它名字 → 价目表里的基础模型名。
+ * `-sg` 是 V4.1 Flash 的区域路由变体（同一模型、同一官方价），单独列出以免费用显示 `—`；
+ * 若合约价格不同，用 `pricing.overrides` 以该变体名为键覆盖。
+ */
+export const PRICE_ALIASES = {
+  "deepseek-v4.1-flash-sg": "deepseek-v4.1-flash",
+};
+
 export const DEFAULT_PRICING = {
   asOf: "2026-10-13",
   currency: "CNY",
@@ -626,12 +653,16 @@ export const DEFAULT_PRICING = {
   ],
   tables: {
     CNY: {
-      "deepseek-v4-flash": { miss: { off: 1, peak: 2 }, cacheHit: { off: 0.02, peak: 0.04 }, output: { off: 4, peak: 8 }, cacheWrite: { off: 0, peak: 0 } },
-      "deepseek-v4-pro": { miss: { off: 4.5, peak: 9 }, cacheHit: { off: 0.15, peak: 0.3 }, output: { off: 13.5, peak: 27 }, cacheWrite: { off: 0, peak: 0 } },
+      "deepseek-v4-flash": FLASH_CNY,
+      "deepseek-v4.1-flash": FLASH_CNY,
+      "deepseek-v4-pro": PRO_CNY,
+      "deepseek-v4.1-pro": PRO_CNY,
     },
     USD: {
-      "deepseek-v4-flash": { miss: { off: 0.15, peak: 0.3 }, cacheHit: { off: 0.003, peak: 0.006 }, output: { off: 0.6, peak: 1.2 }, cacheWrite: { off: 0, peak: 0 } },
-      "deepseek-v4-pro": { miss: { off: 0.66, peak: 1.32 }, cacheHit: { off: 0.022, peak: 0.044 }, output: { off: 1.98, peak: 3.96 }, cacheWrite: { off: 0, peak: 0 } },
+      "deepseek-v4-flash": FLASH_USD,
+      "deepseek-v4.1-flash": FLASH_USD,
+      "deepseek-v4-pro": PRO_USD,
+      "deepseek-v4.1-pro": PRO_USD,
     },
   },
 };
@@ -677,14 +708,25 @@ function normalizePrice(price = {}) {
  * @param bucket - 模型桶。
  * @param pricing - resolvePricing() 的结果。
  * @returns 金额（与 pricing.currency 同币种）或 null。
+ *
+ * 价目表按**裸模型名**作键；归并组名有四种形态，逐级回退（先精确、后模糊，
+ * 用户 overrides 的精确键永远优先）：
+ *   1. 全名 `magpie/workbuddy-ai/deepseek-v4.1-flash`（用户可这样覆盖）；
+ *   2. 去掉第一个 `/` 的 `workbuddy-ai/deepseek-v4.1-flash`（旧版 overrides 口径）；
+ *   3. 最后一段 `deepseek-v4.1-flash`（三段组名必须靠这一级命中）；
+ *   4. 同一模型的别名（如 `-sg` 区域变体）→ 基础模型名。
  */
 export function costOf(bucket, pricing) {
-  // 归并组名可能是 "组名"，也可能是未被归并的 "provider/model"；
-  // 价目表用裸模型名作键，所以这里再回退查一次去掉 provider 前缀的名字。
   const key = typeof bucket?.group === "string" ? bucket.group : typeof bucket?.key === "string" ? bucket.key : "";
   const bare = key.includes("/") ? key.slice(key.indexOf("/") + 1) : null;
+  const leaf = key.includes("/") ? key.slice(key.lastIndexOf("/") + 1) : null;
+  const name = leaf ?? key;
+  const canonical = PRICE_ALIASES[name] ?? name;
   const table = pricing?.table ?? {};
-  const price = table[key] ?? (bare === null ? undefined : table[bare]);
+  const price = table[key]
+    ?? (bare === null ? undefined : table[bare])
+    ?? (leaf === null ? undefined : table[leaf])
+    ?? table[canonical];
   if (!price) return null;
   const per = 1e6;
   const sum =
@@ -726,9 +768,11 @@ export function modelLabel(key, aliases = {}) {
  * 供应商 = `magpie/workbuddy-ai`。只取首段会把同渠道下的不同厂商并成一个（例如
  * `magpie/workbuddy-ai` 与 `magpie/workbuddy` 都变成 `magpie`），失去"换哪条链路"的诊断价值。
  *
- * **归并组没有渠道段时从 raw 回推**：内置归并组（如 `deepseek-v4-flash`）把官方 legacy 名合并后
- * 组名里没有 `/`，但它记录了原始 `provider/model` 计数。取出现次数最多的那个 provider，
- * 避免显示成 `(未标注供应商)`（例如 `deepseek-account/deepseek-flash` → `deepseek-account`）。
+ * **归并组没有渠道段时从 raw 回推**：2.5.1 之前的内置归并组（`deepseek-v4-flash`）把官方
+ * legacy 名合并后组名里没有 `/`，但它记录了原始 `provider/model` 计数。取出现次数最多的
+ * 那个 provider，避免显示成 `(未标注供应商)`（例如 `deepseek-account/deepseek-flash` →
+ * `deepseek-account`）。新折叠的组名已带 provider 前缀，这段回推只用于兼容旧索引 / 旧设备
+ * 同步过来的快照。
  *
  * @param key - 归并组名。
  * @param raw - 该桶的原始 `provider/model` → 次数（可选）。

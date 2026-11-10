@@ -149,7 +149,7 @@ for await (const chunk of call.stream({ ...call.config, system, messages, signal
 成功时响应额外带 `costHint: { inputTokens, outputTokens }`（只报本次旁路调用的 token 数，不猜价格）。
 
 超时用 `AbortSignal.timeout(timeoutMs)`，并再挂一个普通 timer 兜底，路由绝不悬挂；
-该路由是**旁路调用**，不持有快照 / 报告锁，不阻塞 `/snapshot` 与 `/report.html`。
+该路由是**旁路调用**，不持有快照锁，不阻塞 `/snapshot`。
 
 | code | 触发条件 | 返回 |
 | --- | --- | --- |
@@ -247,8 +247,6 @@ curl -s 'http://127.0.0.1:3080/workload-report/v1/health'
 
 ## 10. 报告与 Token 口径
 
-- **静态 HTML 报告不展示画像**（见 `docs/report-parity.md` 的「有意不同」）：导出文件面向客户 / 打印，
-  不应夹带 AI 对个人的判断；报告继续保持无脚本、自包含。
 - AI 调用是**旁路辅助调用**，不写入任何会话事件，因此**不计入本插件的 Token / 费用报表**；
   卡片上单独显示这次调用的 input/output tokens（`usage` / `costHint`）与生成时间。
 

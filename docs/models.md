@@ -150,22 +150,36 @@ DSH 里**模型与 token 都在事件日志**里，官方有读取接口，不�
 > —— 两者是同一模型（DeepSeek-V4.1-Flash）的新旧名称，合并不会混淆口径。
 
 - 实现为**内置默认分组规则**（不是只靠展示别名）；明细行可展开看原始 provider/model 组成；
+- **2.5.1 起内置规则只在同一个 provider 内合并**，组名带 provider 前缀
+  （`deepseek-account/deepseek-v4-flash` / `deepseek-official/deepseek-v4-flash`）。
+  原因：官方「DeepSeek 账户」走 `deepseek-account`（登录 token），API 配置的密钥走
+  `deepseek-official`（`x-api-key`），两条路由都用 `deepseek-flash`；跨 provider 合并会把
+  两者的用量与费用混成一行。事件日志只有路由 id、没有凭据内容，自定义网关仍无法自动分类。
 - **展示名只取组名的最后一段**（2.1.1 起）：组名可能是多段 `渠道/提供商/模型`，
   例如 `magpie/workbuddy-ai/deepseek-v4.1-flash` → 统一显示 `deepseek-v4.1-flash`。
   旧实现只切掉第一段、会残留 `workbuddy-ai/`；`modelAliases` 仍优先（全名别名 → 短名别名 → 最后一段）。
+- **同名模型显示名统一消歧**（2.5.1）：同名补供应商短名，趋势图例 / treemap / 明细表行标题 /
+  首页环形图 / 导出报告共用 `disambiguateModelLabels()`；`deepseek-account` 与 `deepseek-official`
+  在供应商列显示本地化可读名（「DeepSeek 账户」/「DeepSeek API 密钥」），完整路由 id 留在 tooltip。
 - 「最活跃模型」KPI **只显示模型名**，不再附「请求占比 xx%」；
   「模型 Token 占比」图例**完整显示**模型名（可折行，不做省略号截断）。
 - 另留 `modelGroups` 配置，用户可自定义其它合并（如把同系列的小版本并到一起）。
+- 索引换代：`INDEX_VERSION` 8 → 9，旧行里混合两种凭据的 `models` 无法事后拆分，重启后冷读 + 重折一次。
 
 ### 修订 2：费用估算 = 官方价目 + 官方链接（不联网抓取）
 
 **结论：DeepSeek 官方计费标准可稳定获取，且能精确到时段的峰谷价。**
 
-| 每 100 万 tokens | deepseek-flash（含 legacy `deepseek-v4-flash`） | deepseek-v4-pro |
+| 每 100 万 tokens | deepseek-flash（含 legacy `deepseek-v4-flash`）／`deepseek-v4.1-flash` | deepseek-v4-pro ／`deepseek-v4.1-pro` |
 | --- | --- | --- |
 | 输入（缓存命中）谷时 / 峰时 | $0.003 / $0.006（¥0.02 / ¥0.04） | $0.022 / $0.044（¥0.15 / ¥0.30） |
 | 输入（缓存未命中）谷时 / 峰时 | $0.15 / $0.30（¥1 / ¥2） | $0.66 / $1.32（¥4.5 / ¥9.0） |
 | 输出 谷时 / 峰时 | $0.60 / $1.20（¥4 / ¥8） | $1.98 / $3.96（¥13.5 / ¥27.0） |
+
+- **2.5.1**：渠道侧 `deepseek-v4.1-flash` / `deepseek-v4.1-pro` 与官方目录名**同价**，CNY / USD 两张表各补两条，
+  共用一份常量；`deepseek-v4.1-flash-sg` 等区域变体经 `PRICE_ALIASES` 映射到基础名。
+  `costOf()` 按「全名 → 去掉首个 `/` → 最后一段 → 别名」逐级回退，三段渠道组名
+  （`magpie/workbuddy-ai/deepseek-v4.1-flash`）也能命中。
 
 - **峰时** = 01:00–04:00 与 06:00–10:00 UTC（周一至周五，中国法定节假日除外）；**其余时间为谷时**（含周末与节假日整天）；谷价 = 峰价一半。（官方原文，见同页注 2）
 - 因此按每条 `assistant/message` 的 `time` 判定峰/谷 → **逐请求计费**，无需近似。

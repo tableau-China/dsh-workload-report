@@ -57,7 +57,6 @@ const COPY_SOURCES = [
   "src/client/session-layout.js",
   "src/client/sync-state.js",
   "src/client/sync-view.jsx",
-  "src/report-html.js",
 ];
 
 /** 允许动态键的命名空间（`t("tab." + id)` 这类，无法静态枚举）。 */
@@ -122,7 +121,7 @@ export async function checkI18n(ok, eq, options = {}) {
     // 兜底语言本身就是英文，不参与「漏译」检查。
     if (lang === "en") continue;
     // 必须真正翻译的「界面骨架」键：这些键与英文一样说明整份词典没翻（或漏了一大块）。
-    const MUST_TRANSLATE = ["action.label", "panel.title", "tab.byDay", "kpi.tokens", "range.7", "table.turns", "state.empty", "action.refresh", "report.title", "profile.title"];
+    const MUST_TRANSLATE = ["action.label", "panel.title", "tab.byDay", "kpi.tokens", "range.7", "table.turns", "state.empty", "action.refresh", "profile.title"];
     const untranslatedCore = MUST_TRANSLATE.filter((key) => dict[key] === dictionaries.en[key]);
     ok(untranslatedCore.length === 0, `${lang} 核心界面文案已翻译`, untranslatedCore.join(", "));
     // 其余键允许个别与英文同形（品牌名 / 格式串 / 缩写），但成片相同说明漏译。

@@ -10,11 +10,17 @@ import { join } from "node:path";
 // （跑一次测试就污染用户的真实数据目录）。
 process.env.DSH_HOME = `/tmp/wl-verify-dshhome-${process.pid}`;
 
+// 夹具日期写死在 2026-10-10（见下方 base），而宿主 /snapshot 用 Date.now() 算「近 N 天」窗口。
+// 真实日期一旦漂出 30 天窗口，宿主路由整组断言会集体失效；把测试进程时钟冻结到夹具当天，
+// 让离线验证与运行日期无关（只影响本进程，不改业务代码）。
+// 取 2026-10-20：既覆盖 base 夹具（10-10）也覆盖等待用例（10-14），且都在「近 30 天」窗口内。
+const FIXED_NOW = Date.parse("2026-10-20T04:00:00Z");
+Date.now = () => FIXED_NOW;
+
 import { aggregate, dateKey, present, resolveRange, rowFromSession, workspaceLabel } from "../src/aggregate.js";
 import { UNKNOWN_WORKSPACE_KEY } from "../src/labels.js";
-import { escapeHtml, formatHours, formatInt, formatMoney, formatProvider, formatTokens } from "../src/format.js";
+import { disambiguateModelLabels, escapeHtml, formatHours, formatInt, formatMoney, formatProvider, formatTokens, providerDisplayNames, providerLabel } from "../src/format.js";
 import { barPercent } from "../src/client/bar-width.js";
-import { renderReport } from "../src/report-html.js";
 import {
   CosTransport, ContentsTransport, LocalTransport, PAYLOAD_KIND, PAYLOAD_SCHEMA, SYNC_DEFAULTS, SyncService, TRANSPORTS,
   buildPayload, createTransport, prefixOf, validatePayload,
@@ -416,11 +422,6 @@ console.log("\n—— 时刻分析（Token 口径 + 人类消息密度）——"
   ok(sum(missSnap.byHour.map((hour) => hour.tokensTotal)) < missSnap.totals.tokensTotal, "总 Token 仍含该会话（只是时间图不计入）");
   const zeroHourRow = { ...tokenRow, id: "zero-hour", hourTokens: new Array(24).fill(0) };
   eq(present(aggregate([zeroHourRow], { days: 1, timeZone: "UTC", now: tokenNow })).hourTokensSource.missing, 1, "hourTokens 全 0 但有官方 Token → 也计入未计入");
-  const tokenReport = renderReport(missSnap, { theme: "light", generatedAt: tokenNow });
-  ok(tokenReport.includes("Token 未计入 1 个会话"), "报告图下标注「Token 未计入 N 个会话」");
-  ok(tokenReport.includes('data-kind="hour-dot"'), "报告渲染人类消息密度点（circle）");
-  ok(tokenReport.includes("Token 产出") && tokenReport.includes("人类消息密度") && tokenReport.includes("峰值"), "报告图例只说明颜色：Token 产出 / 人类消息密度 / 峰值");
-  ok(!tokenReport.includes("0–23 点分摊活跃时长"), "报告不再写旧的活跃时长口径");
 
   // 活会话续聊后 row.tokens 增长：聚合时按比例回正到新总量，仍严格守恒
   const grownRow = { ...tokenRow, id: "grown", tokens: { ...tokenRow.tokens, output: tokenRow.tokens.output + 18 } };
@@ -600,11 +601,6 @@ console.log("\n—— 等待用户剔除（0.6.5）——");
   eq(noWaitSnap.totals.toolMs, 180 * MIN, "⑥ 回归：excludeWait=false 时 toolMs 仍为官方 180min");
   ok(Math.abs(noWaitSnap.byHour.reduce((acc, b) => acc + b.activeMs, 0) - noWaitSnap.totals.activeMs) < 1, "⑥ 回归：sum(byHour) === totals.activeMs");
 
-  // 展示层：报告 KPI / 每日图都用净活跃，副标题与 footer 单列等待
-  const waitReport = renderReport(waitSnap, { theme: "light", title: "等待报告" });
-  ok(waitReport.includes("等待 3 h"), "展示：报告 KPI 副标题写明「等待 3 h」");
-  ok(waitReport.includes("净活跃"), "展示：报告 footer 说明净活跃口径");
-  ok(waitReport.includes(">20 m<"), "展示：报告 KPI 活跃时长 = 净活跃 20min（不是 200min）");
   eq(translate("zh", "kpi.active.waitSub", { wait: "3 h" }), "等待 3 h", "i18n：中文等待副标题");
   eq(translate("en", "kpi.active.waitSub", { wait: "3 h" }), "Waiting 3 h", "i18n：英文等待副标题");
 }
@@ -692,20 +688,14 @@ eq(formatHours(30000), "30 s", "不足 1 分钟用秒");
 // 同一数值在 KPI / 表格 / 报告三处必须一致（都调用 formatHours）
 const crossMs = 5868000; // 1.63 h → 1.6 h
 const crossSnap = present(aggregate([makeRow({ id: "cross", cwd: "/tmp/cross", createdAt: base, llmMs: crossMs, toolMs: 0 })], { days: 30, timeZone: "Asia/Shanghai", now: base }));
-const crossHtml = renderReport(crossSnap, { theme: "light", title: "一致性", topSessions: 1 });
 const crossDay = crossSnap.byDay.find((day) => day.sessions > 0);
 eq(formatHours(crossSnap.totals.netActiveMs), "1.6 h", "KPI 数值 = formatHours(1.63 h)");
 eq(formatHours(crossDay.activeMs), "1.6 h", "表格数值与 KPI 一致（同一函数）");
-ok(crossHtml.includes('<div class="value">1.6 h</div>'), "报告 KPI 用同一格式化结果", (crossHtml.match(/<div class="value">[^<]+<\/div>/) ?? [""])[0]);
-ok(crossHtml.includes("<td>1.6 h</td>"), "报告按日期明细表与 KPI 一致", (crossHtml.match(/<td>[^<]* h<\/td>/) ?? [""])[0]);
-ok(!crossHtml.includes("1.63 h"), "报告不再出现两位小数小时");
 {
   const clientSource = await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8");
-  const reportSource = await readFile(new URL("../src/report-html.js", import.meta.url), "utf8");
   ok(!clientSource.includes("formatDuration(") && !clientSource.includes("formatKpiDuration("), "看板不再调用旧时长格式化函数");
-  ok(!reportSource.includes("formatDuration(") && !reportSource.includes("formatKpiDuration("), "报告不再调用旧时长格式化函数");
-  ok(!/\/\s*3600000/.test(clientSource) && !/\/\s*3600000/.test(reportSource), "看板 / 报告没有各自的毫秒→小时换算");
-  ok(clientSource.includes("formatHours") && reportSource.includes("formatHours"), "看板与报告都走 formatHours");
+  ok(!/\/\s*3600000/.test(clientSource), "看板没有自己的毫秒→小时换算");
+  ok(clientSource.includes("formatHours"), "看板走 formatHours（全站唯一换算入口）");
 }
 console.log("\n—— 比例条（主要会话 / 按日期明细共用 MetricBarCell）——");
 eq(barPercent(500, 1000), 50, "bar 宽度 = 本行 / 本列最大值（50%）");
@@ -795,30 +785,9 @@ const stateRow = rowFromSession(
 eq(stateRow.tokens.input, 1, "持久化 state 形状（{ totals }）仍然兼容");
 eq(stateRow.tokens.cacheWrite, 4, "state 形状缓存写入");
 
-console.log("\n—— HTML 报告 ——");
-const dirty = present(aggregate([makeRow({ id: "x", cwd: "/tmp/proj<img src=x onerror=alert(1)>", createdAt: base, title: "<img src=x onerror=alert(1)>" })], { days: 30, timeZone: "Asia/Shanghai", now: base }));
-const html = renderReport(dirty, { theme: "dark", title: "测试报告", note: "给客户 <b>备注</b>" });
-ok(html.startsWith("<!doctype html>"), "报告是完整 HTML 文档");
-ok(!html.includes("<script>"), "报告不含 <script>");
-ok(!html.includes("<img src=x") && html.includes("&lt;img src=x"), "标题里的标签被转义（文本保留、标签失效）");
-ok(!html.includes("<img src=x") && html.includes("proj&lt;img src=x onerror=alert(1)&gt;"), "工作区名里的标签已转义（可读文本保留）");
-ok(!html.includes("<img src=x"), "标题里的 HTML 已转义");
-ok(html.includes("测试报告"), "标题写入报告");
-ok(html.includes("&lt;b&gt;备注&lt;/b&gt;"), "备注已转义");
-ok(html.includes("累计活跃时长"), "含 KPI 文案");
-ok(html.includes("<svg"), "含内联 SVG 图表");
-ok(html.includes("活跃天数"), "报告的工作区表格含「活跃天数」列");
-ok(html.includes("ws-metrics"), "报告的工作区条形区是左右两块布局");
-ok(html.includes("is-tokens"), "报告右侧那条 bar 是 Token（is-tokens）");
-ok(!/[\s\S]*m-label/.test("") || !parityHtml.includes("m-label"), "结构：按工作区不再逐行重复「我的付出 / Token 消耗」标签（已按需求删除）");
-ok(html.includes("活跃 1/1 天"), "报告左侧小字含「活跃 N/M 天」（数据不足窗口天数 → 分母＝实际跨度）", (html.match(/活跃 \d+\/\d+ 天/) ?? [""])[0]);
-ok(!/https?:\/\//.test(html.replace(/https?:\/\/www\.w3\.org/g, "")), "无外部资源引用（自包含）");
-ok(!html.includes("platform.deepseek.com") && !html.includes("余额"), "报告不含余额 / 余额接口（余额不入导出）");
-
-console.log("\n—— 布局：面板高度 / 报告页宽 ——");
+console.log("\n—— 布局：面板高度 ——");
 {
   const stylesSource = await readFile(new URL("../src/client/styles.js", import.meta.url), "utf8");
-  const reportSource = await readFile(new URL("../src/report-html.js", import.meta.url), "utf8");
   const panelRule = (stylesSource.match(/\.wl-panel \{[^}]*\}/s) ?? [""])[0];
   ok(
     /height: min\(92vh, calc\(100vh - 8vh - 24px\)\)/.test(panelRule) && /max-height: min\(92vh, calc\(100vh - 8vh - 24px\)\)/.test(panelRule),
@@ -826,12 +795,7 @@ console.log("\n—— 布局：面板高度 / 报告页宽 ——");
     panelRule.slice(0, 200),
   );
   ok(/\.wl-body \{[^}]*flex: 1 1 auto[^}]*min-height: 0/s.test(stylesSource), "内容区填满面板并在内部滚动（flex + min-height:0）");
-  const pageRule = (reportSource.match(/\.page \{[^}]*\}/s) ?? [""])[0];
-  ok(/width: 100%/.test(pageRule) && /max-width: 1450px/.test(pageRule), "报告页宽自适应视口（宽屏最多 1450px）", pageRule.slice(0, 140));
-  // 看板面板与报告页宽必须同一口径（2.1.0 起 1450）
-  ok(/width: min\(1450px, 100%\)/.test(panelRule), "看板面板最大宽度 1450px（与报告页一致）", panelRule.slice(0, 120));
-  ok(!/max-width: 1120px/.test(pageRule), "报告不再固定 1120px 宽");
-  ok(/clamp\(20px, 2\.4vw, 44px\)/.test(pageRule), "报告左右留白随视口收缩（20–44px）");
+  ok(/width: min\(1450px, 100%\)/.test(panelRule), "看板面板最大宽度 1450px", panelRule.slice(0, 120));
 }
 
 // ---------------------------------------------------------------- 宿主路由
@@ -843,7 +807,6 @@ console.log("\n—— 时刻卡片（默认 Tokens / chips / 顶部密度点）�
   const clientSource = await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8");
   const statusSource = await readFile(new URL("../src/client/hour-status.js", import.meta.url), "utf8");
   const stylesSource = await readFile(new URL("../src/client/styles.js", import.meta.url), "utf8");
-  const reportSource = await readFile(new URL("../src/report-html.js", import.meta.url), "utf8");
   const hostSource = await readFile(new URL("../index.js", import.meta.url), "utf8");
   const localesSource = localesJsonSource;
   ok(/useState\("tokens"\)/.test(clientSource), "默认 measure = Tokens");
@@ -853,7 +816,7 @@ console.log("\n—— 时刻卡片（默认 Tokens / chips / 顶部密度点）�
   ok(/className="wl-hour-grid"/.test(clientSource) && !clientSource.includes("hour.sub"), "卡片头无小标题、图表仍是 24 列网格");
   ok(/\.wl-hour-card \{[^}]*display: flex[^}]*flex-direction: column/s.test(stylesSource) && /\.wl-hour-grid \{[^}]*flex: 1 1 auto/s.test(stylesSource) && /\.wl-hour-grid \{[^}]*min-height: 240px/s.test(stylesSource) && /\.wl-grid-2 > \.wl-pie-card \{[^}]*display: flex/s.test(stylesSource), "图表区 flex 填充卡片（最小 240px），右侧饼图同行拉伸并居中");
   ok(/\.wl-hour-track \{[^}]*top: 64px/s.test(stylesSource) && /\.wl-hour-track \{[^}]*bottom: 16px/s.test(stylesSource) && !/\.wl-hour-track \{[^}]*height: 116px/s.test(stylesSource), "柱形区从顶部 64px 撑到底部 16px（随卡片高度伸缩）");
-  ok(/\.wl-hour-col\[data-peak\] \.wl-hour-fill \{[^}]*var\(--dsw-static-blue-600/s.test(stylesSource) && /\.wl-hour-dot \{[^}]*var\(--dsw-static-amber-500/s.test(stylesSource) && /\.wl-hour-legend \.wl-legend-peak \{[^}]*var\(--dsw-static-blue-600/s.test(stylesSource) && /peak: "#3f5a7d"/.test(reportSource) && /isPeak \? palette\.peak : palette\.input/.test(reportSource), "峰值柱/图例用深蓝 token，人类消息点用 amber token（报告同色）");
+  ok(/\.wl-hour-col\[data-peak\] \.wl-hour-fill \{[^}]*var\(--dsw-static-blue-600/s.test(stylesSource) && /\.wl-hour-dot \{[^}]*var\(--dsw-static-amber-500/s.test(stylesSource) && /\.wl-hour-legend \.wl-legend-peak \{[^}]*var\(--dsw-static-blue-600/s.test(stylesSource), "峰值柱/图例用深蓝 token，人类消息点用 amber token（报告同色）");
   ok(/\.wl-hour-dot \{[^}]*top: 14px/s.test(stylesSource), "密度点 CSS 上沿固定 14px");
   ok(clientSource.includes("hourDotRadius") && clientSource.includes("hour.dotTip"), "密度点用统一半径函数，并带「小时 + 人类消息条数」title");
   ok(clientSource.includes("wl-hour-legend") && clientSource.includes("hour.legend.tokens") && clientSource.includes("hour.legend.humans") && clientSource.includes("hour.legend.peak"), "图例三项：Token 产出 / 人类消息密度 / 峰值");
@@ -880,8 +843,7 @@ console.log("\n—— 时刻卡片（默认 Tokens / chips / 顶部密度点）�
   ok(/data-state="background"\]::before/.test(stylesSource) && /hour\.background/.test(localesSource), "background 用灰点小字样式（不抢「正在计算中」）");
   ok(/\.wl-hour-legend \{[^}]*justify-content: space-between/s.test(stylesSource), "图例行 space-between（左侧图例、右侧状态）");
   ok(/\.wl-hour-legend \.wl-status \{[^}]*margin-left: auto/s.test(stylesSource), "状态提示靠右对齐");
-  ok(reportSource.includes("hourDotRadius") && reportSource.includes("人类消息密度") && reportSource.includes("Token 产出"), "报告时刻图同步 Tokens 口径与密度点");
-  ok(/const INDEX_VERSION = 8\b/.test(hostSource), "INDEX_VERSION 7 → 8（新增速度字段必须重折）");
+  ok(/const INDEX_VERSION = 9\b/.test(hostSource), "INDEX_VERSION 8 → 9（内置归并按 provider 拆分，旧索引必须重建）");
   ok(hostSource.includes('"hourTokens"') && hostSource.includes('"hourHumanMsgs"') && /MODEL_ROW_FIELDS[\s\S]{0,400}hourTokens/.test(hostSource), "hourTokens / hourHumanMsgs 随行持久化并由 carryModelFields 搬运");
 }
 
@@ -940,9 +902,31 @@ console.log("\n—— 时刻卡片（默认 Tokens / chips / 顶部密度点）�
   {
     // 展示层：表格里供应商只显示短名（完整路径进 title），否则同模型多条链路看不出区别
     const clientSrc = await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8");
-    const reportSrc = await readFile(new URL("../src/report-html.js", import.meta.url), "utf8");
-    ok(/formatProvider\(item\.provider\)/.test(clientSrc) && /title=\{item\.provider/.test(clientSrc), "UI：供应商列显示短名，完整路径放 title");
-    ok(reportSrc.includes("formatProvider(item.provider)") && reportSrc.includes('title=\\"'), "报告：供应商列同样短名 + title");
+    ok(/providerLabel\(item\.provider, t\)/.test(clientSrc) && /title=\{item\.provider/.test(clientSrc), "UI：供应商列显示可读名（账户 / API Key），完整路径放 title");
+  }
+  // 同名模型消歧 + 凭据路由可读名（2.5.1）：一份函数供看板与报告共用
+  {
+    const t = (key) => translate("zh", key);
+    const names = providerDisplayNames(t);
+    eq(providerLabel("deepseek-account", t), "DeepSeek 账户", "供应商名：deepseek-account → DeepSeek 账户");
+    eq(providerLabel("deepseek-official", t), "DeepSeek API 密钥", "供应商名：deepseek-official → DeepSeek API 密钥");
+    eq(providerLabel("magpie/workbuddy-ai", t), "workbuddy-ai", "供应商名：自定义路由仍用短名");
+    eq(providerLabel("", t), "—", "供应商名：空值回落 —");
+    const rows = [
+      { key: "magpie/workbuddy/hy4free", label: "hy4free", provider: "magpie/workbuddy" },
+      { key: "magpie/auto/hy4free", label: "hy4free", provider: "magpie/auto" },
+      { key: "deepseek-account/deepseek-v4-flash", label: "deepseek-v4-flash", provider: "deepseek-account" },
+      { key: "deepseek-official/deepseek-v4-flash", label: "deepseek-v4-flash", provider: "deepseek-official" },
+      { key: "magpie/workbuddy/step-5-preview", label: "step-5-preview", provider: "magpie/workbuddy" },
+    ];
+    const out = disambiguateModelLabels(rows, t("common.unknownModel"), names);
+    eq(out[0].label, "hy4free · workbuddy", "消歧：同名模型补供应商短名（列表标题与图例一致）");
+    eq(out[1].label, "hy4free · auto", "消歧：第二条链路补 auto");
+    eq(out[2].label, "deepseek-v4-flash · DeepSeek 账户", "消歧：官方账户用可读名");
+    eq(out[3].label, "deepseek-v4-flash · DeepSeek API 密钥", "消歧：API Key 用可读名");
+    eq(out[4].label, "step-5-preview", "消歧：不重名时保持原名");
+    eq(rows[0].label, "hy4free", "消歧：不改原数组");
+    eq(disambiguateModelLabels([{ key: "x", label: "", provider: "" }], t("common.unknownModel"))[0].label, t("common.unknownModel"), "消歧：未知模型用词典兜底");
   }
   eq(snapM.byProvider[0].requests, 3, "供应商请求数汇总正确");
   ok(modelsSource.includes("export function providerOf"), "providerOf 由 models.js 提供（无分隔段时归为未标注，不猜）");
@@ -1132,17 +1116,6 @@ const exportRes = await call("/workload-report/v1/export.json?days=30&tz=UTC");
 eq(exportRes.status, 200, "/export.json 返回 200");
 ok(String(exportRes.headers["content-disposition"] ?? "").includes("attachment"), "导出带 attachment 头");
 
-const reportRes = await call("/workload-report/v1/report.html?days=30&tz=UTC&theme=dark&lang=zh");
-eq(reportRes.status, 200, "/report.html 返回 200");
-ok(String(reportRes.headers["content-type"] ?? "").startsWith("text/html"), "报告 content-type 正确");
-ok(reportRes.body.includes("工作量报告"), "报告正文含标题");
-// 区间可能被最早活跃日截短：高亮必须按**请求档位**判断，不能用 range.days 反推
-ok(reportRes.body.includes('data-active="true">近 30 天'), "报告：近 30 天档按请求档位高亮（截短后不会亮错 / 不亮）");
-const report7Res = await call("/workload-report/v1/report.html?days=7&tz=UTC&lang=zh");
-ok(report7Res.body.includes('data-active="true">近 7 天'), "报告：近 7 天档高亮");
-const reportAllRes = await call("/workload-report/v1/report.html?all=1&days=3650&tz=UTC&lang=zh");
-ok(reportAllRes.body.includes('data-active="true">全部'), "报告：全部档高亮");
-
 // —— 区间口径（路由层）：近 N 天在历史不足 N 天时同样从最早活跃日开始 ——
 {
   const nowMs = Date.now();
@@ -1187,8 +1160,11 @@ eq(liveApi.totals.tokens.input, 1014, "活会话事件即时反映到快照（99
 
 // ---------------------------------------------------------------- 模型维度（0.4.0）
 console.log("\n—— 模型归并与峰谷 ——");
-eq(groupKeyFor("deepseek-official", "deepseek-flash"), "deepseek-v4-flash", "deepseek-flash 归并到 deepseek-v4-flash（官方注 1：legacy 名）");
-eq(groupKeyFor("deepseek-official", "deepseek-v4-flash"), "deepseek-v4-flash", "legacy 名 deepseek-v4-flash 同样归并");
+eq(groupKeyFor("deepseek-official", "deepseek-flash"), "deepseek-official/deepseek-v4-flash", "deepseek-flash 归并到 deepseek-v4-flash，保留 provider 前缀");
+eq(groupKeyFor("deepseek-official", "deepseek-v4-flash"), "deepseek-official/deepseek-v4-flash", "legacy 名 deepseek-v4-flash 同样归并");
+eq(groupKeyFor("deepseek-account", "deepseek-flash"), "deepseek-account/deepseek-v4-flash", "官方账户独立成桶（与 API Key 区分）");
+ok(groupKeyFor("deepseek-account", "deepseek-flash") !== groupKeyFor("deepseek-official", "deepseek-flash"), "官方账户 / API Key 不再并成同一个桶");
+eq(modelLabel(groupKeyFor("deepseek-account", "deepseek-flash"), {}), "deepseek-v4-flash", "带 provider 前缀的组名仍只显示模型名");
 eq(groupKeyFor("moonshotai-cn", "kimi-k3"), "moonshotai-cn/kimi-k3", "其它模型保持 provider/model");
 eq(groupKeyFor("", ""), UNKNOWN_MODEL, "缺 provider/model 归入未标注桶");
 eq(groupKeyFor("acme", "x", { "my-group": ["x"] }), "my-group", "用户自定义归并规则生效");
@@ -1223,7 +1199,7 @@ const foldEvents = [
   mkHeader(7, offTime, "deepseek-official", "deepseek-v4-pro", "high"),
 ];
 const folded = foldSessionModels(foldEvents, { sessionLlmMs: 1000 });
-const flash = folded.models["deepseek-v4-flash"];
+const flash = folded.models["deepseek-official/deepseek-v4-flash"];
 const pro = folded.models["deepseek-official/deepseek-v4-pro"];
 eq(flash.requests, 3, "归并后 flash 请求数 3（含 1 次缺 usage）");
 eq(folded.models["deepseek-official/deepseek-flash"], undefined, "旧名不再单独成桶（已归并）");
@@ -1261,6 +1237,17 @@ eq(costOf({ key: "deepseek-v4-flash", inOff: 1e6, crOff: 0, outOff: 0, inPeak: 0
 const overridden = resolvePricing({ overrides: { "moonshotai-cn/kimi-k3": { miss: { off: 2, peak: 4 }, output: { off: 8, peak: 16 } } } });
 eq(costOf({ key: "moonshotai-cn/kimi-k3", inOff: 1e6, outOff: 1e6, inPeak: 0, outPeak: 0, crOff: 0, crPeak: 0, cwOff: 0, cwPeak: 0 }, overridden), 10, "用户覆盖单价生效（2 + 8）");
 ok(cny.links.length >= 3 && cny.links[0].url.includes("deepseek"), "官方计费链接随价目一起下发");
+// 2.5.1：渠道侧的 v4.1 名称与官方 legacy 名同价；三段组名靠「最后一段」命中，区域变体走别名。
+eq(costOf({ key: "deepseek-v4.1-flash", inOff: 1e6 }, cny), 1, "v4.1-flash 补价：与 v4-flash 同价（CNY）");
+eq(costOf({ key: "deepseek-v4.1-pro", inOff: 1e6 }, cny), 4.5, "v4.1-pro 补价：与 v4-pro 同价（CNY）");
+eq(costOf({ key: "deepseek-v4.1-flash", inOff: 1e6 }, usd), 0.15, "v4.1-flash 补价：USD 同样生效");
+eq(costOf({ key: "deepseek-v4.1-pro", inOff: 1e6 }, usd), 0.66, "v4.1-pro 补价：USD 同样生效");
+eq(costOf({ key: "magpie/workbuddy-ai/deepseek-v4.1-flash", inOff: 1e6 }, cny), 1, "三段组名按最后一段命中价目");
+eq(costOf({ key: "magpie/workbuddy-ai/deepseek-v4-pro", inOff: 1e6 }, cny), 4.5, "三段组名的 v4-pro 同样命中（顺带修复旧回退）");
+eq(costOf({ key: "magpie/workbuddy-ai/deepseek-v4.1-flash-sg", inOff: 1e6 }, cny), 1, "区域变体 -sg 走别名命中基础模型价");
+eq(costOf({ key: "magpie/workbuddy-ai/step-5-preview", inOff: 1e6 }, cny), null, "非 DeepSeek 模型仍无价（不猜）");
+const overriddenV41 = resolvePricing({ overrides: { "deepseek-v4.1-pro": { miss: { off: 2, peak: 4 } } } });
+eq(costOf({ key: "deepseek-v4.1-pro", inOff: 1e6 }, overriddenV41), 2, "pricing.overrides 可精确覆盖 v4.1 单价");
 
 console.log("\n—— 模型维度接入聚合 ——");
 const modelRows = [
@@ -1269,56 +1256,19 @@ const modelRows = [
 ];
 const modelSnap = present(aggregate(modelRows, { days: 30, timeZone: "Asia/Shanghai", now: base, pricing: cny, activeModelMetric: "requests" }));
 eq(modelSnap.byModel.length, 3, "byModel 三行（flash / pro / kimi）");
-eq(modelSnap.byModel[0].key, "deepseek-v4-flash", "默认按请求数排序：flash 第一（3 次）");
-eq(modelSnap.topModel.key, "deepseek-v4-flash", "topModel = flash");
+eq(modelSnap.byModel[0].key, "deepseek-official/deepseek-v4-flash", "默认按请求数排序：flash 第一（3 次）");
+eq(modelSnap.topModel.key, "deepseek-official/deepseek-v4-flash", "topModel = flash");
 eq(modelSnap.topModel.metric, "requests", "topModel 口径 = requests");
 ok(Math.abs(modelSnap.byModel.reduce((s, m) => s + m.tokensTotal, 0) - modelSnap.totals.tokensTotal) < 1e-9, "各模型 token 之和 = 总 Token（守恒）");
 ok(Math.abs(modelSnap.byModel.reduce((s, m) => s + m.share, 0) - 1) < 1e-9, "模型占比之和 = 1");
 const tokenSnap = present(aggregate(modelRows, { days: 30, timeZone: "Asia/Shanghai", now: base, pricing: cny, activeModelMetric: "tokens" }));
-eq(tokenSnap.topModel.key, "deepseek-v4-flash", "切到 tokens 口径后仍是 flash（量最大）");
+eq(tokenSnap.topModel.key, "deepseek-official/deepseek-v4-flash", "切到 tokens 口径后仍是 flash（量最大）");
 const llmSnap = present(aggregate(modelRows, { days: 30, timeZone: "Asia/Shanghai", now: base, pricing: cny, activeModelMetric: "activeMs" }));
 eq(llmSnap.topModel.metric, "llmMs", "activeMs 口径归一化为 llmMs");
 ok(modelSnap.modelDaily.length === modelSnap.byDay.length, "modelDaily 与 byDay 天数对齐");
 ok(modelSnap.modelDaily.every((day) => Object.keys(day.values).length >= 0), "modelDaily 每日结构完整");
 eq(modelSnap.pricing.costed.covered, 2, "费用覆盖度：2/3 有官方价（kimi 无价）");
 ok(modelSnap.pricing.totalCost !== null && modelSnap.pricing.totalCost > 0, "总费用为已知单价模型的合计（> 0）");
-
-console.log("\n—— 报告与路由中的模型维度 ——");
-const reportWithModels = renderReport(modelSnap, { theme: "light", title: "测试报告" });
-ok(reportWithModels.includes("模型用量"), "报告含「模型用量」一节");
-ok(reportWithModels.includes('class="treemap"'), "报告含 treemap 图");
-ok(reportWithModels.includes("模型占比 · 面积 = Token"), "treemap 带口径小标题（模型占比 · 面积 = Token）");
-ok(reportWithModels.includes("按日模型趋势"), "按日趋势带小标题（与看板 h4 同位置）");
-ok(reportWithModels.includes("api-docs.deepseek.com"), "报告 footer 给出官方计费链接");
-ok(reportWithModels.includes("官方计费标准"), "报告 footer 标注官方计费标准");
-ok(reportWithModels.includes("deepseek-v4-flash"), "报告列出模型名");
-ok(reportWithModels.includes(">模型耗时占比<") && reportWithModels.includes(">平均每次输出<"), "报告 KPI 含两张模型性能卡（模型耗时占比 / 平均每次输出）");
-ok(!reportWithModels.includes("模型费用"), "报告不再有「模型费用」（价目覆盖不足，数字失真）");
-ok(reportWithModels.includes("最活跃模型") && reportWithModels.includes("请求占比"), "报告 KPI 增加「最活跃模型」（与看板同口径）");
-ok(/模型耗时 [\d.]+ ?[hms]/.test(reportWithModels), "模型耗时占比副标题给出耗时与模型数");
-ok(reportWithModels.includes('aria-label="模型 Token 占比"'), "报告右侧＝模型 Token 占比环形图（与看板首页同口径）");
-ok(reportWithModels.includes("模型 Token 占比"), "报告小标题为「模型 Token 占比」");
-ok(!reportWithModels.includes("柱状图（当前区间）"), "报告不再出现「柱状图（当前区间）」");
-ok(!reportWithModels.includes('aria-label="每日活跃时长"'), "报告不再渲染每日柱状图（已由模型环形图取代）");
-ok(reportWithModels.includes('aria-label="工作区占比"'), "工作区环形图仍保留");
-ok(reportWithModels.includes("总活跃时长") && reportWithModels.includes("总 Token"), "两张环形图的圆心小字各自正确");
-// 「模型 Token 占比」必须是独立卡片，不能塞进「每日用量趋势」的容器里
-{
-  const dailyCard = reportWithModels.match(/<section class="card">\s*<div class="card-head">[\s\S]*?每日用量趋势[\s\S]*?<\/section>/);
-  ok(dailyCard !== null, "报告含「每日用量趋势」卡片");
-  ok(!dailyCard[0].includes("模型 Token 占比"), "「模型 Token 占比」不在「每日用量趋势」卡片内");
-  ok(!reportWithModels.includes("daily-pair") && reportWithModels.includes("daily-plus-model"), "两卡并排但各自独立（daily-plus-model 容器内是两张 card）");
-  ok(/\.daily-plus-model > \.card/.test(reportWithModels), "并排容器对两个 .card 直接生效（不是单元格包裹）");
-}
-{
-  const hrefs = [...reportWithModels.matchAll(/href="([^"]+)"/g)].map((match) => match[1]);
-  ok(
-    hrefs.length >= 3 && hrefs.every((href) => /^https:\/\/(api-docs\.deepseek\.com|platform\.kimi\.com|platform\.claude\.com)\//.test(href)),
-    "报告的外链只有官方计费页（其余全部内联）",
-    hrefs.join(" · "),
-  );
-  ok(!/<script|src=|<link /i.test(reportWithModels), "报告仍然无脚本 / 无外链资源（自包含）");
-}
 
 console.log("\n—— AI 用户画像（payload 白名单 / 指纹 / 本地规则）——");
 {
@@ -1736,110 +1686,6 @@ console.log("\n—— AI 用户画像（payload 白名单 / 指纹 / 本地规�
   ok(stylesSource.includes(".wl-profile-headline") && stylesSource.includes(".wl-profile-dim-evidence") && stylesSource.includes(".wl-profile-risk"), "样式覆盖 headline / 证据 / 风险条");
   ok(localesSource.includes('"profile.risk": "风险提示："') && localesSource.includes('"profile.risk": "Risk: "'), "profile.risk 中英文案齐全");
 }
-console.log("\n—— 报告结构对齐（看板 → 报告）——");
-{
-  // 回填中：状态行必须显示「正在计算中……」；数据用模型快照，时刻 / 日历 / KPI 都有内容。
-  const runningSnap = {
-    ...modelSnap,
-    // 密度点需要人类消息数据：给 9 点补一条，保证结构断言不依赖测试数据是否恰好有 humanMsgs
-    byHour: modelSnap.byHour.map((hour) => (hour.hour === 9 ? { ...hour, humanMsgs: 4 } : hour)),
-    diagnostics: { modelFold: { running: true }, hourTokensSource: { missing: 3 } },
-  };
-  const parityHtml = renderReport(runningSnap, { theme: "light", title: "对齐报告" });
-  ok(parityHtml.includes('data-kind="hour-dot"'), "结构：时刻图有人类消息密度点（data-kind=hour-dot）");
-  ok(parityHtml.includes("Tokens 口径") && parityHtml.includes("Token 产出"), "结构：时刻图明确默认 Tokens 口径");
-  ok(!parityHtml.includes("轮次（该小时开始的会话数）"), "结构：轮次小图已按需求移除（报告不展示该子图）");
-  ok(!parityHtml.includes("wl-chip") && !parityHtml.includes("<button"), "结构：报告没有看板切换控件 / 按钮");
-  ok(parityHtml.includes('data-kind="hour-tokens-missing"') && parityHtml.includes('data-state="running"') && parityHtml.includes("正在计算中……"), "结构：回填中状态行显示「正在计算中……」");
-  ok(/<div class="card-head">[\s\S]{0,80}<div class="card-head-text"><h2>[^<]+<\/h2><span class="card-hint"/.test(parityHtml), "结构：卡片说明在标题右侧（card-head-text 内）");
-  ok(!parityHtml.includes('class="hint"') && !/<p class="hint">/.test(parityHtml), "结构：标题下方不再有旧 hint 段落");
-  ok(/\.card-hint \{[^}]*font-size: 11px/.test(parityHtml) && /\.card-hint \{[^}]*color: #6b7280/.test(parityHtml), "结构：标题右侧说明 11px + muted（与看板同字号/同色）");
-  ok(parityHtml.includes('data-kind="calendar-cell"') && parityHtml.includes('data-kind="weekday-bar"'), "结构：每日趋势含日历热力图 + 周几累计条");
-  ok(!parityHtml.includes('data-kind="peak-label"') && !parityHtml.includes('data-kind="active-bar-hit"'), "结构：每日柱状图已移除（右侧改为模型 Token 占比环形图）");
-  ok(parityHtml.includes('aria-label="模型 Token 占比"') && parityHtml.includes('aria-label="工作区占比"'), "结构：两张环形图（模型 Token 占比 / 工作区占比）几何同构");
-  // 顶部区间筛选器：只做视觉呈现（不是交互控件、不产生链接）
-  ok(parityHtml.includes('class="range-filter"'), "结构：报告顶部有区间筛选器样式");
-  ok(["近 7 天", "近 30 天", "近 90 天", "全部"].every((label) => parityHtml.includes(`>${label}</span>`)), "结构：筛选器四档文案齐全");
-  ok((parityHtml.match(/class="range-chip" data-active="true"/g) ?? []).length === 1, "结构：恰好一档为当前区间（实底高亮）");
-  {
-    const filterBlock = parityHtml.slice(parityHtml.indexOf('class="range-filter"'), parityHtml.indexOf('class="range-filter"') + 600);
-    ok(!filterBlock.includes("<a ") && !filterBlock.includes("<button"), "结构：筛选器是纯 <span>（报告无脚本、不伪造可点击）");
-    ok(!filterBlock.includes("cursor: pointer"), "结构：筛选器无指针手型（视觉标签而非按钮）");
-  }
-  eq(renderReport(modelSnap, { rangeKey: "all" }).includes('data-active="true">全部'), true, "结构：rangeKey=all 时「全部」高亮");
-  // 防回归：线上曾出现 {"error":"rangeFilter is not defined"}（进程热重载到只写了一半的文件）。
-  // 这里直接断言「模板里引用的每个本地函数都真的被定义过」，避免同类残缺再次上线。
-  {
-    const source = readFileSync(new URL("../src/report-html.js", import.meta.url), "utf8");
-    const called = new Set([...source.matchAll(/\$\{(\w+)\(/g)].map((match) => match[1]));
-    const defined = new Set([
-      ...[...source.matchAll(/function\s+(\w+)\s*\(/g)].map((match) => match[1]),
-      ...[...source.matchAll(/const\s+(\w+)\s*=\s*(?:function|\(|\w+\s*=>)/g)].map((match) => match[1]),
-    ]);
-    // 内置全局 + 从其它模块 import 的符号不算「本文件缺定义」
-    const external = new Set([
-      "escapeHtml", "formatHours", "formatInt", "formatTokens", "formatPercent", "translate",
-      "sectorPath", "String",
-      // 2.2.0 新增：速度与首字延迟的格式化（同样来自 ./format.js）
-      "formatSpeed", "formatTtft",
-    ]);
-    const missing = [...called].filter((name) => !defined.has(name) && !external.has(name));
-    eq(missing.length, 0, "结构：模板调用的辅助函数都有定义（防 rangeFilter is not defined 回归）", missing.join(", "));
-    ok(defined.has("rangeFilter") && defined.has("sharePie") && defined.has("cardHead"), "结构：rangeFilter / sharePie / cardHead 均已定义");
-  }
-  ok(parityHtml.includes("data-bar-cell") && /class="bar-cell-fill"[^>]*style="width:[0-9.]+%;background:/.test(parityHtml), "结构：表格比例条与看板同规则（宽度百分比 + 内联背景条）");
-  ok(parityHtml.includes("模型占比 · 面积 = Token") && parityHtml.includes("按日模型趋势"), "结构：模型 treemap / 按日趋势都有小标题");
-  ok(parityHtml.includes("最活跃模型") && parityHtml.includes("模型耗时占比") && parityHtml.includes("平均每次输出"), "结构：KPI 含两张模型性能卡与「最活跃模型」");
-  ok(parityHtml.includes("等待 ") && parityHtml.includes("净活跃"), "结构：KPI / footer 写清净活跃与等待口径");
-  ok(!parityHtml.includes("用户画像") && !parityHtml.includes('data-kind="ai-profile"') && !parityHtml.includes("本地规则版"), "结构：报告不展示 AI 画像（有意不同，见 report-parity）");
-  {
-    const hrefs = [...parityHtml.matchAll(/href="([^"]+)"/g)].map((match) => match[1]);
-    ok(hrefs.every((href) => /^https:\/\/(api-docs\.deepseek\.com|platform\.kimi\.com|platform\.claude\.com)\//.test(href)), "结构：报告外链仅官方计费页", hrefs.join(" · "));
-    ok(!/<script|<link |\ssrc=/i.test(parityHtml), "结构：报告无脚本 / 无外链资源（自包含）");
-  }
-  // 空闲 + 有未计入会话：状态行回到「Token 未计入 N 个会话」
-  const idleSnap = {
-    ...modelSnap,
-    byHour: runningSnap.byHour,
-    diagnostics: { modelFold: { running: false }, hourTokensSource: { missing: 3 } },
-  };
-  const idleHtml = renderReport(idleSnap, { theme: "dark" });
-  ok(idleHtml.includes('data-state="idle"') && idleHtml.includes("Token 未计入 3 个会话"), "结构：空闲时状态行显示「Token 未计入 N 个会话」");
-  ok(!idleHtml.includes("正在计算中……"), "结构：空闲时不残留「正在计算中……」");
-}
-
-const snapRes = await call("/workload-report/v1/snapshot?days=30&tz=UTC");
-const snapJson = JSON.parse(snapRes.body);
-ok(Array.isArray(snapJson.byModel), "/snapshot 返回 byModel 数组");
-ok(Array.isArray(snapJson.modelDaily), "/snapshot 返回 modelDaily 数组");
-ok(snapJson.pricing !== undefined && Array.isArray(snapJson.pricing.links), "/snapshot 返回官方价目与链接");
-ok(snapJson.diagnostics.modelUsage === true, "诊断里带 modelUsage 开关状态");
-ok(
-  snapJson.hourSource !== undefined && typeof snapJson.hourSource.events === "number" && typeof snapJson.hourSource.apportioned === "number",
-  "/snapshot 顶层暴露 hourSource（时刻分布来源诊断）",
-);
-ok(
-  JSON.stringify(snapJson.diagnostics.hourSource) === JSON.stringify(snapJson.hourSource),
-  "diagnostics.hourSource 与顶层 hourSource 同源",
-);
-// 0.4.1 修复点：回填完成（pending = 0）后模型区必须有数据。
-// 0.4.0 的缺陷是：已折过的行只要 asOfSeq 前进就重新计入 pending → 界面永远"回填中"。
-{
-  const foldReady = await waitHealth(routes, (body) => body.diagnostics.modelFold.running === false && body.diagnostics.modelFold.pending === 0, "模型回填完成");
-  eq(foldReady.diagnostics.modelFold.pending, 0, "回填完成后 /health modelFold.pending = 0");
-  ok(
-    typeof foldReady.diagnostics.modelFold.refold === "number" && typeof foldReady.diagnostics.modelFold.failedRows === "number",
-    "诊断把 pending / refold / failedRows 分开（已折过的不再混进 pending）",
-    JSON.stringify(foldReady.diagnostics.modelFold),
-  );
-  const modelApi = JSON.parse((await call("/workload-report/v1/snapshot?days=30&tz=UTC")).body);
-  ok(modelApi.byModel.length > 0, "回填完成后 /snapshot 模型区有数据", JSON.stringify(modelApi.byModel.map((m) => m.key)));
-  const hs = modelApi.hourSource;
-  eq(hs.events + hs.scaled + hs.apportioned, modelApi.totals.sessions, "hourSource 三项之和 = 会话数（每行恰好一种来源）");
-  eq(hs.scaled, modelApi.totals.sessions, "stub 事件只有 stream 窗口：全部按 events-scaled 落库");
-}
-
-// ---------------------------------------------------------------- 模型折叠生命周期（0.4.1 修复）
 console.log("\n—— 模型折叠生命周期（pending 语义 / 行换代不丢 / 重启复用）——");
 const LIFECYCLE_INDEX = `/tmp/wl-verify-lifecycle-${process.pid}.json`;
 await rm(LIFECYCLE_INDEX, { force: true }).catch(() => {});
@@ -3818,18 +3664,17 @@ bootSync.seq = 1;
     ok(/<\/ChipGroup>[\s\S]{0,300}wl-range-line/.test(clientIndex), "日期区间：紧跟在日期筛选器之后");
     ok(!/className="wl-subtitle"[\s\S]{0,200}range\.from/.test(clientIndex), "日期区间：不再出现在标题下方");
     ok(!/本地数据|local data only/.test(JSON.stringify(zh) + JSON.stringify(en)), "文案：字典里不再出现「本地数据 / local data only」");
-    // 导出入口：默认隐藏，但实现与路由保留
-    ok(/const EXPORT_ENTRY_VISIBLE = false/.test(clientIndex), "导出：入口默认隐藏（开关常量 = false）");
-    ok(/EXPORT_ENTRY_VISIBLE \? \(/.test(clientIndex), "导出：按钮由开关控制（置 true 即可恢复）");
-    ok(clientIndex.includes("exportReport") && clientIndex.includes("/report.html"), "导出：实现与 /report.html 路由保留（只是没有入口）");
-    eq(zh["action.export"], "导出 HTML 报告", "导出：文案键保留（恢复入口时无需补文案）");
+    // 2.6.0：删除导出按钮，并整体移除 HTML 报告功能（含 /report.html 路由与渲染器）
+    ok(!clientIndex.includes('data-action="export-report"') && !clientIndex.includes("EXPORT_ENTRY_VISIBLE"), "导出：界面不再有导出按钮（2.6.0 删除）");
+    ok(!/\bwindow\.open\s*\(/.test(clientIndex), "导出：不再调用 window.open");
+    ok(!clientIndex.includes("action.export") && !("action.export" in zh) && !("action.export" in en), "导出：文案键已随按钮删除（8 语言同步）");
   }
 
   // —— 2.1.1：最活跃模型只留模型名 / 模型占比完整显示名称 ——
   {
     const clientIndex = await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8");
-    // 1) 最活跃模型 KPI：副标题置空（不再有「请求占比 26.7%」）
-    ok(/\["kpi\.topModel", data\.topModel\.label(?: \|\| t\("common\.unknownModel"\))?, ""\]/.test(clientIndex), "KPI：最活跃模型只显示模型名（副标题为空）");
+    // 2.6.0：「最活跃模型」整张卡删除（分类值没有数值趋势），副标题相关代码一并移除
+    ok(!clientIndex.includes('"kpi.topModel"'), "KPI：2.6.0 起删除「最活跃模型」卡");
     ok(!/metricLabelKey/.test(clientIndex), "KPI：不再拼「{metric}占比 {share}」副标题");
     ok(!("kpi.topModel.sub" in zh) && !("kpi.topModel.sub" in en), "文案：删除「请求占比」副标题键");
     ok(!Object.keys(en).some((k) => k.startsWith("kpi.topModel.metric.")), "文案：删除三口径副标题文案（requests/tokens/llmMs）");
@@ -3916,26 +3761,28 @@ bootSync.seq = 1;
   // —— 2.3.0：「模型费用」下线，改为两个不依赖价格的模型性能 KPI ——
   {
     const clientIndex = await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8");
-    const reportSrc = await readFile(new URL("../src/report-html.js", import.meta.url), "utf8");
     // 1) 费用 KPI 彻底移除（看板 / 报告 / 文案）
     ok(!clientIndex.includes("kpi.modelCost"), "KPI：看板不再有「模型费用」");
-    ok(!reportSrc.includes("kpi.modelCost"), "KPI：报告不再有「模型费用」");
     ok(!("kpi.modelCost" in zh) && !("kpi.modelCost" in en), "KPI：删除「模型费用」文案键");
     const keysBlock = /const KPI_KEYS = \[([\s\S]*?)\];/.exec(clientIndex)?.[1] ?? "";
     const keys = [...keysBlock.matchAll(/"(kpi\.[A-Za-z]+)"/g)].map((m) => m[1]);
-    eq(keys.length, 9, "KPI：9 张卡（2.3.3 起新增「输出速度」）");
+    eq(keys.length, 8, "KPI：8 张卡（2.6.0 删除最活跃模型/活跃天数、新增每轮自主步骤）");
+    ok(keys.includes("kpi.autonomy") && !keys.includes("kpi.topModel") && !keys.includes("kpi.activeDays"), "KPI：每轮自主步骤替换活跃天数、删除最活跃模型");
     ok(keys.includes("kpi.speed"), "KPI：新增「输出速度」（tok/s + 首字延迟副标题）");
     ok(keys.includes("kpi.modelShare") && keys.includes("kpi.modelOutput"), "KPI：换成模型耗时占比 + 平均每次输出");
     // 不与已有的「缓存读取占比」重复（曾用命中率，实测两者数值完全相同）
     ok(!keys.includes("kpi.modelCacheHit") || keys.includes("kpi.cache"), "KPI：不与「缓存读取占比」重复计指标");
-    // 2) 为什么下线：内置价目表只覆盖 DeepSeek 官方模型，实际主力模型没有价 → 费用必然偏低
+    // 2) 为什么 KPI 仍下线：内置价目表只覆盖 DeepSeek 官方模型（v4 / v4.1 四个名字同价），
+    //    渠道侧的 step-5-preview / hy4-preview 等主力模型依旧没有官方价 → KPI 口径仍会失真。
     const pricing = resolvePricing({});
     const priced = Object.keys(pricing.table);
-    ok(priced.length <= 2 && priced.every((k) => k.startsWith("deepseek-v4")), "价目：内置表只覆盖 DeepSeek 官方模型", priced.join(","));
-    for (const real of ["step-5-preview", "hy4-preview", "deepseek-v4.1-flash"]) {
+    eq(priced.length, 4, "价目：四个 DeepSeek 名字（v4 / v4.1 × flash / pro）", priced.join(","));
+    ok(priced.every((k) => k.startsWith("deepseek-v4")) && priced.includes("deepseek-v4.1-flash") && priced.includes("deepseek-v4.1-pro"), "价目：v4.1-flash / v4.1-pro 已补价，仍只覆盖 DeepSeek 官方模型", priced.join(","));
+    for (const real of ["step-5-preview", "hy4-preview", "hy4free"]) {
       const bucket = { ...emptyModelBucket(real), key: real, group: real, inOff: 1e6, outOff: 1e6 };
-      eq(costOf(bucket, pricing), null, `价目：${real} 没有官方价 → 费用算不出来（这就是失真的原因）`);
+      eq(costOf(bucket, pricing), null, `价目：${real} 没有官方价 → 费用算不出来（KPI 仍不恢复）`);
     }
+    ok(costOf({ ...emptyModelBucket("deepseek-v4.1-flash"), key: "deepseek-v4.1-flash", group: "deepseek-v4.1-flash", inOff: 1e6 }, pricing) !== null, "价目：deepseek-v4.1-flash 现在有价（明细表费用不再显示 —）");
     // 3) 新指标口径：缓存命中率 = cacheRead/(input+cacheRead)，平均输出 = output/requests（均不依赖价格）
     const byModel = [
       { requests: 100, tokens: { input: 10_000, cacheRead: 90_000, output: 5_000 } },
@@ -3950,9 +3797,6 @@ bootSync.seq = 1;
     // 模型耗时占比 = 模型耗时 / 活跃时长（与价格无关）
     eq(Math.round((2 * 3600 * 1000 / (4 * 3600 * 1000)) * 1000) / 10, 50, "模型指标：耗时占比 = llmMs/activeMs");
     eq(Math.round(output / requests), 53, "模型指标：平均每次输出 = output/requests");
-    // 4) 看板与报告一致
-    ok(/kpi\.modelShare/.test(clientIndex) && /kpi\.modelShare/.test(reportSrc), "一致性：看板与报告都有模型耗时占比");
-    ok(/kpi\.modelOutput/.test(clientIndex) && /kpi\.modelOutput/.test(reportSrc), "一致性：看板与报告都有平均每次输出");
   }
 
   // —— 2.3.2 版式微调：设备标签字号 + 标题字号 ——
@@ -4000,9 +3844,6 @@ bootSync.seq = 1;
     ok(/type="text"[\s\S]{0,200}data-setting="path"/.test(view), "UI：路径用文本框（非只读 code）");
   }
 
-  // 报告不含同步 UI（报告是自包含快照，不暴露设备管理）
-  const reportSource = await readFile(new URL("../src/report-html.js", import.meta.url), "utf8");
-  ok(!reportSource.includes("DeviceFilter") && !reportSource.includes("BySyncView"), "UI：HTML 报告不含设备管理 UI");
 }
 
 // ---------------------------------------------------------------- 16) 版本号 / 文案对齐（布局调整后）
@@ -4029,17 +3870,15 @@ bootSync.seq = 1;
   }
 }
 
-// GitHub Star 入口：看板右上角给仓库链接；报告里刻意不放（报告发给客户，外链仅官方计费页）
+// GitHub Star 入口：看板右上角给仓库链接
 {
   const clientSource = await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8");
-  const reportSource2 = await readFile(new URL("../src/report-html.js", import.meta.url), "utf8");
   const stylesSource2 = await readFile(new URL("../src/client/styles.js", import.meta.url), "utf8");
   ok(clientSource.includes('data-kind="star-link"') && clientSource.includes("https://github.com/tableau-China/dsh-workload-report"), "UI：面板右上角有 GitHub Star 入口");
   ok(/data-kind="star-link"[\s\S]{0,400}target="_blank"/.test(clientSource) && /rel="noreferrer noopener"/.test(clientSource), "UI：Star 链接新标签打开，且带 rel=noreferrer noopener");
   ok(clientSource.includes('t("action.star.hint")') && "action.star" in zh && "action.star" in en && "action.star.hint" in zh && "action.star.hint" in en, "文案：Star 入口中英文案齐全且被使用");
   ok(/\.wl-star \{[^}]*text-decoration: none/s.test(stylesSource2) && /\.wl-star \{[^}]*border: none/s.test(stylesSource2), "样式：Star 入口无边框、无下划线（靠 GitHub 图标识别）");
   ok(clientSource.includes('className="wl-star-gh"') && /viewBox="0 0 16 16"/.test(clientSource), "UI：Star 入口带内联 GitHub logo（SVG，不引外部资源）");
-  ok(!reportSource2.includes("github.com/tableau-China/dsh-workload-report"), "报告：不含 Star 链接（发给客户，外链仅官方计费页）");
 }
 
 // 交互修复（2.3.5）：刷新真的刷新 / ESC 不误关且编辑中确认 / 设备消失回落
@@ -4073,14 +3912,14 @@ bootSync.seq = 1;
   ok(!client.includes("key={arc.label}"), "环形图：扇区 / 图例不再用显示名做 key");
   ok(client.includes("key={arc.id}") && client.includes("const withId = (slice, fallback)"), "环形图：改用唯一 id（item.key，重复时加序号）");
   ok(/const base = String\(slice\.item\?\.key \?\? fallback\)/.test(client), "环形图：id 优先取 item.key（工作区路径 / 模型 key）");
-  ok(/counts\.get\(item\.label\) > 1 && item\.provider/.test(client), "环形图：同名模型补供应商短名区分（deepseek-v4.1-flash · auto）");
-  ok(client.includes("trendLabelOf(key)"), "模型趋势图例：同样对同名模型补供应商短名");
+  ok((client.match(/disambiguateModelLabels\(/g) ?? []).length >= 2, "看板：模型用量页与首页环形图共用同一份同名模型消歧");
+  ok(client.includes("trendLabelOf(key)"), "模型趋势图例：按 key 取回统一算好的显示名");
 }
 
 // ---------------------------------------------------------------- 多语言（8 语言）
 // DSH 0.2.2 起内置 8 种界面语言；插件文案只有一份来源（src/locales/*.json），
-// 客户端 / 宿主 / HTML 报告 / AI 画像都从它取文案。这里验证「语言归一化 + 报告 + 本地规则 + 提示词」跟随语言。
-console.log("\n—— 多语言（8 语言：客户端 / 报告 / 画像）——");
+// 客户端 / 宿主 / AI 画像都从它取文案。这里验证「语言归一化 + 本地规则 + 提示词」跟随语言。
+console.log("\n—— 多语言（8 语言：客户端 / 画像）——");
 {
   // 1) 语言 id 归一化与 Intl 标签
   eq(LOCALES.length, 8, "支持 DSH 内置 8 种语言");
@@ -4094,24 +3933,9 @@ console.log("\n—— 多语言（8 语言：客户端 / 报告 / 画像）—�
   eq(translate("ko", "range.7"), en["range.7"], "translate：未知语言按英文兜底");
   eq(translate("zh", "no.such.key"), "no.such.key", "translate：缺键显示键名（便于定位）");
 
-  // 2) HTML 报告：8 语言 <html lang> / 标题 / 无键名裸露
-  //    用纯 ASCII 数据的快照，避免用户数据（工作区别名 / 会话标题）里的中文干扰「无中文残留」判断。
+  // 2) 快照夹具（AI 画像用；HTML 报告已在 2.6.0 移除）
   const i18nRows = [makeRow({ id: "i18n-a", cwd: "/tmp/i18n-a", createdAt: base, turns: 2, steps: 3, llmMs: 1000, toolMs: 500, input: 10, output: 20, cacheRead: 30, title: "Alpha" })];
   const i18nSnap = present(aggregate(i18nRows, { days: 30, timeZone: "Asia/Shanghai", now: base }));
-  const reportKeys = Object.keys(zh).filter((key) => key.startsWith("report."));
-  const reportLangHtml = {};
-  for (const lang of LOCALES) {
-    const html = renderReport(i18nSnap, { lang });
-    reportLangHtml[lang] = html;
-    ok(html.includes(`<html lang="${localeTag(lang)}"`), `报告：${lang} 的 <html lang> = ${localeTag(lang)}`);
-    ok(html.includes(translate(lang, "report.title")), `报告：${lang} 标题用词典 report.title`);
-    const leaked = reportKeys.filter((key) => html.includes(key));
-    ok(leaked.length === 0, `报告：${lang} 没有裸露的 report.* 键名`, leaked.slice(0, 5).join(", "));
-    const chinese = lang !== "zh" && lang !== "ja" && /[\u4e00-\u9fff]/.test(html.replace(/<style[\s\S]*?<\/style>/g, ""));
-    ok(!chinese, `报告：${lang} 非中文界面没有中文残留`);
-  }
-  ok(reportLangHtml.zh !== reportLangHtml.en, "报告：中文版与英文版内容不同（确实按语言渲染）");
-  eq(renderReport(i18nSnap, {}).includes('<html lang="zh-CN"'), true, "报告：缺省语言保持 zh（旧调用方行为不变）");
 
   // 3) AI 画像本地规则：8 语言输出跟随语言、无中文残留
   const profilePayload = buildProfilePayload(i18nSnap);

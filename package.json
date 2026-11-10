@@ -1,7 +1,7 @@
 {
   "name": "dsh-workload-report",
-  "version": "2.5.0",
-  "description": "DeepSeek Harness (DSH) plugin: workload, active time and token usage by date, workspace and model — calendar heatmap, model cost/speed, a client-ready self-contained HTML report, AI usage profile, multi-device sync, and 8 interface languages.",
+  "version": "2.6.0",
+  "description": "DeepSeek Harness (DSH) plugin: workload, active time and token usage by date, workspace and model — calendar heatmap, model cost/speed, per-KPI sparklines, AI usage profile, multi-device sync, and 8 interface languages.",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -60,7 +60,6 @@
     "ai-coding",
     "developer-productivity",
     "analytics",
-    "html-report",
     "ai-agent",
     "llm",
     "local-first",

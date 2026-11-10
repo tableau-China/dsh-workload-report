@@ -1257,3 +1257,69 @@ E2E（`test/e2e-ui.mjs`，真实实例）全过；离线断言 184 → **215**�
 **触发条件**（任一满足再重评）：`snapshot` p95 > 200 ms；会话数 > 5000；`buildMs` 再次 > 10 s。
 
 详见 [docs/preaggregation.md](../docs/preaggregation.md)。
+
+## 2026-11-10 v2.5.2 导出 HTML 报告恢复 + 报告与看板重新对齐
+
+### 事实
+
+- 2.1.0 起 `EXPORT_ENTRY_VISIBLE = false`（`src/client/index.jsx`）隐藏导出按钮，实现与 `/report.html` 路由一直保留；
+  README / npm 描述仍把「一键导出可发给客户的自包含 HTML 报告」当首要卖点 —— 宣传与界面不一致。
+- 报告 `src/report-html.js` 有几处停在旧版：最活跃模型仍带「请求占比 X%」（看板 2.1.1 已去掉）、
+  `kpi.speed` 无 `kpi.speed.none` 分支、按工作区仍是两列 bar（看板 2.3.3 已是三列）、
+  `docs/report-parity.md` 仍写 8 张 KPI 与「固定中文」（实际 9 张 + 8 语言）。
+- 导出没有透传 `?machine=`，选中设备时报告悄悄导出全设备汇总（2.4.0 设备筛选的漏网）。
+- 旧断言本身把旧行为锁死了：`test/verify.mjs` 里有「入口默认隐藏」与「报告含请求占比」两条 ✓。
+
+### 变更
+
+- 恢复入口（开关置 true）；`exportReport()` 透传可重复 `?machine=`，`useCallback` 依赖加 `machines`。
+- 报告 KPI 对齐：9 张（含输出速度 + none 分支）、最活跃模型副标题为空且条件渲染 `.sub`；
+  同步删除死键 `report.kpi.topModel.sub` / `report.metric.llmMs`（8 语言）。
+- 报告按工作区补第三列（会话 / 轮次），`.ws-metrics` 改三列栅格 + 窄屏单列。
+- `docs/report-parity.md` / README（中英）/ CHANGELOG / `docs/i18n/README.zh-CN.md` / `test/verify.mjs` 同提交同步。
+
+### 验证
+
+- `node build.mjs && npm test`：全绿（含 8 语言 i18n 与死键检查）；重复构建 `lib/client.js` 哈希一致。
+- `node test/check-release.mjs`：package.json / CHANGELOG / 中英 README 版本同为 2.5.2，通过。
+- 生成的三份样例（`.tmp/report-v2.5.2-{zh,en,ja}-*.html`）：`<script` = 0、无 `<link`/`src=`、KPI 9 张、
+  最活跃模型卡无副标题、三列 bar 标签与 `data-kind="turns"` 齐全。
+- 报告铁律未破：自包含、外链仅官方计费页、看板与报告同源快照。
+- 版本仅本地提升至 **2.5.2（待发布）**；**未推送、未 npm 发布、未打 tag**（对外动作需另行确认）。
+
+
+## 2026-11-10 v2.6.0 8 张 KPI + 跟随筛选的 sparkline + 日历总结条
+
+### 决策（来自前几轮 demo 逐条确认）
+
+- 删除「最活跃模型」（分类值、无数值趋势）与「活跃天数」（累计 spark 单调直线）；
+  后者移到「每日用量趋势」标题后，作为日历图的总结（活跃 N/M 天 · 连续 X 天 · tooltip 最长连续）。
+- 替换 KPI 选 **「每轮自主步骤」= `steps / turns`**（用户反馈「等待用户时长」感知弱，要人机交互效率）：
+  `steps` = 一次 `assistant/message`，`turns` = 对话轮次，都在 `byDay` 里，零改动、Σ 守恒、逐日有波动。
+  明确标注为**协作节奏代理指标**，不等于产出质量（steps 高也可能是循环/重试）。
+- 栅格 5 列（Token 跨 2 列）→ **4 列 × 2 行等宽**，8 张卡正好排满。
+- sparkline **跟随日期筛选**（7/30/90/全部取 `snapshot.byDay` 全量），不固定 7 天；
+  不采样、不聚合，`null` 日断开线段，无数据显示「— 无趋势数据」。
+
+### 实现
+
+- 新增 3 个纯模块：`src/sparkline.js`（几何 + 视觉分档）、`src/kpi-series.js`（8 条逐日序列 + 轴）、
+  `src/calendar-summary.js`（活跃/当前连续/最长连续）。
+- `CardHead` 新增 `summary` prop；`.wl-card-head-summary` 样式。
+- `src/locales/*.json` ×8：新增 7 键、删除 4 个死键；`check:i18n` 全绿（无死键、键序与占位符一致）。
+- `test/verify.mjs` / `README.md` / `CHANGELOG.md` / `docs/metrics.md` 同提交同步。
+
+### 移除 HTML 报告（同轮决定）
+
+- 删除 `/report.html` 路由、`src/report-html.js`、`sendHtml` / `defaultTitle` 配置、导出按钮；
+  词典删 34 个 `report.*` 键（8 语言 ×272 条）；删除 `docs/report-parity.md`。
+- `test/verify.mjs` / `e2e-ui` / `e2e-i18n` 的报告断言全部删除；`test/i18n.mjs` 源码清单与必译键同步。
+- 诊断记录：`/report.html` 返回 200 且渲染正常，但真实坐标点击命中宿主遮罩（`elementFromPoint` = `_mask_*`）；
+  `window.open` 与 `<a target="_blank">` 都试过 —— 不再修按钮，直接移除功能；后续改单页 PNG 快照。
+
+### 验证
+
+- `node build.mjs && npm test`：全绿（366 键、11 个源码文件；含 8 卡、sparkline、日历总结、4 列栅格断言）。
+- `node test/check-release.mjs`：2.6.0 四处一致，通过。
+- 看板打开仍 0 次 `readSession`；无外部资源。
+- 版本仅本地提升至 **2.6.0（待发布）**；**未推送、未 npm 发布、未打 tag**。

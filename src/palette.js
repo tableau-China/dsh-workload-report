@@ -2,7 +2,7 @@
  * 数据可视化统一色板（Tableau 10）。
  *
  * 为什么集中在一处：此前图表颜色散落在 client/styles.js（CSS 变量）、
- * client/index.jsx（treemap/pie 内联数组）、report-html.js（PALETTES）三处，
+ * client/index.jsx（treemap/pie 内联数组）两处，
  * 同一个指标在不同视图里可能不是同一个颜色，导出报告和看板也会不一致。
  * 现在分类色板只在这里定义一次，看板与报告都从这里取。
  *

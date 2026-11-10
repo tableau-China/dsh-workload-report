@@ -4,6 +4,9 @@
 
 | 版本 | 日期 | npm | 一句话 |
 | --- | --- | --- | --- |
+| **2.6.0** | 2026-11-10 | 待发布 | **8 张 KPI + sparkline**：每轮自主步骤、4 列等宽、跟随日期筛选、日历总结条 + **移除 HTML 报告** |
+| **2.5.2** | 2026-11-10 | 待发布 | **恢复导出 HTML 报告**：入口恢复 + 跟随设备筛选 + 报告重新对齐 9 KPI / 三列 bar / 8 语言 |
+| **2.5.1** | 2026-11-10 | 待发布 | **Bug 修复**：V4.1 Flash/Pro 补价、模型列表同名消歧、官方账户与 API Key 分桶显示 |
 | **2.5.0** | 2026-11-07 | 待发布 | **六国语言**：接入 DSH 内置 8 语言（日 / 西 / 法 / 德 / 俄 / 巴西葡）+ 报告 / 画像 / 同步全链路本地化 + 词典单一来源 |
 | **2.4.1** | 2026-11-04 | 待发布 | **Bug 修复**：路径模板改为可编辑、升级不改变已保存路径；移除目录扫描（避免误判其它程序的 json） |
 | 2.4.0 | 2026-11-03 | 已发布 | **多设备一致性**：设备筛选只看选中设备 + 拉取缓存持久化（重启/离线不丢）+ 供应商短名 + 环形图 key 修复 + 刷新/ESC 交互修复 |
@@ -45,6 +48,134 @@
 > 0.7.0 / 0.7.1 的工作已并入 1.0.0，**不再单独发版**；详见各版本条目。
 > 1.1.0 的多设备同步工作已并入 2.0.0，**不再单独发版**；2.0.0 同时包含一轮样式 / 布局调整（语义化版本：新增能力 + 界面与口径调整）。
 > 2.0.2 的同步设置布局重做**并入 2.0.3**，不再单独发版。
+
+## v2.6.0（2026-11-10）— 8 张等宽 KPI + sparkline + 日历总结条 + 移除 HTML 报告
+
+**背景**：前几轮 demo 逐条确认了 KPI 区的重排。原来的 9 张卡里有两张不适合画趋势 ——
+「活跃天数」的累计曲线单调直线、「最活跃模型」是分类值（没有数值序列）；
+「等待用户」作为独立 KPI 用户感知弱。最终选 **「每轮自主步骤」= `steps / turns`**
+（我交代一次，AI 自己连续跑几步）替换「活跃天数」，并把活跃天数 / 连续活跃移到日历图标题后。
+同轮决定**整体移除 HTML 报告功能**（导出一直没能可靠打开），后续改做单页 PNG 快照分享。
+
+### 1. KPI 区：9 张 → 8 张，全部等宽
+
+- 删除 `kpi.topModel`、`kpi.activeDays`；新增 `kpi.autonomy`（8 语言词典同步）。
+- 栅格从 5 列（Token 跨 2 列）改为 **4 列 × 2 行**，删除 `.wl-kpi[data-kpi="kpi.tokens"] { grid-column: span 2 }`；窄屏断点是 3 列 / 2 列。
+- 「每轮自主步骤」= `totals.steps / totals.turns`：`steps` 是一条 `assistant/message` = 一次模型请求，`turns` 是对话轮次。
+  **它是协作节奏的代理指标，不等于产出质量**（steps 变高也可能是循环 / 重试），副标题明确写「协作节奏参考」。
+
+### 2. 每张卡加 sparkline，跟随日期筛选
+
+- 新增 `src/sparkline.js`（纯几何）、`src/kpi-series.js`（8 条逐日序列 + 坐标轴）、`src/calendar-summary.js`（活跃 / 当前连续 / 最长连续）。
+- 数据源是 `snapshot.byDay`（当前筛选区间的逐日桶），7 / 30 / 90 / 全部切换时 spark 自动同步，**不需要额外状态、请求或索引换代**。
+- **不采样、不聚合、不编数字**：每个真实日一个点（原生 SVG `<title>`），点数越多点越小 / 线越细；
+  `decodeMs = 0` 的日子用 `null` **断开线段**并显示「— 无趋势数据」，不画 0 冒充。
+- 比例类固定 0–100% 轴、绝对值类 0 起点，避免自适应轴夸大 7 天微小波动。
+- 卡片内布局：**标题 / 数值在左、spark 跨两行在右、副标题横跨底部**（3 行 2 列 grid）；
+  范围 / 点数写进 SVG 的 `<title>` / `aria-label`（hover 可见），不再渲染可见范围标签 —— 卡片高度 150px → 约 100px。
+
+### 3. 活跃天数 / 连续活跃 → 日历卡标题后
+
+- `CardHead` 新增可选 `summary` prop（紧跟 h3、在 hint 之前）。
+- 总结条用 **`snapshot.calendar` 全历史**（`from → to`），与日历热力图一致、不受顶部区间筛选影响；
+  显示「活跃 N / M 天 · 连续 X 天」，tooltip 补最长连续天数。
+
+### 4. 移除 HTML 报告功能
+
+- 删除 `/report.html` 路由、`src/report-html.js`（渲染器）、`sendHtml` / `defaultTitle` 配置、工具栏「导出 HTML 报告」按钮。
+- 删除词典里 **34 个 `report.*` 键**（8 语言同步，共 272 条），`check:i18n` 死键检查通过。
+- `test/verify.mjs` / `test/e2e-ui.mjs` / `test/e2e-i18n.mjs` 删除全部报告渲染与报告页断言；`test/i18n.mjs` 的源码清单与必译键同步。
+- 删除 `docs/report-parity.md`；README / 中文落地页 / `package.json` 描述改为「HTML 报告已移除，后续 PNG 快照」。
+- **为什么不再修导出**：诊断确认 `/report.html` 返回 200、渲染正常，但真实坐标点击命中的是宿主遮罩
+  （`elementFromPoint` = `_mask_*`），`window.open` 与 `<a target="_blank">` 两条路径都试过。与其继续加兼容层，直接移除入口与整块功能。
+
+### 5. 验证
+
+- `node build.mjs && npm test` 全绿（366 键、11 个源码文件）；`check:release` 版本一致（2.6.0）。
+- 看板打开仍 0 次 `readSession`；无 `<script>` 外部资源。
+
+### 6. 未做（后续）
+
+- **单页 PNG 快照分享**（替代 HTML 报告）。
+- 保存的报告模板、周期对比、CSV / Markdown 导出 —— 见 `docs/v3-plan.md`。
+
+## v2.5.2（2026-11-10）— 恢复导出 HTML 报告 + 报告与看板重新对齐
+
+**背景**：2.1.0 起导出按钮被 `EXPORT_ENTRY_VISIBLE = false` 隐藏（实现与 `/report.html` 路由一直保留），
+但 README / npm 描述仍把它当首要卖点；用户手里的旧 HTML 报告也因此停在旧版内容。
+本轮恢复入口，并按 v2.5.1 的当前看板重新校准报告内容。
+
+### 1. 导出入口恢复
+
+- `src/client/index.jsx`：`EXPORT_ENTRY_VISIBLE = true`；按钮与 `/report.html` 路由不变，8 语言 `action.export` 文案早已齐全。
+- **导出跟随当前设备筛选**：`exportReport()` 透传可重复的 `?machine=`（与看板快照同一参数），
+  选中某台设备时报告只含该设备的数据，不再悄悄导出全设备汇总。
+- `test/verify.mjs`：把「入口默认隐藏」的旧断言改为「入口恢复可见 + machine 透传」。
+
+### 2. 报告与看板重新对齐（此前停在旧版）
+
+| 项 | 之前（报告） | 现在（与看板一致） |
+| --- | --- | --- |
+| KPI 数量 | parity 文档写 8 张、无速度卡 | 实际 9 张；补「输出速度」，`ttftMean=null` 时显示 `kpi.speed.none`（不再渲染「首字 —」） |
+| 最活跃模型 | 仍带「请求占比 X%」副标题（2.1.1 起看板已去掉） | 只显示模型名，副标题为空且**不渲染 `.sub` 节点**（KPI 等高） |
+| 按工作区 | 两列 bar（我的付出 / Token 消耗） | **三列 bar**（会话 / 轮次 · 我的付出 · Token 消耗），turns 共用同一分母，每列带 `m-label` 标签 |
+| 语言 | parity 文档仍写「固定中文」 | 2.5.0 起已支持 `?lang=` 8 语言，文档与断言同步 |
+
+- 删除随之变成死键的两条词典文案：`report.kpi.topModel.sub`、`report.metric.llmMs`（8 语言同步删除，`check:i18n` 死键断言全绿）。
+- `docs/report-parity.md`：KPI 9 张 / 速度卡 / 最活跃模型 / 三列 bar / 8 语言 / 结构断言清单全部更新；最近审计日期改为 2026-11-10。
+- **铁律未破**：报告仍是 `<script` = 0、外链仅官方计费页、看板与报告同一份快照；`npm test`（含 8 语言）全绿，`lib/client.js` 已重新构建。
+
+### 3. 未做（留给 V3 讨论）
+
+保存的报告模板、周期对比、CSV / Markdown 导出、报告内品牌位 —— 见 `docs/v3-plan.md`。
+
+## v2.5.1（2026-11-10）— Bug 修复：V4.1 补价 · 模型列表消歧 · 账户 / API Key 分桶
+
+**背景**：用户反馈三处显示问题 —— 渠道侧 `deepseek-v4.1-flash` / `deepseek-v4.1-pro` 的费用列显示 `—`；
+「模型用量」页趋势图例的颜色块写着 `hy4free · workbuddy` / `hy4free · auto`，明细表行标题却只有 `hy4free`；
+希望把官方「DeepSeek 账户」与 API 配置的 DeepSeek Key 分开看。
+
+### 1. 价目表补齐 v4.1 名字（与 v4 同价）
+
+- 官方 Messages 目录里叫 `deepseek-flash`（= V4.1 Flash）/ `deepseek-v4-pro`，渠道侧常用
+  `deepseek-v4.1-flash` / `deepseek-v4.1-pro`，两组名字**同价**。CNY / USD 两张表各补两条，
+  与原有 `FLASH_* / PRO_*` 共用同一份常量，避免两处价格漂移；`asOf` 仍是 2026-10-13（价格值没变）。
+- `costOf()` 增加**最后一段**回退：真实组名是三段 `magpie/workbuddy-ai/deepseek-v4.1-flash`，
+  旧的「去掉第一个 `/`」回退命不中。新增 `PRICE_ALIASES` 把 `deepseek-v4.1-flash-sg` 等区域变体
+  映射到基础模型名；用户仍可用 `pricing.overrides` 按任意键精确覆盖。
+- 「模型费用」KPI **不恢复**：step-5-preview / hy4-preview 等渠道模型依然无官方价，KPI 口径仍会失真；
+  只让明细表的费用列和覆盖度提示变准。
+
+### 2. 同名模型的显示名在看板与报告里统一
+
+- 新增 `disambiguateModelLabels()`（`src/format.js`）：同名模型补供应商短名，**只在重名时补**。
+- 「模型用量」页的趋势图例、treemap、明细表行标题，首页「模型 Token 占比」环形图、
+  导出 HTML 报告的表格 / treemap / 趋势 / 饼图全部复用这一份结果，不再各写一套；
+  treemap 块内文字上限从 22 放宽到 34 字符，避免消歧后缀被截掉。
+- 明细表的「供应商」列改用 `providerLabel()`：官方账户 / API Key 显示可读文案，
+  完整路由 id 仍留在 `title` 里；自定义渠道继续显示短名。
+
+### 3. 官方账户与 API Key 分桶
+
+- 事件日志的 `source.provider` 已经能区分两条路由：`deepseek-account`（登录账户，
+  `x-dsh-auth-token`）与 `deepseek-official`（API 密钥，`x-api-key`）。凭据本身不落日志，
+  无法区分「同一路由下换了哪把 key」，自定义网关也只能靠 `pricing`/别名配置映射。
+- `groupKeyFor()` 的内置归并改为**只合并同一 provider 下的新旧模型名**：
+  `deepseek-account/deepseek-v4-flash` 与 `deepseek-official/deepseek-v4-flash` 各自成桶，
+  请求 / Token / 耗时 / 费用不再混成一行；`modelLabel()` 仍只显示模型名，
+  `providerOf()` 直接给出 provider，重名时由 §2 的消歧补上可读后缀
+  （`deepseek-v4-flash · DeepSeek 账户` / `· DeepSeek API 密钥`）。
+- 用户自定义 `modelGroups` 的合并口径不变；`providerOf()` 从 `raw` 回推的逻辑保留，
+  用于兼容旧索引与旧设备同步过来的快照。
+- `INDEX_VERSION` 8 → 9：旧行里混在一起的 `models` 无法事后拆分，必须换代重建（冷读 + 重折一次）。
+- 8 部词典新增 `model.provider.deepseekAccount` / `model.provider.deepseekApiKey` 两个键。
+
+### 4. 测试
+
+- 离线断言新增：v4.1 价格（CNY / USD / 三段组名 / `-sg` 别名 / overrides）、
+  provider 前缀分桶、消歧与可读供应商名、看板与报告共用消歧函数。
+- 测试进程时钟冻结到 2026-10-20：夹具日期写死在 10 月，宿主 `/snapshot` 用 `Date.now()`
+  算「近 30 天」窗口，真实日期漂出窗口会让整组路由断言集体失效（与业务代码无关）。
 
 ## v2.5.0（2026-11-07）— 六国语言：接入 DSH 内置 8 种界面语言
 

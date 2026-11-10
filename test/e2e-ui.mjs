@@ -1,4 +1,4 @@
-// 真实浏览器端到端验证：隔离实例 + 真实投影数据，验证看板渲染、切换与报告页，并留下截图。
+// 真实浏览器端到端验证：隔离实例 + 真实投影数据，验证看板渲染与切换，并留下截图。
 //
 // 前置：test/e2e-boot.sh 已在 WL_URL（默认 127.0.0.1:3299）启动测试实例。
 // 用法：node test/e2e-ui.mjs
@@ -258,10 +258,10 @@ try {
     await sleep(600);
   }
 
-  // —— 工具栏：2.1.0 起「导出 HTML 报告」暂时隐藏，只剩 刷新 / 关闭 ——
+  // —— 工具栏：2.6.0 起彻底移除导出入口（HTML 报告功能已删除），只剩 刷新 / 关闭 ——
   const headerButtons = await page.evaluate(() => [...document.querySelectorAll(".wl-head .wl-btn")].map((node) => (node.textContent || "").trim()));
   ok(!headerButtons.some((text) => /复制|copied|copy json/i.test(text)), "工具栏不再有「复制 JSON」按钮", JSON.stringify(headerButtons));
-  ok(!headerButtons.some((text) => /导出|Export/i.test(text)), "工具栏已隐藏「导出 HTML 报告」", JSON.stringify(headerButtons));
+  ok(!headerButtons.some((text) => /导出|Export/i.test(text)), "工具栏不再有「导出 HTML 报告」入口", JSON.stringify(headerButtons));
   // 标题与副标题
   const head = await page.evaluate(() => ({
     title: document.querySelector(".wl-title")?.textContent ?? "",
@@ -909,71 +909,6 @@ try {
     return { earliest: snapshot?.calendar?.from ?? null, subtitle: document.querySelector(".wl-subtitle")?.textContent ?? "" };
   });
   ok(allStart.earliest !== null && allStart.subtitle.startsWith(allStart.earliest), "「全部」档区间从最早活跃日开始（与快照 calendar.from 一致）", JSON.stringify(allStart));
-
-  // 导出 HTML 报告（直接访问路由，等价于按钮行为）
-  const reportPage = await browser.newPage();
-  await reportPage.setViewport({ width: 1240, height: 1400, deviceScaleFactor: 2 });
-  const reportUrl = `${URL_BASE}/workload-report/v1/report.html?days=90&tz=Asia%2FShanghai&theme=light&title=%E5%B7%A5%E4%BD%9C%E9%87%8F%E6%8A%A5%E5%91%8A`;
-  const response = await reportPage.goto(reportUrl, { waitUntil: "networkidle2", timeout: 60000 });
-  ok(response?.status() === 200, "报告页返回 200", String(response?.status()));
-  const reportText = await reportPage.evaluate(() => document.body.innerText.slice(0, 400));
-  ok(/工作量报告/.test(reportText), "报告页渲染标题");
-  ok(!/总 Token\s*\n?\s*0\b/.test(reportText) && /[KMB]/.test(reportText), "报告页 Token 非零", reportText.replace(/\n/g, " ").slice(0, 160));
-  ok(!/加载失败|Failed/.test(reportText), "报告页无错误");
-
-  // —— 报告页宽自适应：窄屏占满、宽屏最多 1450px（与看板同一口径）——
-  {
-    const narrowReport = await reportPage.evaluate(() => ({
-      innerWidth: window.innerWidth,
-      pageWidth: Math.round(document.querySelector("main.page")?.getBoundingClientRect().width ?? 0),
-      horizontalScroll: document.body.scrollWidth > window.innerWidth + 1,
-    }));
-    ok(
-      narrowReport.pageWidth >= 1200 && narrowReport.pageWidth <= narrowReport.innerWidth && !narrowReport.horizontalScroll,
-      "报告页宽自适应视口（1240 宽下不再固定 1120）",
-      JSON.stringify(narrowReport),
-    );
-    await reportPage.setViewport({ width: 1600, height: 1200, deviceScaleFactor: 2 });
-    const wideReport = await reportPage.evaluate(() => ({
-      innerWidth: window.innerWidth,
-      pageWidth: Math.round(document.querySelector("main.page")?.getBoundingClientRect().width ?? 0),
-    }));
-    ok(wideReport.pageWidth === Math.min(1450, wideReport.innerWidth), "宽屏报告页宽最多 1450px（与看板同一口径）", JSON.stringify(wideReport));
-    await reportPage.setViewport({ width: 1240, height: 1400, deviceScaleFactor: 2 });
-  }
-
-  // —— 问题 4：导出报告与看板对齐（模型用量一节 + 模型性能 KPI + 去折线 / 周末异色）——
-  const reportDom = await reportPage.evaluate(() => {
-    const treemap = document.querySelector("svg.treemap");
-    const parent = treemap?.parentElement ?? null;
-    const round = (v) => Math.round(v * 10) / 10;
-    return {
-      text: document.body.innerText,
-      kpis: [...document.querySelectorAll(".kpi .label")].map((n) => n.textContent || ""),
-      hasTreemap: treemap !== null,
-      treemapGap: treemap === null || parent === null ? null : {
-        left: round(treemap.getBoundingClientRect().left - parent.getBoundingClientRect().left),
-        right: round(parent.getBoundingClientRect().right - treemap.getBoundingClientRect().right),
-      },
-      polylines: document.querySelectorAll("polyline").length,
-      scripts: document.querySelectorAll("script").length,
-      styles: document.querySelectorAll("style").length,
-      links: [...document.querySelectorAll("a")].map((n) => n.getAttribute("href") ?? "").filter((href) => /^https?:/.test(href)),
-      weekendBars: [...document.querySelectorAll("svg rect")].filter((r) => (r.getAttribute("fill") ?? "").toLowerCase() === "#f59e0b").length,
-      modelRows: [...document.querySelectorAll("table tbody tr")].length,
-    };
-  });
-  ok(/模型用量/.test(reportDom.text), "报告含「模型用量」一节（模型区不再为空）");
-  ok(reportDom.kpis.some((text) => /模型缓存命中率/.test(text)) && reportDom.kpis.some((text) => /平均每次输出/.test(text)), "报告 KPI 含两张模型性能卡", JSON.stringify(reportDom.kpis));
-  ok(reportDom.hasTreemap && reportDom.treemapGap !== null && reportDom.treemapGap.left <= 8 && reportDom.treemapGap.right <= 8, "报告含铺满容器的 treemap", JSON.stringify(reportDom.treemapGap));
-  ok(reportDom.polylines === 0, "报告每日趋势无折线（与看板一致）", String(reportDom.polylines));
-  ok(reportDom.weekendBars > 0, "报告每日趋势有周末异色柱", String(reportDom.weekendBars));
-  ok(reportDom.scripts === 0 && reportDom.links.every((href) => /deepseek|kimi|moonshot|claude/.test(href)), "报告保持自包含（无脚本；外链仅官方计费页）", JSON.stringify(reportDom.links));
-  await reportPage.screenshot({ path: join(ARTIFACTS, "05-report-light.png"), fullPage: true });
-
-  const darkResponse = await reportPage.goto(reportUrl.replace("theme=light", "theme=dark"), { waitUntil: "networkidle2", timeout: 60000 });
-  ok(darkResponse?.status() === 200, "深色报告页返回 200");
-  await reportPage.screenshot({ path: join(ARTIFACTS, "06-report-dark.png"), fullPage: true });
 
   // ---- 状态行三态 DOM 断言：first-fold / background / idle（拦截快照，只改 diagnostics）----
   // 回到「按日」页签（时刻分析卡在这里），并取一张真实快照作为底稿。

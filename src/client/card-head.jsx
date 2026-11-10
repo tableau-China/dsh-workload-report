@@ -8,12 +8,19 @@
  * 所有带切换控件的卡片都必须用它，保证标题、留白、右上控件位置一致：
  *   每日用量趋势 / 时刻分析 / 工作区占比 / 模型用量 / 模型 Token 占比。
  * 无右侧控件时只渲染标题（可带 hint），不留下空的 actions 容器。
+ *
+ * summary（2.6.0）：可选的「标题后总结」，紧跟 h3、在 hint 之前，用于日历图这类
+ * 需要一句话概括全图的数值（活跃天数 / 连续活跃）。它与 hint 的区别：
+ * hint 解释「看什么」，summary 给出「看出来的数字」。
  */
-export function CardHead({ title, hint = null, children = null }) {
+export function CardHead({ title, hint = null, summary = null, children = null }) {
   return (
     <div className="wl-card-head">
       <div className="wl-card-head-text">
         <h3>{title}</h3>
+        {summary === null ? null : (
+          <span className="wl-card-head-summary">{summary}</span>
+        )}
         {hint === null ? null : (
           <span className="wl-card-head-hint" title={hint}>{hint}</span>
         )}

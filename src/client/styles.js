@@ -21,7 +21,7 @@ export const STYLES = `
 }
 @keyframes wl-fade { from { opacity: 0; } to { opacity: 1; } }
 .wl-panel {
-  /* 上限与报告页宽（report-html.js 的 .page max-width）对齐到同一个 1450px：
+  /* 上限 1450px（宽屏行宽更短、更好读）：
      2.1.0 起从 1600 收到 1450——大屏下内容行宽更短、更好读，同时看板与报告仍然同一口径。
      100% 已经是 overlay 扣掉左右 3vw 内边距后的可用宽度，所以窄屏仍然是占满、不出现横滑。 */
   width: min(1450px, 100%);
@@ -106,18 +106,19 @@ export const STYLES = `
 .wl-btn:disabled { opacity: 0.55; cursor: not-allowed; }
 .wl-btn:disabled:hover { filter: none; }
 .wl-body { padding: 18px 20px 24px; overflow: auto; flex: 1 1 auto; min-height: 0; }
-/* KPI：5 列等宽栅格；Tokens / 模型费用各跨 2 列 —— 8 张卡 = 10 格，正好排满 2 行 */
-.wl-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
-.wl-kpi { background: var(--dsw-alias-bg-layer-2, #f7f8fa); border: 1px solid var(--dsw-alias-border-l2, #eceef1); border-radius: 12px; padding: 12px 14px; min-width: 0; }
-.wl-kpi[data-kpi="kpi.tokens"] { grid-column: span 2; }
-/* 模型性能两张卡（替换原来的「模型费用」宽度）：普通宽度即可，不再跨列 */
-.wl-kpi-label { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); margin-bottom: 6px; }
-.wl-kpi-value { font-size: 20px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; white-space: nowrap; }
-/* 模型名可能很长，只有这张卡允许换行 */
-.wl-kpi[data-kpi="kpi.topModel"] .wl-kpi-value { white-space: normal; overflow-wrap: anywhere; }
+/* KPI：4 列等宽 × 2 行 = 8 张卡（2.6.0 起删除跨列与「最活跃模型」） */
+.wl-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; align-items: stretch; }
+/* 卡内三行两列：标题 / 数值在左，sparkline 跨两行在右，副标题横跨底部。
+   这样 spark 不再单独占一整行，卡片高度约为原来的一半。 */
+.wl-kpi { background: var(--dsw-alias-bg-layer-2, #f7f8fa); border: 1px solid var(--dsw-alias-border-l2, #eceef1); border-radius: 12px; padding: 12px 14px; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(56px, 38%); grid-template-areas: "label spark" "value spark" "sub sub"; column-gap: 10px; align-items: start; }
+.wl-kpi-label { grid-area: label; font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); margin-bottom: 6px; }
+.wl-kpi-value { grid-area: value; font-size: 20px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* 步骤数字比轮次小 2px，整行更紧凑 */
 .wl-kpi-steps { font-size: 18px; }
-.wl-kpi-sub { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); margin-top: 6px; line-height: 1.45; }
+.wl-kpi-sub { grid-area: sub; font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); margin-top: 8px; line-height: 1.45; }
+/* sparkline：跟随日期筛选的逐日趋势（纯内联 SVG，无脚本、无外部资源） */
+.wl-kpi-spark { grid-area: spark; align-self: center; display: block; width: 100%; height: 38px; overflow: visible; }
+.wl-kpi-spark-empty { grid-area: spark; align-self: center; color: var(--dsw-alias-label-tertiary, #6b7280); font-size: 12px; }
 .wl-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--dsw-alias-border-l2, #e5e7eb); margin-bottom: 14px; }
 .wl-tab[data-align="end"] {
   margin-left: auto;
@@ -304,6 +305,8 @@ export const STYLES = `
 .wl-card-head-text h3 { margin: 0; flex: 0 0 auto; }
 /* 卡片说明统一放标题右侧（禁止放标题下方）：11px、muted、单行；放不下截断，title 保留全文 */
 .wl-card-head-hint { flex: 0 1 auto; min-width: 0; font-size: 11px; font-weight: 400; color: var(--dsw-alias-label-tertiary, #6b7280); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 标题后的「看出来的数字」（日历总结）：比 hint 更醒目，紧跟 h3、在 hint 之前 */
+.wl-card-head-summary { flex: 0 0 auto; font-size: 12px; color: var(--dsw-alias-label-primary, #111); background: var(--dsw-alias-bg-layer-2, #f7f8fa); border: 1px solid var(--dsw-alias-border-l2, #eceef1); border-radius: 999px; padding: 3px 10px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .wl-card-head-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; flex: 0 0 auto; }
 /* 并排两图：列宽与上面「每日趋势 + 模型用量」完全一致，上下两行左右边界对齐 */
 .wl-grid-2 { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 14px; margin-bottom: 14px; }
@@ -369,7 +372,7 @@ export const STYLES = `
 .wl-pager-info { font-size: 12px; color: var(--dsw-alias-label-tertiary, #6b7280); font-variant-numeric: tabular-nums; }
 .wl-pager .wl-btn[disabled] { opacity: 0.45; cursor: not-allowed; }
 @media (max-width: 1080px) { .wl-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } .wl-grid-2 { grid-template-columns: 1fr; } }
-@media (max-width: 720px) { .wl-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .wl-kpi[data-kpi="kpi.tokens"] { grid-column: auto; } .wl-name { max-width: 160px; } .wl-bar-cell { min-width: 44px; } }
+@media (max-width: 720px) { .wl-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .wl-name { max-width: 160px; } .wl-bar-cell { min-width: 44px; } }
 
 
 /* ── 每日用量趋势（左）与模型用量（右）并排 ── */

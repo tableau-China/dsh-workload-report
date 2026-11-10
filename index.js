@@ -23,7 +23,6 @@ import { fileURLToPath } from "node:url";
 import { PROJECTION_KEYS, aggregate, present, rowFromSession, tokensTotal } from "./src/aggregate.js";
 import { AI_PROFILE_DEFAULTS, ProfileService, buildProfileDiagnostic, profileCodeOf } from "./src/profile-service.js";
 import { buildProfilePayload, localProfile, profileFingerprint } from "./src/ai-profile.js";
-import { renderReport } from "./src/report-html.js";
 import { DEFAULT_WAIT_MIN_MS, DEFAULT_WAIT_TOOLS, foldSessionModels, resolvePricing } from "./src/models.js";
 import { SYNC_DEFAULTS, SyncService, TRANSPORTS } from "./src/sync-service.js";
 import { COS_REGIONS, PLATFORM_PRESETS, TRANSPORT_META, applySettingsPatch, editableView, saveViaConfigEditor } from "./src/sync-settings.js";
@@ -87,8 +86,6 @@ const DEFAULTS = {
   defaultDays: 7,
   defaultScope: "all",
   workspaceAliases: {},
-  /** 报告标题；留空 = 按报告语言使用词典里的 report.title（多语言默认）。 */
-  defaultTitle: "",
   /** 冷读并发度（几百个会话同时折叠会压住服务器）。 */
   indexConcurrency: 8,
   /**
@@ -307,16 +304,6 @@ function canSaveSettings(ctx) {
 }
 
 
-/** 写 HTML 响应。 */
-function sendHtml(res, status, html) {
-  res.writeHead(status, {
-    "content-type": "text/html; charset=utf-8",
-    "content-length": Buffer.byteLength(html),
-    "cache-control": "no-store",
-  });
-  res.end(html);
-}
-
 /**
  * 会话索引。
  *
@@ -344,8 +331,11 @@ function sendHtml(res, status, html) {
  * v8：行上新增 `decodeMs` / `ttftMs` / `ttftSteps`（输出速度与首字延迟）。
  * v7 的行没有这三个字段，不换代会让速度恒为 0，且无法区分「真的很慢」与「没上报」，
  * 所以必须 7 → 8（与 waitMs / hourTokens 同例：新增行字段即换代）。
+ * v9：内置归并组改为**按 provider 分开**（官方账户 `deepseek-account` 与 API Key
+ * `deepseek-official` 不再并成同一个 `deepseek-v4-flash` 桶）。旧行里混在一起的
+ * `models` 无法事后拆分，语义已作废，必须换代重建（冷读 + 重折一次）。
  */
-const INDEX_VERSION = 8;
+const INDEX_VERSION = 9;
 
 /** 限制并发，避免几百个会话同时冷读把服务器压住。 */
 async function mapLimit(items, limit, worker) {
@@ -1729,36 +1719,7 @@ export function apply(ctx, config = {}) {
         sendJson(res, 200, body);
         return;
       }
-      if (route === "/report.html") {
-        const snapshot = await index.snapshot(query);
-        // 顶部区间筛选器只做视觉呈现：告诉渲染层当前是哪一档，以便高亮。
-        // 必须按**请求的档位**判断，不能用 snapshot.range.days 反推：
-        // 区间起点会按最早活跃日截短（数据不足 N 天时 days < N），反推会把 7/30/90 高亮错。
-        // 显式 from/to 的报告没有档位概念，退回实际跨度（渲染层按 days 匹配）。
-        const explicitSpan = params.get("from") !== null || params.get("to") !== null;
-        const rangeKey = params.get("all") === "1"
-          ? "all"
-          : explicitSpan
-            ? String(snapshot.range?.days ?? "7")
-            : String(query.days);
-        const html = renderReport(snapshot, {
-          lang: requestLang(req, params),
-          theme: params.get("theme") === "dark" ? "dark" : "light",
-          title: params.get("title") ?? merged.defaultTitle,
-          note: params.get("note") ?? "",
-          anonymize: params.get("anonymize") === "1",
-          topSessions: Number.parseInt(params.get("sessions") ?? "12", 10),
-          generatedAt: Date.now(),
-          rangeKey,
-        });
-        if (req.method === "HEAD") {
-          sendHtml(res, 200, "");
-          return;
-        }
-        sendHtml(res, 200, html);
-        return;
-      }
-      sendJson(res, 404, { error: `未知路由 ${route}`, routes: ["/snapshot", "/export.json", "/report.html", "/profile", "/health", "/balance"] });
+      sendJson(res, 404, { error: `未知路由 ${route}`, routes: ["/snapshot", "/export.json", "/profile", "/health", "/balance"] });
     } catch (error) {
       sendJson(res, 500, { error: reasonOf(error) });
     }

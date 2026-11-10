@@ -8,10 +8,13 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { STYLES } from "./styles.js";
-import { NS, dictionaries, languageOf, localeTag, translate } from "../locales/index.js";
+import { NS, dictionaries, languageOf, localeTag, translate, translator } from "../locales/index.js";
 import { UNKNOWN_MODEL_KEY } from "../labels.js";
-import { formatHours, formatInt, formatMoney, formatPercent, formatProvider, formatSpeed, formatTtft, formatTokens } from "../format.js";
-import { TABLEAU10 } from "../palette.js";
+import { disambiguateModelLabels, formatHours, formatInt, formatMoney, formatPercent, formatSpeed, formatTtft, formatTokens, providerDisplayNames, providerLabel } from "../format.js";
+import { SEMANTIC, TABLEAU10, withAlpha } from "../palette.js";
+import { sparkGeometry } from "../sparkline.js";
+import { kpiSeries, KPI_SPARK_DOMAINS } from "../kpi-series.js";
+import { calendarSummary } from "../calendar-summary.js";
 import { balanceChip } from "./balance.js";
 import { MetricBarCell } from "./bar-cell.jsx";
 import { Chip, ChipGroup } from "./chips.jsx";
@@ -32,9 +35,6 @@ import {
 
 /** 宿主半部注册的只读接口前缀（与 index.js 的默认 apiPath 一致）。 */
 const API_PATH = "/workload-report/v1";
-
-/** 「导出 HTML 报告」入口开关：2.1.0 起暂时隐藏（路由与实现保留，随时可恢复）。 */
-const EXPORT_ENTRY_VISIBLE = false;
 
 /** 时间范围预设（近 N 天 / 全部）。 */
 const RANGES = [
@@ -69,15 +69,18 @@ export const DETAIL_PAGE_SIZE = 10;
 
 /** KPI 卡片顺序（骨架屏与真实卡片共用，卡片数量/顺序不会漂）。 */
 /**
- * KPI 卡片（9 张，5 列栅格；tokens 跨 2 列）。
+ * KPI 卡片（8 张，4 列等宽 × 2 行；2.6.0 起）。
  *
- * 2.3.0：「模型费用」下线——内置价目表只有 DeepSeek 官方模型，实际主力模型（step-5-preview /
- * hy4-preview / deepseek-v4.1-flash 等）都没有官方价，费用只覆盖很小一部分用量、数字严重偏低。
- * 改为两个**不依赖价格**的模型性能指标：模型缓存命中率、平均每次请求输出 Token。
+ * 2.6.0 的调整：
+ *  · 删除「最活跃模型」（分类值，没有数值趋势）与「活跃天数」（累计曲线单调直线）——
+ *    后者改为「每日用量趋势」卡片头里的总结条（活跃天数 / 连续活跃），见 calendar-summary.js。
+ *  · 新增「每轮自主步骤」= steps / turns（我交代一次，AI 自己连续跑几步），
+ *    逐日有波动、与现有卡零重复，定义见 docs/metrics.md。
+ * 「模型费用」仍不进 KPI（价目覆盖不足、数字失真；明细表照常估算）。
  */
 const KPI_KEYS = [
-  "kpi.active", "kpi.tokens", "kpi.modelShare",
-  "kpi.activeDays", "kpi.conversations", "kpi.modelOutput", "kpi.speed", "kpi.cache", "kpi.topModel",
+  "kpi.active", "kpi.tokens", "kpi.modelShare", "kpi.autonomy",
+  "kpi.conversations", "kpi.modelOutput", "kpi.speed", "kpi.cache",
 ];
 
 /** 需要 inject 的服务：插槽注册表 + 国际化。 */
@@ -125,11 +128,6 @@ function localTimeZone() {
   } catch {
     return "UTC";
   }
-}
-
-/** 当前是否深色主题（宿主在 body 上打标记）。 */
-function isDarkTheme() {
-  return document.body?.hasAttribute("data-ds-dark-theme") === true;
 }
 
 /** 费用显示（与金额同口径；保留历史导出名，实现见 src/format.js 的 formatMoney）。 */
@@ -864,8 +862,13 @@ function isModelFolding(data) {
  *   下 = 模型明细表（请求、输入/输出/缓存、命中率、费用）+ 官方计费链接
  * 会话记录里没有机器字段，模型的"机器归属"不在此处体现（多机方案见 docs/sync.md，已暂缓）。
  */
-function ModelSection({ data, t }) {
-  const models = data.byModel ?? [];
+function ModelSection({ data, t, lang }) {
+  // 同名模型（同一模型多条链路）在显示名后补供应商短名：趋势图例 / treemap / 明细表
+  // 共用这一份消歧结果，避免"颜色块有后缀、列表标题没有"（导出报告也走同一个函数）。
+  const models = useMemo(() => {
+    const tr = translator(lang);
+    return disambiguateModelLabels(data.byModel ?? [], tr("common.unknownModel"), providerDisplayNames(tr));
+  }, [data.byModel, lang]);
   const [metric, setMetric] = useState("tokens");
   const [selected, setSelected] = useState([]);
   const palette = TABLEAU10;
@@ -881,27 +884,15 @@ function ModelSection({ data, t }) {
   const colorOf = (key) => palette[Math.max(0, ranked.findIndex((item) => item.key === key)) % palette.length];
 
   /**
-   * 趋势图例的显示名：同名模型（同一模型多条链路）补供应商短名区分。
-   * 表格保留单独的「供应商」列，所以只在这里（图例）补，不改表格里的 label。
+   * 趋势系列只有模型 key，按 key 取回上面统一算好的显示名（与图例 / treemap / 明细表同源）。
    */
-  const trendLabelOf = (() => {
-    const counts = new Map();
-    for (const item of models) counts.set(item.label, (counts.get(item.label) ?? 0) + 1);
-    return (key) => {
-      const item = models.find((entry) => entry.key === key);
-      if (item === undefined) return key;
-      const label = item.label || t("common.unknownModel");
-      return (counts.get(item.label) ?? 0) > 1 && item.provider
-        ? `${label} · ${formatProvider(item.provider)}`
-        : label;
-    };
-  })();
+  const trendLabelOf = (key) => models.find((entry) => entry.key === key)?.label ?? key;
 
   // 面积分布：Top 8 + others（保证 treemap 可读）
   const cells = useMemo(() => {
     const top = ranked.filter((item) => metricValue(item) > 0).slice(0, 8);
     const rest = ranked.filter((item) => metricValue(item) > 0).slice(8);
-    const list = top.map((item) => ({ key: item.key, label: item.label || t("common.unknownModel"), value: metricValue(item), item }));
+    const list = top.map((item) => ({ key: item.key, label: item.label, value: metricValue(item), item }));
     if (rest.length > 0) {
       list.push({ key: "__others", label: t("pie.others"), value: rest.reduce((sum, item) => sum + metricValue(item), 0), item: null });
     }
@@ -1003,7 +994,7 @@ function ModelSection({ data, t }) {
                       </rect>
                       {rect.w > 56 && rect.h > 26 ? (
                         <text x={rect.x + 8} y={rect.y + 18} fontSize="12" fill="var(--dsw-alias-label-primary-inverted, #fff)" style={{ pointerEvents: "none" }}>
-                          {rect.label.length > 22 ? `${rect.label.slice(0, 21)}\u2026` : rect.label}
+                          {rect.label.length > 34 ? `${rect.label.slice(0, 33)}\u2026` : rect.label}
                         </text>
                       ) : null}
                       {rect.w > 56 && rect.h > 52 ? (
@@ -1047,7 +1038,7 @@ function ModelSection({ data, t }) {
               <td>
                 <button type="button" className="wl-model-name" onClick={() => toggle(item.key)}>
                   <i style={{ background: colorOf(item.key) }} />
-                  {item.label || t("common.unknownModel")}
+                  {item.label}
                 </button>
                 {Object.keys(item.raw ?? {}).length > 1 ? (
                   <span className="wl-hint wl-hint-block">{t("model.merged", { list: Object.keys(item.raw).map((k) => k.split("/").pop()).join(" + ") })}</span>
@@ -1059,7 +1050,7 @@ function ModelSection({ data, t }) {
                 )}
               </td>
               <td>{formatTtft(item.ttft)}</td>
-              <td title={item.provider ?? "\u2014"}>{formatProvider(item.provider)}</td>
+              <td title={item.provider ?? "\u2014"}>{providerLabel(item.provider, t)}</td>
               <td>{formatPercent(item.share)}</td>
               <td>
                 <MetricBarCell value={item.requests} max={maxRequests} kind="requests" text={formatInt(item.requests)} title={`${t("model.col.requests")} ${formatInt(item.requests)}`} />
@@ -1203,8 +1194,47 @@ function layoutTreemap(items, x, y, w, h, out = []) {
 /** 未标注模型的归并键：数据层与宿主共用（展示文案走 common.unknownModel）。 */
 const UNKNOWN_KEY = UNKNOWN_MODEL_KEY;
 
+/**
+ * KPI 卡片里的逐日 sparkline：纯内联 SVG，无脚本、无外部资源。
+ * 几何来自 src/sparkline.js、序列来自 src/kpi-series.js —— 与静态报告共用同一份计算。
+ * 数据缺失（null）的日子断开线段，不画 0 冒充；比例类固定 0–100% 轴。
+ */
+function Sparkline({ values = [], color, domain, label, format, dates = [], t, rangeLabel = "" }) {
+  const geometry = useMemo(() => sparkGeometry(values, { domain }), [values, domain]);
+  const { segments, strategy, width, height, points } = geometry;
+  if (values.length === 0 || segments.length === 0) {
+    return <span className="wl-kpi-spark-empty">{t("spark.empty")}</span>;
+  }
+  const lastIndex = points.reduce((acc, point, index) => (point === null ? acc : index), -1);
+  const last = lastIndex >= 0 ? points[lastIndex] : null;
+  // 范围信息放进 SVG 的 aria-label / <title>（hover 可见），不占卡片高度。
+  const summary = `${label} · ${t("spark.range", { range: rangeLabel, points: values.length })}`;
+  return (
+    <svg className="wl-kpi-spark" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none"
+      role="img" aria-label={summary} data-kind="kpi-spark">
+      <title>{summary}</title>
+      {segments.map((segment, index) => (
+        <g key={index}>
+          {segment.area ? <path d={segment.area} fill={withAlpha(color, 0.16)} /> : null}
+          {segment.line ? <path d={segment.line} fill="none" stroke={color} strokeWidth={strategy.stroke} strokeLinecap="round" strokeLinejoin="round" /> : null}
+        </g>
+      ))}
+      {points.map((point, index) => (point === null ? null : (
+        <circle key={index} cx={point[0]} cy={point[1]} r={strategy.radius} fill={color} opacity={strategy.dotOpacity}>
+          <title>{`${dates[index] ?? ""} · ${format(values[index])}`}</title>
+        </circle>
+      )))}
+      {last ? (
+        <circle cx={last[0]} cy={last[1]} r="2.8" fill={color} stroke="var(--dsw-alias-bg-layer-2, #f7f8fa)" strokeWidth="1.3">
+          <title>{`${dates[lastIndex] ?? ""} · ${format(values[lastIndex])}`}</title>
+        </circle>
+      ) : null}
+    </svg>
+  );
+}
+
 /** KPI 卡片组；data 为 null 时渲染骨架（标签先就位，只有数值位显示「加载中…」）。 */
-function Kpis({ data, t }) {
+function Kpis({ data, t, rangeLabel = "" }) {
   if (data === null || data === undefined) {
     return (
       <div className="wl-kpis" data-kind="kpi-skeleton">
@@ -1246,6 +1276,31 @@ function Kpis({ data, t }) {
   // 活跃时长展示**净活跃**（totals.activeMs 是官方值，含等待用户）；等待单独写在副标题里。
   const netActive = totals.netActiveMs ?? totals.activeMs;
   const activeWait = totals.waitMs ?? 0;
+  // 每轮自主步骤 = steps / turns；steps 是一次 assistant/message（模型请求），turns 是对话轮次。
+  const autonomy = (totals.turns ?? 0) > 0 ? (totals.steps ?? 0) / totals.turns : 0;
+  // sparkline 的逐日序列与轴 / 颜色 / 格式（与静态报告共用同一份 kpiSeries 计算）。
+  const series = kpiSeries(data);
+  const sparkDates = (data.byDay ?? []).map((day) => day.date);
+  const sparkFormats = {
+    "kpi.active": formatHours,
+    "kpi.tokens": formatTokens,
+    "kpi.modelShare": formatPercent,
+    "kpi.autonomy": (value) => t("kpi.autonomy.value", { value: Number(value).toFixed(1) }),
+    "kpi.conversations": formatInt,
+    "kpi.modelOutput": (value) => formatInt(Math.round(value)),
+    "kpi.speed": formatSpeed,
+    "kpi.cache": formatPercent,
+  };
+  const sparkColors = {
+    "kpi.active": SEMANTIC.effort,
+    "kpi.tokens": SEMANTIC.tokens,
+    "kpi.modelShare": TABLEAU10[6],
+    "kpi.autonomy": TABLEAU10[3],
+    "kpi.conversations": SEMANTIC.turns,
+    "kpi.modelOutput": SEMANTIC.requests,
+    "kpi.speed": SEMANTIC.speed,
+    "kpi.cache": SEMANTIC.cache,
+  };
   const cards = [
     [
       "kpi.active",
@@ -1262,7 +1317,8 @@ function Kpis({ data, t }) {
         ? t("kpi.modelShare.sub", { llm: formatHours(modelPerf.llmMs), models: formatInt(modelPerf.models) })
         : t("kpi.modelShare.none"),
     ],
-    ["kpi.activeDays", `${formatInt(totals.activeDays)} / ${formatInt(data.range.days)}`, t("kpi.activeDays.sub", { workspaces: formatInt(totals.workspaces) })],
+    // 第 4 张：每轮自主步骤（2.6.0 替换「活跃天数」）—— 我交代一次，AI 自己连续跑几步。
+    ["kpi.autonomy", t("kpi.autonomy.value", { value: autonomy.toFixed(1) }), t("kpi.autonomy.sub")],
     // 对话次数与轮次合并成一张卡（2.3.3）：步骤对用户没有意义，去掉；轮次用次级字号区分
     [
       "kpi.conversations",
@@ -1291,11 +1347,6 @@ function Kpis({ data, t }) {
     ],
     // 速度已独立成卡，缓存卡的副文本恢复「输出 x/h」（不再重复速度）
     ["kpi.cache", formatPercent(derived.cacheHitRate), t("kpi.cache.sub", { output: formatTokens(derived.outputPerActiveHour) })],
-    // 第 8 张：最活跃模型（默认按请求数口径，可在配置里切换 tokens / activeMs）
-    data.topModel === null || data.topModel === undefined
-      ? ["kpi.topModel", "\u2014", t("kpi.topModel.none")]
-      // 只显示模型名：不再带「请求占比 26.7%」这类副标题（用户要求，2.1.1）
-      : ["kpi.topModel", data.topModel.label || t("common.unknownModel"), ""],
   ];
   return (
     <div className="wl-kpis">
@@ -1303,6 +1354,16 @@ function Kpis({ data, t }) {
         <div className="wl-kpi" key={key} data-kpi={key}>
           <div className="wl-kpi-label">{t(key)}</div>
           <div className="wl-kpi-value">{value}</div>
+          <Sparkline
+            values={series[key]}
+            color={sparkColors[key]}
+            domain={KPI_SPARK_DOMAINS[key]}
+            label={t(key)}
+            format={sparkFormats[key]}
+            dates={sparkDates}
+            t={t}
+            rangeLabel={rangeLabel}
+          />
           {sub === "" || sub === null || sub === undefined ? null : <div className="wl-kpi-sub">{sub}</div>}
         </div>
       ))}
@@ -1365,8 +1426,10 @@ function SkeletonBody({ t }) {
  *   4) 「按日期明细」默认展开（超过 10 天分页，v1.0.2 起）
  * 模型明细 / treemap / 按日趋势已移到独立页签「模型用量」。
  */
-function ByDayView({ data, t }) {
+function ByDayView({ data, t, lang }) {
   const [dailyMode, setDailyMode] = useState("calendar");
+  // 日历图标题后的总结（全历史口径，与热力图一致；2.6.0）
+  const calSummary = calendarSummary(data.calendar);
   // 时刻分析口径：默认 Tokens（Token 产出），可切「轮次」（该小时 starts）
   const [hourMeasure, setHourMeasure] = useState("tokens");
   // 工作区占比口径：默认按时长，可切「按 Token」；chips 在卡片头右上角（与时刻卡同位置）
@@ -1376,18 +1439,13 @@ function ByDayView({ data, t }) {
   const dailyBodyRef = useRef(null);
   const dailyBody = useChartSize(dailyBodyRef);
   /**
-   * 模型列表：显示名重复时补上供应商短名（`deepseek-v4.1-flash · auto`）。
-   * 同一个模型走多条链路会产生多条同名记录，不区分的话环形图图例看起来像"重复项"，
-   * 也无法靠名字判断是哪条链路。
+   * 模型列表：显示名重复时补上供应商短名（`hy4free · workbuddy` / `deepseek-v4-flash · DeepSeek 账户`）。
+   * 与「模型用量」页签、导出报告共用同一个消歧函数，避免三处各写一套、名称不一致。
    */
   const models = useMemo(() => {
-    const list = data.byModel ?? [];
-    const counts = new Map();
-    for (const item of list) counts.set(item.label, (counts.get(item.label) ?? 0) + 1);
-    return list.map((item) => (counts.get(item.label) > 1 && item.provider
-      ? { ...item, label: `${item.label} · ${formatProvider(item.provider)}` }
-      : item));
-  }, [data.byModel]);
+    const tr = translator(lang);
+    return disambiguateModelLabels(data.byModel ?? [], tr("common.unknownModel"), providerDisplayNames(tr));
+  }, [data.byModel, lang]);
   const rows = useMemo(
     () => [...data.byDay].filter((day) => day.sessions > 0).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 31),
     [data.byDay],
@@ -1415,7 +1473,15 @@ function ByDayView({ data, t }) {
     <>
       <div className="wl-grid-daily-model">
       <div className="wl-card">
-        <CardHead title={t("chart.daily")} hint={t("chart.hint")}>
+        <CardHead
+          title={t("chart.daily")}
+          hint={t("chart.hint")}
+          summary={(
+            <span title={t("chart.summaryTip", { from: calSummary.from, to: calSummary.to, longest: calSummary.longest })}>
+              {t("chart.summary", { active: calSummary.active, total: calSummary.total, streak: calSummary.current })}
+            </span>
+          )}
+        >
           <ChipGroup label={t("chart.daily")}>
             <Chip active={dailyMode === "calendar"} onClick={() => setDailyMode("calendar")}>{t("daily.calendar")}</Chip>
             <Chip active={dailyMode === "bar"} onClick={() => setDailyMode("bar")}>{t("daily.bar")}</Chip>
@@ -1836,18 +1902,6 @@ function Overlay({ control }) {
     return () => clearTimeout(timer);
   }, [open, indexing, modelRunning, refreshKey]);
 
-  const exportReport = useCallback(() => {
-    const query = new URLSearchParams({
-      days: String(days),
-      scope,
-      tz: localTimeZone(),
-      theme: isDarkTheme() ? "dark" : "light",
-      lang,
-    });
-    if (allTime) query.set("all", "1");
-    window.open(`${API_PATH}/report.html?${query.toString()}`, "_blank", "noopener");
-  }, [days, scope, lang, allTime]);
-
   if (!open) return null;
 
   return (
@@ -1895,13 +1949,6 @@ function Overlay({ control }) {
             <span className="wl-star-text">{t("action.star")}</span>
           </a>
           <button type="button" className="wl-btn" onClick={() => { setRefreshKey((value) => value + 1); setForceKey((value) => value + 1); }}>{t("action.refresh")}</button>
-          {/* 导出 HTML 报告：2.1.0 起**暂时隐藏**（功能与 /report.html 路由都保留，只去掉入口）。
-              恢复时把 EXPORT_ENTRY_VISIBLE 改回 true 即可。 */}
-          {EXPORT_ENTRY_VISIBLE ? (
-            <button type="button" className="wl-btn" data-kind="primary" data-action="export-report" onClick={exportReport}>
-              {t("action.export")}
-            </button>
-          ) : null}
           <button type="button" className="wl-btn" onClick={close} aria-label={t("action.close")}>✕</button>
         </header>
         <div className="wl-body">
@@ -1924,7 +1971,7 @@ function Overlay({ control }) {
                 t={t}
                 onOpenSync={() => setSyncOpen(true)}
               />
-              <Kpis data={state.data} t={t} />
+              <Kpis data={state.data} t={t} rangeLabel={t(rangeKey)} />
               <div className="wl-tabs">
                 {["byDay", "model", "byWorkspace", "bySession"].map((key) => (
                   <button key={key} type="button" className="wl-tab" data-active={tab === key} onClick={() => setTab(key)}>
@@ -1941,8 +1988,8 @@ function Overlay({ control }) {
                   {t("tab.aiProfile")}
                 </button>
               </div>
-              {tab === "byDay" ? <ByDayView data={state.data} t={t} /> : null}
-              {tab === "model" ? <ModelSection data={state.data} t={t} /> : null}
+              {tab === "byDay" ? <ByDayView data={state.data} t={t} lang={lang} /> : null}
+              {tab === "model" ? <ModelSection data={state.data} t={t} lang={lang} /> : null}
               {tab === "byWorkspace" ? <ByWorkspaceView data={state.data} t={t} lang={lang} /> : null}
               {tab === "bySession" ? (
                 <BySessionView data={state.data} t={t} lang={lang} days={days} scope={scope} allTime={allTime} />

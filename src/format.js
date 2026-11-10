@@ -99,6 +99,51 @@ export function formatProvider(provider) {
   return parts.length > 0 ? parts[parts.length - 1] : text;
 }
 
+/**
+ * 已知凭据路由 → 本地化文案键（数据层只给键，文案由词典提供，不写死中文）。
+ * `deepseek-account` = 官方 DeepSeek 账户登录态；`deepseek-official` = 用户配置的 DeepSeek API Key。
+ * 两者都用 `deepseek-flash` / `deepseek-v4-pro`，靠 provider 区分（见 docs/models.md）。
+ */
+export const PROVIDER_LABEL_KEYS = {
+  "deepseek-account": "model.provider.deepseekAccount",
+  "deepseek-official": "model.provider.deepseekApiKey",
+};
+
+/** 生成本地化供应商名映射（供 disambiguateModelLabels / providerLabel 复用）。 */
+export function providerDisplayNames(t) {
+  const names = {};
+  for (const [id, key] of Object.entries(PROVIDER_LABEL_KEYS)) names[id] = t(key);
+  return names;
+}
+
+/** 供应商展示名：官方账户 / API Key 换成可读文案，其它沿用短名（完整路径由调用方放进 title）。 */
+export function providerLabel(provider, t) {
+  const key = PROVIDER_LABEL_KEYS[provider];
+  return key === undefined ? formatProvider(provider) : t(key);
+}
+
+/**
+ * 同名模型消歧：同一模型走多条链路时，在显示名后补供应商短名。
+ *
+ * 看板（趋势图例 / treemap / 明细表）与 HTML 报告共用这一份，避免各写一套、
+ * 导出后名称不一致。只在**重名**时补后缀，单个模型保持原名不变。
+ *
+ * @param models - byModel 行数组。
+ * @param unknownLabel - 未知模型的本地化兜底文案。
+ * @param providerLabels - 可选的 `{ provider: 本地化名 }` 映射（缺省用 formatProvider 短名）。
+ * @returns 新数组（不改原行）。
+ */
+export function disambiguateModelLabels(models, unknownLabel, providerLabels = null) {
+  const counts = new Map();
+  for (const item of models) counts.set(item.label, (counts.get(item.label) ?? 0) + 1);
+  return models.map((item) => {
+    const label = item.label || unknownLabel;
+    if (!(counts.get(item.label) > 1 && item.provider)) return { ...item, label };
+    const short = providerLabels?.[item.provider] ?? formatProvider(item.provider);
+    return { ...item, label: `${label} · ${short}` };
+  });
+}
+
 /** HTML 转义（报告是字符串拼接生成，必须转义一切外部文本）。 */
 export function escapeHtml(value) {
   return String(value ?? "")

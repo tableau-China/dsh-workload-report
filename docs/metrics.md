@@ -25,6 +25,8 @@
 | 总 Token | `uncachedInput + output + cacheRead + cacheWrite` | 缓存读取通常占绝大多数，计费单价最低，勿按输入价估算 |
 | 对话次数 | 至少产生 1 个 step 的会话数 | 零步会话（只打开没交互）单列不计入 |
 | 轮次 / 步骤 | `turns` / `steps` 合计 | 来自 sessionStats |
+| 每轮自主步骤（2.6.0） | `Σsteps / Σturns`（KPI 值）；逐日 = `byDay[].steps / turns` | 我交代一次，AI 自己连续跑了几步（`steps` = 一条 `assistant/message` = 一次模型请求）。**协作节奏的代理指标，不等于产出质量或 ROI**：steps 变高也可能是循环 / 重试 / 空转，故副标题写「协作节奏参考」；`turns = 0` 时显示 `0.0 步/轮`，不猜 |
+| 日历总结：活跃 / 连续（2.6.0） | 基于 `snapshot.calendar` 全历史（`from → to`）：活跃 = 有活动的自然日数；当前连续 = 从最后一个有活动日往回数的连续天数；最长连续 = 区间内最长连续段（tooltip） | 与日历热力图同口径、**不受顶部区间筛选影响**；`calendar.days` 只含有活动的日子，需按完整日期序列枚举判断，不能用 `byDay`（当前区间且 ≤180 天补空白日）代替 |
 | 活跃天数 | 该范围内出现过会话（或某工作区出现过会话）的自然日数量 | 按会话**创建时间**归属；跨天续聊的活动记在创建那天 |
 | 归属日期 | 会话创建时间在所选时区的自然日 | 时区由前端传入（默认浏览器时区） |
 | 时刻分析 | 以**轮次（turn）**为最小归属单位：多轮会话逐轮分开，每个轮次的**净**活跃时长（该轮内非等待的模型时间 + 工具时间之和）**整段记到「该轮开始时刻」所在的整点，不跨小时切分**（跨小时的轮次整段归入起始小时）。轮次开始时刻取该轮 `turn/start`，没有则取该轮最早事件时间；模型时间 = `request/header.time → assistant/message.time`（无 header 退化为 stream 首末），工具时间按 `callId` 配对 `tool/call.time → tool/result.time`，**等待用户的工具区间整段剔除、不落任何小时桶**；落桶按 UTC，聚合时按请求时区平移（`row.hours`，严格守恒）。**会话级兜底**：事件没有轮次信息（老会话）时整段记到 `createdAt` 所在整点；未回填 / `modelUsage: off` 退回旧法：`createdAt → lastPromptAt` 的墙钟比例分摊（同样用净活跃） | 与旧摊销法的差别：旧法把会话 activeMs 按墙钟窗口均匀摊到覆盖的每个小时（长窗口摊成假平峰）；新法按「轮次开始时刻」聚合，保留真实高峰与跨小时归属。事件桶按 UTC 持久化（时区无关、可复用）；固定偏移时区平移精确，带夏令时的时区用参考时刻偏移（切换周 ±1h）；未配对/未结束的调用不计；事件累计与「官方 activeMs − waitMs」不等时按比例缩放（行上 `hoursSource` 诊断）。因此 `sum(byHour) === totals.netActiveMs`。0.6.5 起同一份 `byHour` 还带按消息时间落桶的 Token 与人类消息（见下节），卡片默认按 Tokens 画柱 |
@@ -96,7 +98,7 @@ waitMinMs: 60000
 | 指标 | 口径 |
 | --- | --- |
 | 模型归属 | 事件 `assistant/message` 的 `data.message.source.{provider, model}`；同会话可含多个模型 |
-| **归并** | `deepseek-flash`、`deepseek-v4-flash`、`deepseek-v4-flash-vision-exp` 合并显示为 **`deepseek-v4-flash`**（官方定价页注 1：前者的 legacy 名）；明细可展开看原始组成；可用 `modelGroups` 自定义 |
+| **归并** | `deepseek-flash`、`deepseek-v4-flash`、`deepseek-v4-flash-vision-exp` 合并显示为 **`deepseek-v4-flash`**（官方定价页注 1：前者的 legacy 名）；**2.5.1 起只在同一个 provider 内合并**，组名带 provider 前缀（`deepseek-account/deepseek-v4-flash` 与 `deepseek-official/deepseek-v4-flash` 各自成行），官方账户与 API Key 的用量不再混在一起；明细可展开看原始组成；可用 `modelGroups` 自定义（自定义规则仍按用户写的组名原样返回） |
 | 请求数 | 一条 `assistant/message` = 一次请求 = 一个 step |
 | Token | 事件 `data.usage.{inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens}`；缺 usage 的请求只计请求、不计 token（不猜） |
 | 缓存命中率 | `cacheRead / (cacheRead + input)`；两者皆 0 时显示 `—` |
@@ -111,7 +113,10 @@ waitMinMs: 60000
   中国法定节假日无法离线判定 → 按峰价计入（**略微高估**）。
 - 每条 `assistant/message` 按其 `time` 判定峰/谷 → 逐请求计费，非近似。
 - 官方单价（每 100 万 tokens，CNY）：flash 缓存命中 0.02/0.04、未命中 1/2、输出 4/8；pro 0.15/0.30、4.5/9、13.5/27（谷/峰）。
-- **没有官方价的模型显示 `—`，不编造数字**（Kimi 价格页为前端渲染、Claude 定价页区域受限，均无法可靠获取）。
+- **价目表键**：`deepseek-v4-flash` / `deepseek-v4.1-flash` / `deepseek-v4-pro` / `deepseek-v4.1-pro`（后两组与 v4 同价，共用一份常量）；
+  查询按「全名 → 去掉首个 `/` → 最后一段 → `PRICE_ALIASES` 别名」逐级回退，所以三段渠道名
+  `magpie/workbuddy-ai/deepseek-v4.1-flash` 与区域变体 `deepseek-v4.1-flash-sg` 都能命中。
+- **没有官方价的模型显示 `—`，不编造数字**（step-5-preview / hy4-preview / hy4free 等渠道模型、Kimi 价格页为前端渲染、Claude 定价页区域受限，均无法可靠获取）。
 - 页面与报告底部固定给出官方计费链接；**插件运行时不联网**，单价为内置常量 + 用户可覆盖（`pricing.overrides`）。
 
 ## 输出速度与首字延迟（2.3.1）

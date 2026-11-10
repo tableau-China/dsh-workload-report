@@ -1,7 +1,7 @@
 # Workload Report for DSH
 
-> **See your effort and your token spend on the same picture** — by **date** and by **workspace**: a calendar heatmap, time-of-day analysis, workspace share, model usage, and a **one-click self-contained HTML report** you can send straight to a client.
-> A DeepSeek Harness (DSH) plugin. Current version: **2.5.0**.
+> **See your effort and your token spend on the same picture** — by **date** and by **workspace**: a calendar heatmap, time-of-day analysis, workspace share, model usage, and per-KPI sparklines that follow the date range.
+> A DeepSeek Harness (DSH) plugin. Current version: **2.6.0**.
 
 [![npm](https://img.shields.io/npm/v/dsh-workload-report?style=flat-square&logo=npm)](https://www.npmjs.com/package/dsh-workload-report)
 [![license](https://img.shields.io/github/license/tableau-China/dsh-workload-report?style=flat-square)](./LICENSE)
@@ -12,15 +12,15 @@
 
 ## What it is
 
-DSH shows stats for the **current session**. This plugin adds the cross-session, cross-project, cross-time view: which dates and which workspaces your effort went to, which hours you were productive, which models consumed the tokens, and what it cost — plus a static report for clients, teammates or monthly reviews.
+DSH shows stats for the **current session**. This plugin adds the cross-session, cross-project, cross-time view: which dates and which workspaces your effort went to, which hours you were productive, which models consumed the tokens, and what it cost — plus a screenshot-friendly dashboard for clients, teammates or monthly reviews.
 
-**Not only cost, but the work behind it.** Active time, active days and turns show what you actually did; tokens and estimated cost show what it consumed. Numbers use the same definitions everywhere, so the dashboard and the exported report agree.
+**Not only cost, but the work behind it.** Active time, active days and turns show what you actually did; tokens and estimated cost show what it consumed. Numbers use the same definitions everywhere, so every view agrees.
 
 ## Who it is for
 
 - **Freelancers and studios** who need to show a client where the time went — instead of saying "I was busy".
 - **Developers using several models** who want active time, tokens, speed and estimated cost in one place, per date and per workspace.
-- **Anyone preparing a monthly or project review** who would rather export one self-contained HTML report than build a spreadsheet.
+- **Anyone preparing a monthly or project review** who wants the effort, tokens and trends in one screen instead of a spreadsheet.
 - **Multi-machine setups**: merge usage from your laptop and desktop with the optional device sync.
 
 ## Install & entry point
@@ -44,21 +44,20 @@ Uninstall: `dsh plugin --profile web remove dsh-workload-report`.
 
 ## Languages
 
-The plugin has **no language setting of its own**: the dashboard, the exported HTML report, the AI-profile card (local fallback rules *and* model output), the sync dialogs and their server-side error messages all follow the **DSH interface language** (Settings → General → Language) and switch live.
+The plugin has **no language setting of its own**: the dashboard, the AI-profile card (local fallback rules *and* model output), the sync dialogs and their server-side error messages all follow the **DSH interface language** (Settings → General → Language) and switch live.
 
-| Language | Locale id | Dashboard | HTML report | AI profile | Sync dialogs |
-| --- | --- | --- | --- | --- | --- |
-| English | `en` | ✓ | ✓ | ✓ | ✓ |
-| 中文（简体） | `zh` | ✓ | ✓ | ✓ | ✓ |
-| 日本語 | `ja` | ✓ | ✓ | ✓ | ✓ |
-| Español | `es` | ✓ | ✓ | ✓ | ✓ |
-| Français | `fr` | ✓ | ✓ | ✓ | ✓ |
-| Deutsch | `de` | ✓ | ✓ | ✓ | ✓ |
-| Русский | `ru` | ✓ | ✓ | ✓ | ✓ |
-| Português (Brasil) | `pt` | ✓ | ✓ | ✓ | ✓ |
+| Language | Locale id | Dashboard | AI profile | Sync dialogs |
+| --- | --- | --- | --- | --- |
+| English | `en` | ✓ | ✓ | ✓ |
+| 中文（简体） | `zh` | ✓ | ✓ | ✓ |
+| 日本語 | `ja` | ✓ | ✓ | ✓ |
+| Español | `es` | ✓ | ✓ | ✓ |
+| Français | `fr` | ✓ | ✓ | ✓ |
+| Deutsch | `de` | ✓ | ✓ | ✓ |
+| Русский | `ru` | ✓ | ✓ | ✓ |
+| Português (Brasil) | `pt` | ✓ | ✓ | ✓ |
 
 - **Single source of truth**: every user-visible string lives in `src/locales/<lang>.json`; `zh.json` is the key baseline and `en.json` is the fallback. `npm run check:i18n` enforces identical key sets, key order and `{placeholders}` across all 8 languages, plus "no hard-coded copy in source" and "no dead keys".
-- **Report language**: the exported report is rendered server-side with `?lang=<id>` (the dashboard passes the active language). `<html lang>` and date formatting follow the language; the methodology footer is translated too.
 - **AI profile**: the model is explicitly asked to write the headline / dimensions / advice / risk in the active language; the deterministic local fallback uses the same dictionaries.
 - **Sync / server messages**: user-visible results and errors carry a stable code + params; the client renders them from the dictionaries, so no raw server-side Chinese leaks into another language.
 - **Adding a language**: copy `en.json`, translate, register it in `src/locales/index.js` — full workflow in [docs/i18n.md](./docs/i18n.md), terminology in [docs/i18n-glossary.md](./docs/i18n-glossary.md). On DSH versions without the locale service (pre-0.2.2), only `zh` / `en` are selectable and the plugin keeps working.
@@ -67,31 +66,50 @@ The plugin has **no language setting of its own**: the dashboard, the exported H
 
 - **Official interfaces only.** Session identity comes from `sessionQuery.listSessions()`; statistics come from the official projections (`sessionProjections`, `sessionProjectionCache`) and, when needed, the official `sessionQuery.observeSession()` cold read. Model and hourly-token dimensions use the official `sessionQuery.readSession()` event log.
 - **No storage-format parsing.** The plugin never opens `*.jsonl.zstd`, never parses zstd/JSONL, and never reads the harness's internal projection-cache files. Formats can change between releases; the official seams are the contract.
-- **Zero outbound requests by default.** All statistics stay on your machine. The plugin exposes read-only HTTP routes only, and writes only its own local index at `<DSH_HOME>/workload-report/index-v7.json` plus the AI-profile cache in the same directory (both safe to delete; they rebuild). The AI profile calls a model only after you click Generate.
+- **Zero outbound requests by default.** All statistics stay on your machine. The plugin exposes read-only HTTP routes only, and writes only its own local index at `<DSH_HOME>/workload-report/index-v9.json` plus the AI-profile cache in the same directory (both safe to delete; they rebuild). The AI profile calls a model only after you click Generate.
 - **Outbound-network cases**: the optional balance chip (`balance.enabled: true`, off by default), where the **host** calls the official `deepseekAccount` service, and the **AI user profile** (included by default, but only a manual click calls the model; aggregate statistics only). See [Privacy](#privacy).
 - **No invented numbers.** Unreadable legacy sessions are excluded and counted in the UI; models without an official price show **—** instead of a made-up cost.
 
-## Features (2.0.0)
+## Features
 
-- **Nine KPIs (two rows)**: cumulative active time (**net active**, waiting shown on a second line), total tokens (full integer you can verify), model-time share, active days, **conversations / turns** (one merged card, **steps no longer shown**), **output speed tok/s** (subtitle = TTFT), average output per request, cache-read share, and the most active model.
+- **Eight KPIs (4 columns × 2 rows, all equal width)**: cumulative active time (**net active**, waiting shown on a second line), total tokens (full integer you can verify), model-time share, **steps per turn** (`steps / turns` — how many steps the AI runs per human turn), **conversations / turns** (one merged card, **steps no longer shown**), average output per request, **output speed tok/s** (subtitle = TTFT), and cache-read share. Each card carries a **sparkline** of its daily values over the selected range (7 / 30 / 90 days / all time); see [docs/metrics.md](./docs/metrics.md).
 - **Daily usage trend**: calendar heatmap (Mon–Sun × Year-Week, colour and bar height = active time) or a bar chart; weekends use a different colour, the peak bar is always labelled, and every calendar cell, bar, weekday total and axis label has its own tooltip.
 - **Time of day**: bars default to **token output** (switchable to **turns**); the dots above the bars show **human-message density**. Peak bars are highlighted and labelled; the legend sits on one row.
 - **Workspace share**: Top 6 + others donut, switchable between **time** and **tokens**.
 - **Model token share**: a compact donut on the dashboard; full model details live in the next tab.
-- **Model usage tab**: treemap (area = token share, Top 8 + others), stacked daily trend (Top 6 models), a detail table (**speed tok/s / TTFT / provider** / share / requests / input / output / cache read / cache-hit rate / estimated cost — 11 columns, with ratio bars on speed and requests), metric chips (Token / requests / model time), click-to-filter, and official pricing links. Costs are estimated only for models with official public prices.
+- **Model usage tab**: treemap (area = token share, Top 8 + others), stacked daily trend (Top 6 models), a detail table (**speed tok/s / TTFT / provider** / share / requests / input / output / cache read / cache-hit rate / estimated cost — 11 columns, with ratio bars on speed and requests), metric chips (Token / requests / model time), click-to-filter, and official pricing links. Costs are estimated only for models with official public prices (`deepseek-v4-flash` / `deepseek-v4.1-flash` / `deepseek-v4-pro` / `deepseek-v4.1-pro` share the official DeepSeek price, plus the `-sg` regional alias; other channel models show `—`).
 - **Top sessions and daily detail**: ratio bars in the main numeric columns (sessions: turns / steps / active / output; daily detail: conversations / turns / active / tokens) and sortable headers on the sessions table. The daily detail table is **expanded by default**, covers the last 31 days, and **paginates at 10 days per page** (no pager unless there is more than one page).
 - **By workspace**: three bars per row — **sessions / turns · my effort · token spend** (one shared scale); the workspace list carries its own card head with a one-line hint (same structure as the model-usage page).
-- **Export a self-contained HTML report**: one file with inline CSS and inline SVG, **no scripts and no external assets**; light/dark themes, custom title/note, optional `anonymize=1` to hide workspace names and session titles. The report mirrors the dashboard: nine KPIs, a calendar plus a **model token-share donut** (two independent cards whose widths align exactly with the time-of-day / workspace rows below), hourly density dots + turns mini-chart, ratio bars, and the same definitions. A **static range filter** at the top highlights the current range — visual only, with no links. Only official pricing pages are linked.
-- **GitHub Star entry**: "GitHub logo + ★ Star" in the **top-right** of the panel, opening the repo in a new tab; deliberately **not** in the exported report (the report goes to clients, whose only external links are official pricing pages).
-- **Theme and locale aware**: **data visualisation uses the Tableau 10 palette** (`src/palette.js`, identical in the dashboard and the exported report); UI chrome (buttons / tabs / links) keeps host theme tokens (`--dsw-*`) so it follows the harness light/dark theme. The dashboard, exported report, AI profile and sync dialogs are **localised into all 8 languages** shipped by DSH 0.2.2 (English, Chinese, Japanese, Spanish, French, German, Russian, Brazilian Portuguese) and follow the host language live — see [Languages](#languages).
+- **Shareable snapshot (planned).** The HTML report and its toolbar button were **removed in 2.6.0**; a single-page **PNG snapshot** for sharing is the planned replacement. Everything the dashboard shows stays on your machine.
+- **GitHub Star entry**: "GitHub logo + ★ Star" in the **top-right** of the panel, opening the repo in a new tab. It stays inside the panel (no snapshot / export carries it).
+- **Theme and locale aware**: **data visualisation uses the Tableau 10 palette** (`src/palette.js`); UI chrome (buttons / tabs / links) keeps host theme tokens (`--dsw-*`) so it follows the harness light/dark theme. The dashboard, AI profile and sync dialogs are **localised into all 8 languages** shipped by DSH 0.2.2 (English, Chinese, Japanese, Spanish, French, German, Russian, Brazilian Portuguese) and follow the host language live — see [Languages](#languages).
 - **AI user profile (included by default, manual trigger)**: a dedicated top-level tab at the **right end of the navigation** (blue-tinted, distinct from the other tabs); the Top sessions tab keeps its sessions table only. It shows a three-line notice first and calls the model only after you click Generate. It generates a headline + 4–6 numeric dimensions + 2–3 advice items + risk from **aggregate statistics only** (window = max(current range, 30 days)) — never conversations, titles, or paths. The same statistics fingerprint reuses the disk cache; any failure falls back to deterministic local rules. See [AI user profile](#ai-user-profile).
 - **Fast open**: opening the panel triggers **zero** event-log reads (`readSession`); cold open 25 ms, warm open ~1 ms (measured on an isolated instance). Model folding is driven by background timers, never by opening the panel.
 
+## What's new in 2.6.0
+
+- **Eight KPIs, all equal width.** The 9-card layout is gone: `kpi.topModel` (a category, no numeric trend) and `kpi.activeDays` (a monotonically increasing cumulative line) are replaced by **Steps per turn** (`steps / turns` — how many steps the AI runs per human turn). The grid is now 4 columns × 2 rows with no spanning cards.
+- **Sparklines follow the date filter.** Every KPI card has a daily trend line built from `snapshot.byDay`, so choosing 7 / 30 / 90 days or All time changes both the value and the sparkline. No sampling, no aggregation, no invented points: days without data break the line instead of drawing a fake zero. The geometry (`src/sparkline.js`) and series (`src/kpi-series.js`) are single-source, so every card uses the same rules. The sparkline sits **to the right of the label and value** and the subtitle spans the card bottom, so cards stay compact (≈100 px instead of ≈150 px); the range / point count lives in the SVG tooltip rather than a separate line.
+- **The HTML report is gone.** The `Export HTML report` button and the whole report feature (`/report.html` route, renderer, 34 dictionary keys) were removed: real clicks landed on a host overlay (`_mask_*`) rather than the button, and both `window.open` and `<a target="_blank">` were tried. A single-page **PNG snapshot** is the planned replacement.
+- **Active days / streak moved to the calendar card.** The "Daily usage trend" card now summarises the heatmap in its header: active days out of the full history, the current streak, and the longest streak in a tooltip — all-history scope, matching the chart instead of the selected range.
+- Active days and the top model are still available elsewhere (workspace table / model tab); the KPI row just no longer spends two cards on them.
+
+## What's new in 2.5.2
+
+- **The HTML report export is back.** The `Export HTML report` button had been hidden since 2.1.0 while the `/report.html` route and renderer kept working; it was visible again in all 8 languages. *(Removed again in 2.6.0 together with the whole HTML report feature.)*
+- **Exports followed the device filter** and the report caught up with the dashboard (nine KPIs including output speed, no stale share subtitle, three workspace bars). *(Both were removed together with the report in 2.6.0.)*
+
+## What's new in 2.5.1
+
+- **V4.1 models are priced**: `deepseek-v4.1-flash` / `deepseek-v4.1-pro` use the same official DeepSeek price as `deepseek-v4-flash` / `deepseek-v4-pro` (CNY + USD, peak/off-peak). Three-segment channel keys (`magpie/workbuddy-ai/deepseek-v4.1-flash`) and the `-sg` regional variant now resolve to a price too. Override any name with `pricing.overrides`.
+- **Consistent model names**: the same disambiguation is used by the trend legend, treemap, detail-table row titles and home donut — when a model reaches you through several routes, all of them show `model · provider` instead of only the legend doing so.
+- **DeepSeek account vs API key**: `deepseek-account` (signed-in DeepSeek account) and `deepseek-official` (your DeepSeek API key) are separate rows with readable, localised provider labels; the raw route id stays in the tooltip. The index was rebuilt once (`v8 → v9`) so historical sessions are re-folded with the new grouping.
+- **Note**: event logs contain the provider route only — never the credential itself. Custom gateways cannot be classified automatically.
+
 ## What's new in 2.5.0
 
-- **Six new interface languages**: Japanese, Spanish, French, German, Russian and Brazilian Portuguese — alongside English and Chinese. The dashboard, exported report, AI profile and sync dialogs all follow the DSH language live, with an English fallback for anything untranslated.
-- **One dictionary source**: UI copy moved from a single JS file with two languages to per-language JSON dictionaries (`src/locales/*.json`, 398 keys) shared by the browser half, the Node half and the static report. `npm run check:i18n` guards key-set / key-order / placeholder parity.
-- **The HTML report is language-aware**: `?lang=` on `/report.html` renders the whole report (including the methodology footer) in that language; `<html lang>` and dates follow it.
+- **Six new interface languages**: Japanese, Spanish, French, German, Russian and Brazilian Portuguese — alongside English and Chinese. The dashboard, AI profile and sync dialogs all follow the DSH language live, with an English fallback for anything untranslated.
+- **One dictionary source**: UI copy moved from a single JS file with two languages to per-language JSON dictionaries (`src/locales/*.json`, 398 keys) shared by the browser half and the Node half. `npm run check:i18n` guards key-set / key-order / placeholder parity.
 - **AI profile follows the language**: the model is told to write in the active language, and the deterministic local fallback rules are fully translated (whole-sentence templates with `{placeholders}` instead of string concatenation).
 - **No Chinese server-side leaks**: sync / settings / credential results now return a stable `code` + `params`; the client renders them from the dictionaries (falling back to the server message only for unknown codes).
 - **Data layer is language-neutral**: unknown workspace / model / provider / session-title labels are no longer baked into the API payloads — each surface renders its localised placeholder.
@@ -107,7 +125,7 @@ The plugin has **no language setting of its own**: the dashboard, the exported H
 
 ## Screenshots
 
-**By date**: nine KPIs + calendar heatmap + time-of-day analysis with human-message density dots + workspace share
+**By date**: eight KPIs with sparklines + calendar heatmap + time-of-day analysis with human-message density dots + workspace share
 
 ![dashboard by date](https://raw.githubusercontent.com/tableau-China/dsh-workload-report/main/assets/dashboard-calendar.png)
 
@@ -237,7 +255,7 @@ Definitions: metric definitions in docs/metrics.md; all data stays local. · v2.
 
 - **Equal initial height for all four tabs**: the panel is a fixed `92vh` frame and scrolls internally,
   so switching between By date / Model usage / By workspace / Top sessions no longer jumps the frame height.
-- **Responsive report width**: full width on narrow screens, capped at 1450px on wide ones, with viewport-scaled
+- **Responsive panel width**: full width on narrow screens, capped at 1450px on wide ones, with viewport-scaled
   side padding (it used to be a fixed 1120px, leaving large empty margins on big displays).
 - **"Device sync" entry** now sits at the right end of the device-filter chip row instead of the top tab bar.
 - **One shared range rule**: 7 / 30 / 90 days and All time all start at the first active day; a short history
@@ -257,7 +275,6 @@ Definitions: metric definitions in docs/metrics.md; all data stays local. · v2.
 - **Failure = local rules**: missing `llm` service, not signed in / no models, timeout, empty output, or unparsable JSON all fall back to a deterministic **local rules** profile with the same shape (headline + 4–6 dimensions + 2–3 advice + risk, every insight still numeric, no network). A non-`stop` finish whose JSON can be repaired is used instead (`truncated: true`); only an unrepairable one falls back. The response always carries `source: "llm" | "local"` and a stable `code`; nothing is thrown to the UI.
 - **Diagnosable**: failures also carry `diagnostic.error.{code,message,stage}` (the underlying error code is preserved; the message is redacted and capped at 300 characters) plus `route` / `precheck`; `/health` exposes `diagnostics.aiProfile` with the latest attempt. For debugging, `provider=` / `model=` query parameters override just that request (only when `enabled=true`; no config write, no cache write, no restart).
 - **Not counted in this report**: the profile call is an auxiliary call outside any session, so it is **not** included in this plugin's token / cost report. The card shows that call's input/output tokens and generation time separately.
-- **Not in the HTML report**: the static export intentionally omits the profile (see `docs/report-parity.md`); an AI judgment about a person does not belong in a file sent to a client or printed.
 
 Full details: [docs/ai-profile.md](./docs/ai-profile.md).
 
@@ -267,17 +284,16 @@ Full details: [docs/ai-profile.md](./docs/ai-profile.md).
 | --- | --- |
 | `GET {apiPath}/snapshot?days=30&tz=Asia/Shanghai&scope=all` | Aggregated snapshot JSON (totals / byDay / byWorkspace / byHour / bySession / calendar / byModel / modelDaily / diagnostics) |
 | `GET {apiPath}/export.json?...` | Same payload with a `content-disposition` header |
-| `GET {apiPath}/report.html?days=90&theme=dark&anonymize=1&title=...` | Self-contained HTML report |
 | `GET {apiPath}/profile?days=30&tz=...&lang=zh&probe=1` | AI user profile: `probe=1` only reports enabled / signed-in / model, never calls one; otherwise generates on demand; `days` is floored at `aiProfile.minDays` (30); `force=1` bypasses the fingerprint cache |
 | `GET {apiPath}/profile?...&provider=...&model=...` | **Debug entry**: override the route for this request only (only when enabled; no config write, no cache write) |
 | `GET {apiPath}/health` | Index diagnostics (sessions, checkpoint hits, cold reads, read failures, duration); `diagnostics.aiProfile` has the latest profile code / stage / error / route |
 | `GET {apiPath}/balance` | Cached balance state for the toolbar chip; never touches the index |
 
-Parameters: `from`/`to` (YYYY-MM-DD, take precedence over `days`), `days`, `all=1` (earliest active day → today), `tz` (IANA time zone), `scope`.
+Parameters: `from`/`to` (YYYY-MM-DD, take precedence over `days`), `days`, `all=1` (earliest active day → today), `tz` (IANA time zone), `scope`, `machine` (repeatable device id — same filter as the dashboard).
 
 ## Index & upgrading
 
-- Index file: `<DSH_HOME>/workload-report/index-v7.json`; `INDEX_VERSION = 7`.
+- Index file: `<DSH_HOME>/workload-report/index-v9.json`; `INDEX_VERSION = 9`.
 - Upgrading from 0.6.5 or earlier **rebuilds the index and re-folds event data on first launch** (the hour buckets and hourly token/human-message fields are versioned). The API returns progressively filled data with `indexing: true` while this runs.
 - Deleting the index is safe: the plugin cold-reads historical sessions again. Cold reads use official interfaces and concurrency 8 (about 2 minutes for 300+ sessions on the author's machine).
 - Very early **v0-format sessions** may not be readable at all. They are excluded from statistics and the UI reports how many; the time-of-day card shows **“Token 未计入 N 个会话”** when their token distribution cannot be read.
@@ -290,11 +306,11 @@ Install the plugin, restart DSH, and open **Workload report** at the bottom of t
 
 ### How is this different from a token or cost dashboard?
 
-Token and cost dashboards answer "how much did it consume?". This plugin answers **"where did my effort go?"** — it measures **active time** (model time + tool time, with waiting-for-user time excluded), attributes it to **dates and workspaces**, and puts it next to token usage. You can see a 46%-of-effort project, a 3.7 B-token month, and a client-ready report — from the same data.
+Token and cost dashboards answer "how much did it consume?". This plugin answers **"where did my effort go?"** — it measures **active time** (model time + tool time, with waiting-for-user time excluded), attributes it to **dates and workspaces**, and puts it next to token usage. You can see a 46%-of-effort project, a 3.7 B-token month, and a review-ready dashboard — from the same data.
 
 ### Can I send the report to a client or my manager?
 
-Yes. **Export HTML report** produces one self-contained file (inline CSS and SVG, no scripts, no external assets) that opens anywhere. Use `anonymize=1` to hide workspace names and session titles, and `title` / `note` to brand it. The report mirrors the dashboard: nine KPIs, calendar heatmap, model token share, time-of-day analysis, workspace share and detail tables — with the metric definitions in the footer, so the numbers are explainable.
+Not as a file yet. The self-contained HTML report was **removed in 2.6.0** (its toolbar button was already unreliable); a **single-page PNG snapshot** is the planned replacement. For now you can screen-share the dashboard or use your own screenshots.
 
 ### Can I merge usage from several computers?
 
@@ -302,11 +318,11 @@ Yes, optionally. Device sync merges per-session aggregate rows from several mach
 
 ### Does the plugin send my data anywhere?
 
-No, by default everything stays on your machine. The plugin registers **read-only** local HTTP routes, uses only official DSH interfaces, and writes only its own local index and cache. Two features can use the network and are opt-in: the balance chip (off by default) and the AI profile (only after you click Generate; it sends aggregate statistics only). The exported report is a local file.
+No, by default everything stays on your machine. The plugin registers **read-only** local HTTP routes, uses only official DSH interfaces, and writes only its own local index and cache. Two features can use the network and are opt-in: the balance chip (off by default) and the AI profile (only after you click Generate; it sends aggregate statistics only). 
 
 ### Which interface languages are supported?
 
-The dashboard, the exported report, the AI profile and the sync dialogs follow the **DSH interface language** and are localized into all 8 languages shipped with DSH 0.2.2: English, Chinese, Japanese, Spanish, French, German, Russian and Brazilian Portuguese. Switching the language in **Settings → General → Language** switches the plugin live — no reload, no plugin setting.
+The dashboard, the AI profile and the sync dialogs follow the **DSH interface language** and are localized into all 8 languages shipped with DSH 0.2.2: English, Chinese, Japanese, Spanish, French, German, Russian and Brazilian Portuguese. Switching the language in **Settings → General → Language** switches the plugin live — no reload, no plugin setting.
 
 ### How do I install it in DSH Desktop or dsh web?
 
@@ -319,7 +335,6 @@ In **DSH Desktop**: Settings → Plugins → search `dsh-workload-report` → in
 | [docs/metrics.md](./docs/metrics.md) | Definitions: active/net/wait, time-of-day, tokens, calendar, workspaces |
 | [docs/models.md](./docs/models.md) | Model attribution, grouping, cache-hit rate, peak/off-peak pricing and cost estimation |
 | [docs/ui-conventions.md](./docs/ui-conventions.md) | Shared UI components, card heads, legend/status rules, tooltip rules |
-| [docs/report-parity.md](./docs/report-parity.md) | Dashboard → report parity checklist, intentional differences, structural assertions |
 | [docs/ai-profile.md](./docs/ai-profile.md) | AI user profile: whitelist payload, cache fingerprint, fallback codes, privacy |
 | [docs/discoverability.md](./docs/discoverability.md) | How this project is made discoverable: keywords, channels, submission checklists, launch plan |
 | [docs/i18n.md](./docs/i18n.md) | 8-language architecture, maintenance rules, how to add a language |
@@ -330,11 +345,11 @@ In **DSH Desktop**: Settings → Plugins → search `dsh-workload-report` → in
 
 ## Privacy
 
-All statistics stay on your machine. The plugin registers **read-only** HTTP routes only: by default no outbound requests, no telemetry, no user content collected. It writes only its own index cache plus the optional AI-profile cache; nothing else in your harness data is touched. The exported report may contain session titles unless you pass `anonymize=1`.
+All statistics stay on your machine. The plugin registers **read-only** HTTP routes only: by default no outbound requests, no telemetry, no user content collected. It writes only its own index cache plus the optional AI-profile cache; nothing else in your harness data is touched.
 
-**Optional balance chip — off by default.** Only when you set `balance.enabled: true` does the host call the official `deepseekAccount` service: `getBalance()` makes the **host** request `https://platform.deepseek.com/api/v0/users/get_user_summary` (the account balance endpoint). It is opt-in and cached for `balance.refreshMs`. The top-up/usage links come from the service's local `getState()` and need no network. A failed or timed-out query shows an em dash with a top-up link — never an error dialog. The balance is rendered only in your own toolbar chip and is **never written into the exported HTML report**.
+**Optional balance chip — off by default.** Only when you set `balance.enabled: true` does the host call the official `deepseekAccount` service: `getBalance()` makes the **host** request `https://platform.deepseek.com/api/v0/users/get_user_summary` (the account balance endpoint). It is opt-in and cached for `balance.refreshMs`. The top-up/usage links come from the service's local `getState()` and need no network. A failed or timed-out query shows an em dash with a top-up link — never an error dialog. The balance is rendered only in your own toolbar chip.
 
-**AI user profile — included by default, manual trigger only.** Opening the panel / `probe` only reads enabled, sign-in state, and provider/model; it **never calls a model**. Only after you click **Generate profile** does the plugin call the `llm` service (and your configured model provider) with the aggregate whitelist described in [AI user profile](#ai-user-profile), always using a window of at least 30 days. No conversation text, titles, paths, session ids, or event logs are sent. The response is cached on disk in the plugin's own directory; the static HTML report never contains it. If the service is missing, you are not signed in, the call times out, or parsing fails, the card falls back to local rules and shows the reason — no error dialog. This side call is not included in the plugin's token / cost report. Set `aiProfile.enabled: false` to hide the entry and guarantee zero model calls.
+**AI user profile — included by default, manual trigger only.** Opening the panel / `probe` only reads enabled, sign-in state, and provider/model; it **never calls a model**. Only after you click **Generate profile** does the plugin call the `llm` service (and your configured model provider) with the aggregate whitelist described in [AI user profile](#ai-user-profile), always using a window of at least 30 days. No conversation text, titles, paths, session ids, or event logs are sent. The response is cached on disk in the plugin's own directory; no report file is produced. If the service is missing, you are not signed in, the call times out, or parsing fails, the card falls back to local rules and shows the reason — no error dialog. This side call is not included in the plugin's token / cost report. Set `aiProfile.enabled: false` to hide the entry and guarantee zero model calls.
 
 ## Development
 
@@ -342,11 +357,11 @@ All statistics stay on your machine. The plugin registers **read-only** HTTP rou
 | --- | --- |
 | `pnpm add -D esbuild puppeteer-core` | Install build and browser-test dependencies (or point `ESBUILD_PATH` / `WL_PUPPETEER_DIR` at existing installs) |
 | `node build.mjs` | Bundle `src/client/` into `lib/client.js` (ModuleLoader factory format) with esbuild |
-| `node test/verify.mjs` | **1738 offline assertions**: aggregation semantics with one shared range rule, time zones, turn-based hour bucketing and conservation, hourly tokens by message time, human-message density, wait exclusion (all three rules + long-task exemption + `excludeWait:false` regression), index/read fallbacks, report structure parity, the AI-profile tab as a right-aligned navigation entry, the 30-day profile window, multi-device sync (payload / merge / credentials / settings / device filter / pull-cache persistence), output-speed and TTFT definitions, zero model calls on first open, i18n key alignment, balance states, and 8-language rendering (dashboard helpers / report / AI profile / prompt) |
+| `node test/verify.mjs` | **1625 offline assertions**: aggregation semantics with one shared range rule, time zones, turn-based hour bucketing and conservation, hourly tokens by message time, human-message density, wait exclusion (all three rules + long-task exemption + `excludeWait:false` regression), index/read fallbacks, the AI-profile tab as a right-aligned navigation entry, the 30-day profile window, multi-device sync (payload / merge / credentials / settings / device filter / pull-cache persistence), output-speed and TTFT definitions, KPI sparkline series / geometry / calendar summary, zero model calls on first open, i18n key alignment, balance states, and 8-language rendering (dashboard helpers / AI profile / prompt) |
 | `./test/e2e-boot.sh 3299` | Boot an **isolated instance** (own DSH_HOME and port) without touching your running GUI |
 | `node test/i18n.mjs` | **I18n dictionary checks** (85 assertions): key sets / order / placeholders / empty values / untranslated / hard-coded copy / dead keys across all 8 languages; `--lang de` checks one language |
-| `node test/e2e-ui.mjs` | Real-browser E2E: calendar/bar switching, geometry, donuts, report export, time-of-day card |
-| `node test/e2e-i18n.mjs` | Real-browser E2E in all 8 languages: injects `navigator.languages`, opens the panel and the HTML report, asserts copy against the dictionaries and saves screenshots |
+| `node test/e2e-ui.mjs` | Real-browser E2E: calendar/bar switching, geometry, donuts, KPI sparklines, time-of-day card |
+| `node test/e2e-i18n.mjs` | Real-browser E2E in all 8 languages: injects `navigator.languages`, opens the panel, asserts copy against the dictionaries and saves screenshots |
 
 CI runs `build.mjs` + `verify.mjs`, and fails if the committed `lib/client.js` differs from a fresh build.
 

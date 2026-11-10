@@ -1,4 +1,4 @@
-// 真实浏览器多语言端到端验收：8 种界面语言下打开「工作量报告」面板 + HTML 报告，
+// 真实浏览器多语言端到端验收：8 种界面语言下打开「工作量报告」面板，
 // 断言渲染文案来自 src/locales 词典（而不是硬编码 / 英文占位），并逐语言截图留档。
 //
 // 前置（隔离测试实例：独立 DSH_HOME，不影响用户正在使用的 Web GUI 实例）：
@@ -372,35 +372,7 @@ async function checkLanguage(browser, lang) {
       console.log(`  · 截图 test/.artifacts/i18n-${lang}.png`);
     }
 
-    // ---- HTML 报告：语言由 query lang 显式指定 ----
-    const reportPage = await context.newPage();
-    const reportErrors = [];
-    reportPage.on("pageerror", (error) => reportErrors.push(error.message));
-    await reportPage.setViewport({ width: 1240, height: 1400, deviceScaleFactor: 1 });
-    try {
-      const reportUrl = `${URL_BASE}/workload-report/v1/report.html?days=7&tz=UTC&lang=${lang}`;
-      const response = await reportPage.goto(reportUrl, { waitUntil: "networkidle2", timeout: 60000 });
-      ok(response?.status() === 200, `报告页返回 200（lang=${lang}）`, String(response?.status()));
-      const report = await reportPage.evaluate(() => ({
-        lang: document.documentElement.lang,
-        text: document.body.innerText,
-      }));
-      ok(
-        report.lang === tagOf(lang),
-        `报告页 <html lang> = localeTag(${lang})（${tagOf(lang)}）`,
-        `实际 ${JSON.stringify(report.lang)}`,
-      );
-      assertContains(report.text, translate(lang, "report.title"), `报告页正文含词典 report.title`);
-      ok(!/\breport\.[a-zA-Z]/.test(report.text), "报告页没有裸露的文案键名", JSON.stringify(snippet(report.text)));
-      ok(reportErrors.length === 0, "报告页无 JS 异常", reportErrors.slice(0, 3).join(" | "));
-      await reportPage.screenshot({ path: join(ARTIFACTS, `i18n-report-${lang}.png`), fullPage: true });
-      console.log(`  · 截图 test/.artifacts/i18n-report-${lang}.png`);
-    } catch (error) {
-      ok(false, `报告页校验（lang=${lang}）`, error.message);
-      await reportPage.screenshot({ path: join(ARTIFACTS, `i18n-report-${lang}-failed.png`) }).catch(() => {});
-    } finally {
-      await reportPage.close().catch(() => {});
-    }
+
   } finally {
     await context.close().catch(() => {});
   }

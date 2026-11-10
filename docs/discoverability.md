@@ -49,7 +49,7 @@
 ## 3. 关键词矩阵（8 语言）
 
 定位原则：**避开「token usage / 费用面板」红海**（该品类已有多个 100+★ 插件），主打差异化词
-**「workload / effort report + 客户可直接看的 HTML 报告 + 8 语言 + 多设备」**，同时覆盖基础词
+**「workload / effort report + 客户可直接看的快照（PNG 规划中）+ 8 语言 + 多设备」**，同时覆盖基础词
 （DeepSeek Harness / DSH plugin / token usage）保证不漏需求。
 
 | 语言 | 主关键词（title/描述/README H1） | 长尾（FAQ/博客标题/帖子） |

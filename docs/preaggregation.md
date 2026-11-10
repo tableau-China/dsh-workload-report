@@ -65,7 +65,7 @@
 | `snapshot?days=7` | 4–37 ms |
 | `snapshot?days=30` | 31 ms |
 | `snapshot?days=90` | 36 ms |
-| `report.html` | 30 ms |
+| `report.html`（2.6.0 已移除） | 30 ms |
 
 **全部远低于 100 ms 的感知阈值。** 用户不可能察觉「预聚合能省下的那 10 ms」。
 
